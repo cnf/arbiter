@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "mcp__Lite__brave-brave_web_search"
+    ]
+  }
+}

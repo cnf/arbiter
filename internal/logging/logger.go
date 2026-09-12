@@ -1,7 +1,12 @@
+// Package logging provides the single structured logging path for Arbiter.
+// Every stage of the pipeline logs through this interface — the explicit
+// goal (per project scope) is one mechanism, not LiteLLM's five.
 package logging
 
 import (
 	"context"
+	"log/slog"
+	"os"
 	"time"
 
 	"github.com/cnf/arbiter/pkg/types"
@@ -17,51 +22,123 @@ type Logger interface {
 	WithTraceID(ctx context.Context, traceID string) context.Context
 }
 
-// LogEntry is a single structured log entry.
+// LogEntry is a single structured log entry. It exists mainly as a shared
+// shape for tests/documentation — StdoutLogger builds slog attributes
+// directly rather than constructing one of these on every call.
 type LogEntry struct {
-	Timestamp   time.Time
-	TraceID     string
-	RequestID   string
-	Severity    string
-	Component   string
-	Message     string
-	Details     map[string]interface{}
-	Duration    time.Duration
-	Attributes  map[string]interface{}
+	Timestamp  time.Time
+	TraceID    string
+	RequestID  string
+	Severity   string
+	Component  string
+	Message    string
+	Details    map[string]interface{}
+	Duration   time.Duration
+	Attributes map[string]interface{}
 }
 
-// StdoutLogger logs to stdout in JSON format.
+// traceIDKey is the context key trace IDs are stored under. An unexported
+// type prevents collisions with keys set by other packages.
+type traceIDKey struct{}
+
+// StdoutLogger logs to stdout in JSON format via log/slog.
 type StdoutLogger struct {
-	level string // "debug", "info", "warn", "error"
+	slog *slog.Logger
 }
 
-// NewStdoutLogger creates a stdout logger.
+// NewStdoutLogger creates a stdout logger at the given level
+// ("debug", "info", "warn", "error"; unrecognized values default to info).
 func NewStdoutLogger(level string) *StdoutLogger {
-	return &StdoutLogger{level: level}
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseLevel(level)})
+	return &StdoutLogger{slog: slog.New(handler)}
+}
+
+func parseLevel(level string) slog.Level {
+	switch level {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// withTrace prepends the trace ID (if any) as the first log attribute so
+// every line from a single request can be grepped together regardless of
+// which pipeline stage emitted it.
+func (sl *StdoutLogger) withTrace(ctx context.Context) *slog.Logger {
+	if traceID := sl.ExtractTraceID(ctx); traceID != "" {
+		return sl.slog.With("trace_id", traceID)
+	}
+	return sl.slog
 }
 
 func (sl *StdoutLogger) LogRouting(ctx context.Context, route types.Route, signals types.Signals, duration time.Duration) {
-	// TODO: implement structured logging to stdout
+	sl.withTrace(ctx).Info("routing_decision",
+		"component", "router",
+		"provider", route.Provider,
+		"model", route.Model,
+		"rationale", route.Rationale,
+		"intent", signals.Intent,
+		"confidence", signals.Confidence,
+		"duration_ms", duration.Milliseconds(),
+	)
 }
 
 func (sl *StdoutLogger) LogGuardrail(ctx context.Context, guardrail string, decision string, mutation bool) {
-	// TODO: implement structured logging
+	sl.withTrace(ctx).Info("guardrail_applied",
+		"component", "guardrail",
+		"guardrail", guardrail,
+		"decision", decision,
+		"mutated", mutation,
+	)
 }
 
 func (sl *StdoutLogger) LogUpstream(ctx context.Context, provider string, statusCode int, latency time.Duration, usage types.Usage) {
-	// TODO: implement structured logging
+	sl.withTrace(ctx).Info("upstream_call",
+		"component", "upstream",
+		"provider", provider,
+		"status_code", statusCode,
+		"latency_ms", latency.Milliseconds(),
+		"input_tokens", usage.InputTokens,
+		"output_tokens", usage.OutputTokens,
+		"cache_read_tokens", usage.CacheRead,
+		"cache_write_tokens", usage.CacheWrite,
+		"cost_usd", usage.CostUSD,
+	)
 }
 
 func (sl *StdoutLogger) LogError(ctx context.Context, severity string, err error, context map[string]interface{}) {
-	// TODO: implement error logging
+	args := []interface{}{"component", "error", "error", err.Error()}
+	for k, v := range context {
+		args = append(args, k, v)
+	}
+	logger := sl.withTrace(ctx)
+	switch severity {
+	case "warn":
+		logger.Warn("error", args...)
+	case "debug":
+		logger.Debug("error", args...)
+	default:
+		logger.Error("error", args...)
+	}
 }
 
+// ExtractTraceID reads the trace ID stashed in ctx by WithTraceID, or ""
+// if none was ever set.
 func (sl *StdoutLogger) ExtractTraceID(ctx context.Context) string {
-	// TODO: implement trace ID extraction from context
+	if v, ok := ctx.Value(traceIDKey{}).(string); ok {
+		return v
+	}
 	return ""
 }
 
+// WithTraceID returns a derived context carrying traceID, retrievable via
+// ExtractTraceID. Every log call made with the derived context (or any
+// context built from it) will be tagged with this trace ID.
 func (sl *StdoutLogger) WithTraceID(ctx context.Context, traceID string) context.Context {
-	// TODO: implement trace ID injection into context
-	return ctx
+	return context.WithValue(ctx, traceIDKey{}, traceID)
 }

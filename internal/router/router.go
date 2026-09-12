@@ -2,6 +2,8 @@ package router
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"github.com/cnf/arbiter/pkg/types"
 )
@@ -22,7 +24,11 @@ func Register(typeName string, factory Factory) {
 	Registry[typeName] = factory
 }
 
-// ChainedRouter tries multiple routers in sequence, stops on first success.
+// ChainedRouter tries multiple routers in sequence, taking the first
+// non-error result. This is how composable routing axes stack: e.g. a
+// capability router that only produces a Route when the request needs
+// vision, chained before a SimpleRouter that always produces one as the
+// final fallback.
 type ChainedRouter struct {
 	name    string
 	routers []Router
@@ -36,31 +42,79 @@ func NewChainedRouter(name string, routers []Router) *ChainedRouter {
 	}
 }
 
-// Route tries each chained router in order.
+// Route tries each chained router in order, returning the first one that
+// succeeds. If all routers fail, the last error is returned.
 func (cr *ChainedRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, types.Metadata, error) {
-	// TODO: implement chaining logic
-	return types.Route{}, types.Metadata{}, nil
+	if len(cr.routers) == 0 {
+		return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: no routers configured", cr.name)
+	}
+
+	var lastErr error
+	for _, r := range cr.routers {
+		route, meta, err := r.Route(ctx, req, signals)
+		if err == nil {
+			return route, meta, nil
+		}
+		lastErr = err
+	}
+	return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: all routers failed: %w", cr.name, lastErr)
 }
 
-// SimpleRouter always routes to a default provider.
+// SimpleRouter always routes to a default provider, falling back to a
+// second provider if the default isn't configured. This is the v1
+// workhorse — no cost/latency/capability-aware logic yet, just "does this
+// provider exist, use it."
 type SimpleRouter struct {
-	name              string
-	defaultProvider   string
-	fallbackProvider  string
-	providerConfig    map[string]types.ProviderConfig
+	name             string
+	defaultProvider  string
+	fallbackProvider string
+	providerConfig   map[string]types.ProviderConfig
 }
 
 // NewSimpleRouter creates a simple router.
-func NewSimpleRouter(name string, defaultProvider string, providerConfig map[string]types.ProviderConfig) *SimpleRouter {
+func NewSimpleRouter(name, defaultProvider, fallbackProvider string, providerConfig map[string]types.ProviderConfig) *SimpleRouter {
 	return &SimpleRouter{
-		name:            name,
-		defaultProvider: defaultProvider,
-		providerConfig:  providerConfig,
+		name:             name,
+		defaultProvider:  defaultProvider,
+		fallbackProvider: fallbackProvider,
+		providerConfig:   providerConfig,
 	}
 }
 
-// Route returns the default provider.
+// Route returns the default provider, or the fallback if the default isn't
+// in the provider map (e.g. missing API key / not configured for this
+// deployment). The requested model, if any, is preserved; otherwise the
+// provider's first configured model is used.
 func (sr *SimpleRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, types.Metadata, error) {
-	// TODO: implement default routing logic
-	return types.Route{}, types.Metadata{}, nil
+	providerName := sr.defaultProvider
+	cfg, ok := sr.providerConfig[providerName]
+	if !ok {
+		providerName = sr.fallbackProvider
+		cfg, ok = sr.providerConfig[providerName]
+		if !ok {
+			return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: neither default provider %q nor fallback %q are configured", sr.name, sr.defaultProvider, sr.fallbackProvider)
+		}
+	}
+
+	model := req.Model
+	rationale := fmt.Sprintf("simple router %q: default provider", sr.name)
+	if providerName == sr.fallbackProvider {
+		rationale = fmt.Sprintf("simple router %q: default provider %q unavailable, used fallback", sr.name, sr.defaultProvider)
+	}
+	if model == "" && len(cfg.Models) > 0 {
+		model = cfg.Models[0]
+	}
+
+	route := types.Route{
+		Provider:  providerName,
+		Model:     model,
+		Config:    cfg,
+		Rationale: rationale,
+	}
+	meta := types.Metadata{
+		LatencyTarget: "normal",
+		TraceID:       req.TraceID,
+		RoutedAt:      time.Now(),
+	}
+	return route, meta, nil
 }

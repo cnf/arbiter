@@ -10,9 +10,11 @@
   env.GREET = "Arbiter";
 
   packages = [
+    pkgs.git
     pkgs.go
     pkgs.air
     pkgs.gopls
+    pkgs.gotools
     pkgs.golangci-lint
     pkgs.sqlc
   ];

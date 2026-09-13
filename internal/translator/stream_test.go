@@ -79,13 +79,70 @@ func TestOpenAIStreamEventTranslation(t *testing.T) {
 	}
 
 	// Translate to OpenAI format
-	oaiEvt := NormalizedToOpenAIStreamEvent(normalized, messageID)
+	oaiEvt := NormalizedToOpenAIStreamEvent(normalized, messageID, 1234567890)
 	b, err := json.Marshal(oaiEvt)
 	if err != nil {
 		t.Fatalf("marshal openai event: %v", err)
 	}
 	if len(b) == 0 {
 		t.Fatal("marshaled to empty bytes")
+	}
+}
+
+func TestNormalizedToOpenAIStreamEventFidelity(t *testing.T) {
+	created := int64(1700000000)
+
+	// message_start carries model + role, with the shared ID/created/model
+	start := &types.NormalizedStreamEvent{
+		Type:         "message_start",
+		MessageID:    "msg_123",
+		MessageModel: "gpt-4o",
+	}
+	oaiStart := NormalizedToOpenAIStreamEvent(start, "trace-1", created)
+	if oaiStart.ID != "chatcmpl-trace-1" {
+		t.Errorf("ID = %q, want chatcmpl-trace-1", oaiStart.ID)
+	}
+	if oaiStart.Created != created {
+		t.Errorf("Created = %d, want %d", oaiStart.Created, created)
+	}
+	if oaiStart.Model != "gpt-4o" {
+		t.Errorf("Model = %q, want gpt-4o", oaiStart.Model)
+	}
+	if oaiStart.Object != "chat.completion.chunk" {
+		t.Errorf("Object = %q, want chat.completion.chunk", oaiStart.Object)
+	}
+	if oaiStart.Choices[0].Delta.Role != "assistant" {
+		t.Errorf("Delta.Role = %q, want assistant", oaiStart.Choices[0].Delta.Role)
+	}
+
+	// a later content chunk also carries model/created (OpenAI sends model
+	// and created on every chunk of one completion)
+	delta := &types.NormalizedStreamEvent{
+		Type:      "content_block_delta",
+		DeltaType: "text_delta",
+		TextDelta: "hello",
+	}
+	oaiDelta := NormalizedToOpenAIStreamEvent(delta, "trace-1", created)
+	if oaiStart.ID != "chatcmpl-trace-1" {
+		t.Errorf("ID = %q, want chatcmpl-trace-1", oaiStart.ID)
+	}
+	if oaiDelta.Created != created {
+		t.Errorf("Created = %d, want %d", oaiDelta.Created, created)
+	}
+
+	// message_stop maps the normalized stop reason back to OpenAI's
+	// finish_reason vocabulary ("end_turn" -> "stop")
+	stop := &types.NormalizedStreamEvent{
+		Type:              "message_stop",
+		MessageStopReason: "end_turn",
+	}
+	oaiStop := NormalizedToOpenAIStreamEvent(stop, "trace-1", created)
+	if oaiStop.Choices[0].FinishReason == nil || *oaiStop.Choices[0].FinishReason != "stop" {
+		got := "<nil>"
+		if oaiStop.Choices[0].FinishReason != nil {
+			got = *oaiStop.Choices[0].FinishReason
+		}
+		t.Errorf("FinishReason = %q, want stop", got)
 	}
 }
 

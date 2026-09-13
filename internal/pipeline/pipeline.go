@@ -140,8 +140,10 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 	}
 
 	// Forward upstream events, stamping each with the trace ID — the
-	// equivalent of resp.TraceID on the non-streaming path — and log the
-	// upstream call once (with latency and any usage the upstream reported)
+	// equivalent of resp.TraceID on the non-streaming path — and the model
+	// actually serving the request (upstream-reported when the upstream says
+	// so on message_start, the routed model otherwise). Also accumulates
+	// usage from stream events and logs the upstream call once (with latency)
 	// when the stream ends, mirroring the non-streaming path's LogUpstream.
 	out := make(chan *types.NormalizedStreamEvent)
 	go func() {
@@ -150,6 +152,9 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 		var usage types.Usage
 		for evt := range eventChan {
 			evt.TraceID = traceID
+			if evt.MessageModel == "" {
+				evt.MessageModel = route.Model
+			}
 			if evt.InputTokens > 0 {
 				usage.InputTokens = evt.InputTokens
 			}

@@ -205,16 +205,21 @@ func NormalizedToAnthropicStreamEvent(evt *types.NormalizedStreamEvent) *Anthrop
 }
 
 // NormalizedToOpenAIStreamEvent translates a normalized stream event into
-// OpenAI wire format for sending to the client.
-func NormalizedToOpenAIStreamEvent(evt *types.NormalizedStreamEvent, messageID string) *OpenAIStreamEvent {
+// OpenAI wire format for sending to the client. messageID and created come
+// from the caller so every chunk of one completion shares the same ID and
+// timestamp, as OpenAI clients expect. Model is taken from the event: the
+// pipeline stamps MessageModel on every event (upstream-reported model when
+// available, the routed model otherwise).
+func NormalizedToOpenAIStreamEvent(evt *types.NormalizedStreamEvent, messageID string, created int64) *OpenAIStreamEvent {
 	if evt == nil {
 		return nil
 	}
 
 	openai := &OpenAIStreamEvent{
 		ID:      "chatcmpl-" + messageID,
-		Object:  "text_completion.chunk",
-		Created: 0, // Will be set by caller if needed
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   evt.MessageModel,
 		Choices: []OpenAIStreamChoice{{Index: evt.BlockIndex}},
 	}
 
@@ -228,7 +233,8 @@ func NormalizedToOpenAIStreamEvent(evt *types.NormalizedStreamEvent, messageID s
 		}
 
 	case "message_stop":
-		openai.Choices[0].FinishReason = &evt.MessageStopReason
+		finish := normalizedToOpenAIFinishReason(evt.MessageStopReason)
+		openai.Choices[0].FinishReason = &finish
 		if evt.InputTokens > 0 || evt.OutputTokens > 0 {
 			openai.Usage = &types.OpenAIUsage{
 				PromptTokens:     evt.InputTokens,

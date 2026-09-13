@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -116,14 +117,17 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, trace
 	// Streamed event IDs share the request's trace ID ("chatcmpl-<traceID>"),
 	// matching the non-streaming path where the response ID is built from
 	// resp.TraceID — lets a client correlate a stream with Arbiter's logs.
+	// created is fixed per response too, as OpenAI clients expect all chunks
+	// of one completion to carry the same timestamp.
 	messageID := traceID
+	created := time.Now().Unix()
 	for evt := range streamResp.EventChan {
 		var wireEvent interface{}
 
 		if format == "anthropic" {
 			wireEvent = translator.NormalizedToAnthropicStreamEvent(evt)
 		} else {
-			wireEvent = translator.NormalizedToOpenAIStreamEvent(evt, messageID)
+			wireEvent = translator.NormalizedToOpenAIStreamEvent(evt, messageID, created)
 		}
 
 		// Serialize to JSON

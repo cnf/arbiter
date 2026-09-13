@@ -24,7 +24,17 @@ type Config struct {
 	Classifiers []ClassifierConfig        `yaml:"classifiers"`
 	Routers     []RouterConfig            `yaml:"routers"`
 	Guardrails  GuardrailsConfig          `yaml:"guardrails"`
+	Routing     RoutingConfig             `yaml:"routing"`
 	Logging     LoggingConfig             `yaml:"logging"`
+}
+
+// RoutingConfig holds cross-cutting routing behavior that isn't the job of
+// any single router: what to do when a routed provider fails.
+type RoutingConfig struct {
+	// FallbackProviders names providers to try — in order — when the routed
+	// provider fails with a retriable error (429/5xx). Each is tried once;
+	// providers in cooldown (from a recent 429's Retry-After) are skipped.
+	FallbackProviders []string `yaml:"fallback_providers,omitempty"`
 }
 
 // ProviderConfig defines an upstream provider.
@@ -120,6 +130,17 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Routers) == 0 {
 		return arbitererrors.NewConfigError("no routers configured", nil)
+	}
+
+	seenFallback := make(map[string]bool, len(c.Routing.FallbackProviders))
+	for _, fb := range c.Routing.FallbackProviders {
+		if _, ok := c.Providers[fb]; !ok {
+			return arbitererrors.NewConfigError(fmt.Sprintf("routing: fallback provider %q is not configured", fb), nil)
+		}
+		if seenFallback[fb] {
+			return arbitererrors.NewConfigError(fmt.Sprintf("routing: duplicate fallback provider %q", fb), nil)
+		}
+		seenFallback[fb] = true
 	}
 
 	allGuardrails := append(append([]GuardrailConfig{}, c.Guardrails.Pre...), c.Guardrails.Post...)

@@ -159,7 +159,7 @@ func buildPipeline(cfg *config.Config, logger logging.Logger) (*pipeline.Pipelin
 	t := translator.NewDefaultTranslator()
 	u := upstream.NewHTTPClient(t)
 
-	return pipeline.NewPipeline(t, t, t, classifiers, mainRouter, u, preGuardrails, postGuardrails, logger), nil
+	return pipeline.NewPipeline(t, t, t, classifiers, mainRouter, u, providers, cfg.Routing.FallbackProviders, preGuardrails, postGuardrails, logger), nil
 }
 
 func combineRouters(routers []router.Router) router.Router {

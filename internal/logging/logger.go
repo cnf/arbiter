@@ -17,6 +17,7 @@ type Logger interface {
 	LogRouting(ctx context.Context, route types.Route, signals types.Signals, duration time.Duration)
 	LogGuardrail(ctx context.Context, guardrail string, decision string, mutation bool)
 	LogUpstream(ctx context.Context, provider string, statusCode int, latency time.Duration, usage types.Usage)
+	LogUpstreamCooldown(ctx context.Context, provider string, until time.Time, retryAfter time.Duration, action string)
 	LogError(ctx context.Context, severity string, err error, context map[string]interface{})
 	ExtractTraceID(ctx context.Context) string
 	WithTraceID(ctx context.Context, traceID string) context.Context
@@ -108,6 +109,20 @@ func (sl *StdoutLogger) LogUpstream(ctx context.Context, provider string, status
 		"cache_read_tokens", usage.CacheRead,
 		"cache_write_tokens", usage.CacheWrite,
 		"cost_usd", usage.CostUSD,
+	)
+}
+
+// LogUpstreamCooldown records 429 cooldown events: either "recorded" (a 429
+// with Retry-After came back, provider is cooling down until `until`) or
+// "skipped" (a routing attempt was not even made because the provider is
+// still in cooldown). retryAfter is 0 for skips.
+func (sl *StdoutLogger) LogUpstreamCooldown(ctx context.Context, provider string, until time.Time, retryAfter time.Duration, action string) {
+	sl.withTrace(ctx).Info("upstream_cooldown",
+		"component", "upstream",
+		"provider", provider,
+		"cooldown_until", until.Format(time.RFC3339),
+		"retry_after_ms", retryAfter.Milliseconds(),
+		"action", action,
 	)
 }
 

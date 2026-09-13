@@ -158,7 +158,7 @@ func (c *HTTPClient) sendAnthropic(ctx context.Context, route types.Route, req *
 	}
 
 	if httpResp.StatusCode >= 400 {
-		return nil, arbitererrors.NewUpstreamError(route.Provider, httpResp.StatusCode, string(respBody), nil)
+		return nil, upstreamErrorFrom(route.Provider, httpResp, respBody)
 	}
 
 	var wireResp types.AnthropicResponse
@@ -209,7 +209,7 @@ func (c *HTTPClient) sendOpenAI(ctx context.Context, route types.Route, req *typ
 	}
 
 	if httpResp.StatusCode >= 400 {
-		return nil, arbitererrors.NewUpstreamError(route.Provider, httpResp.StatusCode, string(respBody), nil)
+		return nil, upstreamErrorFrom(route.Provider, httpResp, respBody)
 	}
 
 	var wireResp types.OpenAIResponse
@@ -222,6 +222,39 @@ func (c *HTTPClient) sendOpenAI(ctx context.Context, route types.Route, req *typ
 		return nil, arbitererrors.NewTranslationError("post_routing", "openai response to normalized", err)
 	}
 	return normalized, nil
+}
+
+// upstreamErrorFrom builds an UpstreamError from an HTTP error response,
+// capturing the Retry-After header on a 429 so callers can honor the
+// upstream's cooldown instead of retrying into a wall.
+func upstreamErrorFrom(provider string, httpResp *http.Response, body []byte) *arbitererrors.UpstreamError {
+	e := arbitererrors.NewUpstreamError(provider, httpResp.StatusCode, string(body), nil)
+	if httpResp.StatusCode == http.StatusTooManyRequests {
+		e.RetryAfter = parseRetryAfter(httpResp.Header)
+	}
+	return e
+}
+
+// parseRetryAfter parses a Retry-After header value: either delay-seconds or
+// an HTTP-date. Returns 0 when absent or unparseable — callers apply their
+// own default cooldown in that case.
+func parseRetryAfter(h http.Header) time.Duration {
+	v := h.Get("Retry-After")
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+		return 0
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 // parseAnthropicRateLimitHeaders extracts quota state from Anthropic's

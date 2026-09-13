@@ -136,7 +136,7 @@ func (c *HTTPClient) sendAnthropicStream(ctx context.Context, route types.Route,
 		if err != nil {
 			return arbitererrors.NewUpstreamError(route.Provider, httpResp.StatusCode, "read error response", err)
 		}
-		return arbitererrors.NewUpstreamError(route.Provider, httpResp.StatusCode, string(respBody), nil)
+		return upstreamErrorFrom(route.Provider, httpResp, respBody)
 	}
 
 	// Read the SSE stream in a goroutine and close the event channel when done
@@ -185,7 +185,7 @@ func (c *HTTPClient) sendOpenAIStream(ctx context.Context, route types.Route, re
 		if err != nil {
 			return arbitererrors.NewUpstreamError(route.Provider, httpResp.StatusCode, "read error response", err)
 		}
-		return arbitererrors.NewUpstreamError(route.Provider, httpResp.StatusCode, string(respBody), nil)
+		return upstreamErrorFrom(route.Provider, httpResp, respBody)
 	}
 
 	// Read the SSE stream in a goroutine and close the event channel when done

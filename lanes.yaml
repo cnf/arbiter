@@ -105,6 +105,14 @@ routers:
 #      default_provider: "claude"
 #      fallback_provider: "gpt4"
 
+# Failure-triggered fallbacks: when the routed provider fails with 429/5xx,
+# these providers are tried in order (each once). A 429 records a cooldown
+# (from the upstream's Retry-After header, else 5s) during which the
+# provider is skipped entirely — logged as upstream_cooldown.
+#
+# routing:
+#   fallback_providers: ["gpt4", "litellm"]
+
 guardrails:
   pre:
     - name: "system_prompt"

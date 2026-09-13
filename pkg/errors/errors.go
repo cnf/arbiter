@@ -2,6 +2,7 @@ package errors
 
 import (
 	"fmt"
+	"time"
 )
 
 // ArbiterError is the base error type.
@@ -107,6 +108,10 @@ type UpstreamError struct {
 	Provider   string
 	StatusCode int
 	Retriable  bool
+	// RetryAfter is the cooldown the upstream asked for via its Retry-After
+	// header on a 429 (0 when absent or non-429). The pipeline records a
+	// cooldown of at least this long before trying the provider again.
+	RetryAfter time.Duration
 }
 
 // NewUpstreamError creates a new upstream error.

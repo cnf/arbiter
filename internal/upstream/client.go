@@ -67,7 +67,7 @@ func (c *HTTPClient) Send(ctx context.Context, route types.Route, req *types.Nor
 	switch route.Config.Type {
 	case "anthropic":
 		return c.sendAnthropic(ctx, route, &reqCopy)
-	case "openai":
+	case "openai", "ollama":
 		return c.sendOpenAI(ctx, route, &reqCopy)
 	default:
 		return nil, arbitererrors.NewUpstreamError(route.Provider, 0, fmt.Sprintf("unknown provider type %q", route.Config.Type), nil)
@@ -100,7 +100,9 @@ func (c *HTTPClient) sendAnthropic(ctx context.Context, route types.Route, req *
 	if err != nil {
 		return nil, arbitererrors.NewUpstreamError(route.Provider, 0, "request failed", err)
 	}
-	defer httpResp.Body.Close()
+	defer func() {
+		_ = httpResp.Body.Close()
+	}()
 
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {
@@ -149,7 +151,9 @@ func (c *HTTPClient) sendOpenAI(ctx context.Context, route types.Route, req *typ
 	if err != nil {
 		return nil, arbitererrors.NewUpstreamError(route.Provider, 0, "request failed", err)
 	}
-	defer httpResp.Body.Close()
+	defer func() {
+		_ = httpResp.Body.Close()
+	}()
 
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {

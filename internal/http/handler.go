@@ -22,13 +22,21 @@ import (
 type Handler struct {
 	pipeline *pipeline.Pipeline
 	logger   logging.Logger
+	models   []Model
+}
+
+// Model describes a model exposed by a configured provider.
+type Model struct {
+	ID       string
+	Provider string
 }
 
 // NewHandler creates a new HTTP handler.
-func NewHandler(p *pipeline.Pipeline, l logging.Logger) *Handler {
+func NewHandler(p *pipeline.Pipeline, l logging.Logger, models []Model) *Handler {
 	return &Handler{
 		pipeline: p,
 		logger:   l,
+		models:   models,
 	}
 }
 
@@ -54,7 +62,11 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, format string) 
 		writeError(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
-	defer r.Body.Close()
+	defer func() {
+		if err := r.Body.Close(); err != nil {
+			h.logger.LogError(ctx, "warn", err, map[string]interface{}{"phase": "close_request_body"})
+		}
+	}()
 
 	out, err := h.pipeline.Execute(ctx, body, format, traceID)
 	if err != nil {

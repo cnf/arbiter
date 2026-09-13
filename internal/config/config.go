@@ -97,8 +97,8 @@ func (c *Config) Validate() error {
 		return arbitererrors.NewConfigError("no providers configured", nil)
 	}
 	for name, p := range c.Providers {
-		if p.Type != "anthropic" && p.Type != "openai" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("provider %q: unknown type %q (want \"anthropic\" or \"openai\")", name, p.Type), nil)
+		if p.Type != "anthropic" && p.Type != "openai" && p.Type != "ollama" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("provider %q: unknown type %q (want \"anthropic\", \"openai\", or \"ollama\")", name, p.Type), nil)
 		}
 		if p.Endpoint == "" {
 			return arbitererrors.NewConfigError(fmt.Sprintf("provider %q: missing endpoint", name), nil)

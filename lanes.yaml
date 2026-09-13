@@ -19,6 +19,8 @@ providers:
       - "gpt-4o"
 
   local:
+    # Ollama exposes an OpenAI-compatible /v1 endpoint. "ollama" selects
+    # that OpenAI-compatible transport while preserving provider identity.
     type: "ollama"
     endpoint: "http://localhost:11434/v1"
     models:

@@ -121,7 +121,7 @@ func anthropicRequestToNormalized(req *types.AnthropicRequest) *types.Normalized
 	}
 	tools := make([]types.Tool, len(req.Tools))
 	for i, t := range req.Tools {
-		tools[i] = types.Tool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema}
+		tools[i] = types.Tool(t)
 	}
 	return &types.NormalizedRequest{
 		Messages:     messages,
@@ -149,7 +149,7 @@ func normalizedToAnthropicRequest(req *types.NormalizedRequest) *types.Anthropic
 	}
 	tools := make([]types.AnthropicTool, len(req.Tools))
 	for i, t := range req.Tools {
-		tools[i] = types.AnthropicTool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema}
+		tools[i] = types.AnthropicTool(t)
 	}
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {

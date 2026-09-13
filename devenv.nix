@@ -44,8 +44,8 @@
   packages = [
     pkgs.git
     pkgs.gitleaks
-    pkgs.go
     pkgs.httpie
+    pkgs.go
     pkgs.air
     pkgs.gopls
     pkgs.gotools
@@ -85,6 +85,7 @@
 
 
   scripts = {
+    docs.exec = "go doc -http";
     dev.exec = "air";
     test.exec = "devenv test";
     lint.exec = "golangci-lint run";
@@ -110,7 +111,7 @@
 
   processes.mockllm = {
     ports.openai.allocate = 5665;
-    exec = "fakellm serve --port 5665 --config .devenv/fakellm.yaml";
+    exec = "fakellm serve --port 5665 --config support/fakellm.yaml";
     before = ["devenv:processes:arbiter"];
 #    ready = {
 #      http.get = {

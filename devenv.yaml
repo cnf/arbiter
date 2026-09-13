@@ -1,4 +1,5 @@
 # yaml-language-server: $schema=https://devenv.sh/devenv.schema.json
+strict_ports: true
 inputs:
   git-hooks:
     url: github:cachix/git-hooks.nix

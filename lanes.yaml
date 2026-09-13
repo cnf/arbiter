@@ -1,6 +1,10 @@
 version: "1.0"
 
 providers:
+  mockllm:
+    type: "openai"
+    endpoint: "http://localhost:5665/v1"
+    models: ["mock-llm"]
   litellm:
     type: "openai"
     endpoint: "${LITELLM_URL}"
@@ -73,7 +77,7 @@ routers:
   - name: "primary"
     type: "simple"
     config:
-      default_provider: "claude"
+      default_provider: "mockllm"
 #  - name: "primary"
 #    type: "simple"
 #    config:

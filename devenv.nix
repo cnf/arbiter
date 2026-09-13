@@ -41,24 +41,6 @@
     };
   };
 
-  git-hooks.hooks = {
-    golangci-lint.enable = true;
-    ripsecrets.enable = true;
-    trufflehog.enable = true;
-    gitleaks = {
-      enable = true;
-      entry = "${lib.getExe pkgs.gitleaks} git --pre-commit --redact --staged --verbose";
-      pass_filenames = false;
-    };
-  };
-
-  enterTest = ''
-    go test -race ./...
-    wait_for_port 8080
-    http http://localhost:8080/models|jq -R -n 'inputs | try (fromjson|empty) catch input_line_number'
-  '';
-
-
   packages = [
     pkgs.git
     pkgs.gitleaks
@@ -76,11 +58,43 @@
     delve.enable = true;
   };
 
+  languages.python = {
+    enable = true;
+    venv = {
+      enable = true;
+      requirements = ''
+        fakellm
+      '';
+    };
+};
+
+  git-hooks.hooks = {
+    golangci-lint.enable = true;
+    ripsecrets.enable = true;
+    trufflehog.enable = true;
+    gitleaks = {
+      enable = true;
+      entry = "${lib.getExe pkgs.gitleaks} git --pre-commit --redact --staged --verbose";
+      pass_filenames = false;
+    };
+  };
+
+  enterTest = ''
+    go test -race ./...
+  '';
+
+
   scripts = {
     dev.exec = "air";
     test.exec = "devenv test";
     lint.exec = "golangci-lint run";
+    mock.exec = ''
+      http --check-status -S POST :5665/chat/completions model="mock-llm" messages[0]["role"]="user" messages[0]["content"]="what color is the sky?" stream:=true
+      http --check-status -S POST :8080/chat/completions model="mock-llm" messages[0]["role"]="user" messages[0]["content"]="what color is the sky?" stream:=true
+
+    '';
   };
+
 
   processes.arbiter = {
     exec = "secretspec run -- go run ./cmd/arbiter";
@@ -94,6 +108,20 @@
     };
   };
 
+  processes.mockllm = {
+    ports.openai.allocate = 5665;
+    exec = "fakellm serve --port 5665 --config .devenv/fakellm.yaml";
+    before = ["devenv:processes:arbiter"];
+#    ready = {
+#      http.get = {
+#        port = 5665;
+#        path = "/health";
+#        # host = "127.0.0.1";  # default
+#        # scheme = "http";     # default
+#      };
+#    };
+  };
+
   tasks = {
     "arbiter:stop" = {
       exec = "devenv processes down";
@@ -101,4 +129,6 @@
     };
   };
 
+  ## mockllm
+  
 }

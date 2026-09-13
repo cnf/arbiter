@@ -40,4 +40,4 @@ vendor/
 # Build artifacts
 dist/
 build/
-arbiter
+/arbiter

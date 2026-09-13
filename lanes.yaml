@@ -84,6 +84,27 @@ routers:
 #      default_provider: "claude"
 #      fallback_provider: "gpt4"
 
+# A "policy" router matches classifier Signals against ordered rules — first
+# match wins — and errors if nothing matches. Chain it ahead of a "simple"
+# router so unmatched requests fall through to a default instead of failing:
+#
+#  - name: "policy"
+#    type: "policy"
+#    config:
+#      rules:
+#        - when: { intent: "code_generation" }
+#          provider: "claude"
+#          model: "claude-3-opus-20250219"
+#        - when: { capabilities: ["vision"] }
+#          provider: "gpt4"
+#        - when: { cost_sensitivity: "budget" }
+#          provider: "local"
+#  - name: "primary"
+#    type: "simple"
+#    config:
+#      default_provider: "claude"
+#      fallback_provider: "gpt4"
+
 guardrails:
   pre:
     - name: "system_prompt"

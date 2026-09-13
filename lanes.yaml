@@ -73,7 +73,7 @@ routers:
   - name: "primary"
     type: "simple"
     config:
-      default_provider: "litellm"
+      default_provider: "claude"
 #  - name: "primary"
 #    type: "simple"
 #    config:

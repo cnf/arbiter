@@ -101,7 +101,9 @@ func (c *HTTPClient) parseOpenAISSEEvent(data string) (*types.NormalizedStreamEv
 }
 
 // sendAnthropicStream sends a streaming request to Anthropic and reads the SSE response.
-func (c *HTTPClient) sendAnthropicStream(ctx context.Context, route types.Route, req *types.NormalizedRequest, eventChan chan<- *types.NormalizedStreamEvent) error {
+// cancel releases the context's timeout once the goroutine reading the SSE
+// body has finished; the caller must not cancel ctx before that on success.
+func (c *HTTPClient) sendAnthropicStream(ctx context.Context, route types.Route, req *types.NormalizedRequest, eventChan chan<- *types.NormalizedStreamEvent, cancel context.CancelFunc) error {
 	wireReq, err := c.translator.NormalizedToAnthropicRequest(req)
 	if err != nil {
 		return arbitererrors.NewTranslationError("post_routing", "normalized to anthropic request", err)
@@ -139,6 +141,7 @@ func (c *HTTPClient) sendAnthropicStream(ctx context.Context, route types.Route,
 
 	// Read the SSE stream in a goroutine and close the event channel when done
 	go func() {
+		defer cancel()
 		defer func() { _ = httpResp.Body.Close() }()
 		defer close(eventChan)
 		_ = c.readSSEStream(ctx, httpResp.Body, "anthropic", eventChan)
@@ -148,7 +151,9 @@ func (c *HTTPClient) sendAnthropicStream(ctx context.Context, route types.Route,
 }
 
 // sendOpenAIStream sends a streaming request to an OpenAI-compatible provider and reads the SSE response.
-func (c *HTTPClient) sendOpenAIStream(ctx context.Context, route types.Route, req *types.NormalizedRequest, eventChan chan<- *types.NormalizedStreamEvent) error {
+// cancel releases the context's timeout once the goroutine reading the SSE
+// body has finished; the caller must not cancel ctx before that on success.
+func (c *HTTPClient) sendOpenAIStream(ctx context.Context, route types.Route, req *types.NormalizedRequest, eventChan chan<- *types.NormalizedStreamEvent, cancel context.CancelFunc) error {
 	wireReq, err := c.translator.NormalizedToOpenAIRequest(req)
 	if err != nil {
 		return arbitererrors.NewTranslationError("post_routing", "normalized to openai request", err)
@@ -185,6 +190,7 @@ func (c *HTTPClient) sendOpenAIStream(ctx context.Context, route types.Route, re
 
 	// Read the SSE stream in a goroutine and close the event channel when done
 	go func() {
+		defer cancel()
 		defer func() { _ = httpResp.Body.Close() }()
 		defer close(eventChan)
 		_ = c.readSSEStream(ctx, httpResp.Body, route.Config.Type, eventChan)

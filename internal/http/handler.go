@@ -85,7 +85,7 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, format string) 
 
 	// Check if this is a streaming response
 	if streamResp, ok := out.(*upstream.StreamResponse); ok {
-		h.handleStream(ctx, w, r, traceID, streamResp, format)
+		h.handleStream(ctx, w, traceID, streamResp, format)
 		return
 	}
 
@@ -99,7 +99,7 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, format string) 
 
 // handleStream writes SSE events from the upstream to the client, translating
 // them to the client's requested format (Anthropic or OpenAI).
-func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, r *http.Request, traceID string, streamResp *upstream.StreamResponse, format string) {
+func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, traceID string, streamResp *upstream.StreamResponse, format string) {
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -113,8 +113,10 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, r *ht
 		return
 	}
 
-	// Translate and flush each event as it arrives
-	messageID := uuid.NewString()
+	// Streamed event IDs share the request's trace ID ("chatcmpl-<traceID>"),
+	// matching the non-streaming path where the response ID is built from
+	// resp.TraceID — lets a client correlate a stream with Arbiter's logs.
+	messageID := traceID
 	for evt := range streamResp.EventChan {
 		var wireEvent interface{}
 

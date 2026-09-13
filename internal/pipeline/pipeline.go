@@ -98,7 +98,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 
 	// Streaming vs. non-streaming: different code paths
 	if req.Stream {
-		return p.executeStream(ctx, format, traceID, route, req)
+		return p.executeStream(ctx, traceID, route, req)
 	}
 
 	upstreamStart := time.Now()
@@ -131,7 +131,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 
 // executeStream handles streaming requests. It returns a channel of normalized
 // stream events that the HTTP handler will translate and send to the client.
-func (p *Pipeline) executeStream(ctx context.Context, format string, traceID string, route types.Route, req *types.NormalizedRequest) (interface{}, error) {
+func (p *Pipeline) executeStream(ctx context.Context, traceID string, route types.Route, req *types.NormalizedRequest) (interface{}, error) {
 	// Send the request upstream and get the event channel
 	eventChan, err := p.upstream.SendStream(ctx, route, req)
 	if err != nil {
@@ -139,9 +139,30 @@ func (p *Pipeline) executeStream(ctx context.Context, format string, traceID str
 		return nil, err
 	}
 
-	// Return a wrapper that carries the event channel
-	// The HTTP handler will consume this and flush events as SSE
-	return &upstream.StreamResponse{EventChan: eventChan}, nil
+	// Forward upstream events, stamping each with the trace ID — the
+	// equivalent of resp.TraceID on the non-streaming path — and log the
+	// upstream call once (with latency and any usage the upstream reported)
+	// when the stream ends, mirroring the non-streaming path's LogUpstream.
+	out := make(chan *types.NormalizedStreamEvent)
+	go func() {
+		defer close(out)
+		start := time.Now()
+		var usage types.Usage
+		for evt := range eventChan {
+			evt.TraceID = traceID
+			if evt.InputTokens > 0 {
+				usage.InputTokens = evt.InputTokens
+			}
+			if evt.OutputTokens > 0 {
+				usage.OutputTokens = evt.OutputTokens
+			}
+			out <- evt
+		}
+		p.logger.LogUpstream(ctx, route.Provider, 200, time.Since(start), usage)
+	}()
+
+	// The HTTP handler consumes this and flushes events as SSE.
+	return &upstream.StreamResponse{EventChan: out}, nil
 }
 
 // classify runs all configured classifiers and merges their signals. With

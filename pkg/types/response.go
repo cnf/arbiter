@@ -17,6 +17,7 @@ type NormalizedResponse struct {
 // internally to represent a unified stream format before translation to the
 // client's requested wire format (Anthropic SSE or OpenAI SSE).
 type NormalizedStreamEvent struct {
+	TraceID        string         // Arbiter's request trace id, for correlating events with logs
 	Type           string         // "message_start", "content_block_start", "content_block_delta", "message_delta", "message_stop"
 	MessageID      string         // for message_start, message_delta, message_stop
 	MessageModel   string         // for message_start

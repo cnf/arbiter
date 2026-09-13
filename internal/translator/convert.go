@@ -130,6 +130,7 @@ func anthropicRequestToNormalized(req *types.AnthropicRequest) *types.Normalized
 		Temperature:  req.Temperature,
 		SystemPrompt: req.System,
 		Tools:        tools,
+		Stream:       req.Stream,
 	}
 }
 
@@ -162,6 +163,7 @@ func normalizedToAnthropicRequest(req *types.NormalizedRequest) *types.Anthropic
 		System:      req.SystemPrompt,
 		Messages:    messages,
 		Tools:       tools,
+		Stream:      req.Stream,
 	}
 }
 
@@ -216,6 +218,7 @@ func openAIRequestToNormalized(req *types.OpenAIRequest) *types.NormalizedReques
 		Temperature:  req.Temperature,
 		SystemPrompt: systemPrompt,
 		Tools:        tools,
+		Stream:       req.Stream,
 	}
 }
 
@@ -287,6 +290,7 @@ func normalizedToOpenAIRequest(req *types.NormalizedRequest) *types.OpenAIReques
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		Tools:       tools,
+		Stream:      req.Stream,
 	}
 }
 

@@ -9,6 +9,7 @@ type NormalizedRequest struct {
 	Temperature  float64
 	SystemPrompt string
 	Tools        []Tool
+	Stream       bool // if true, caller expects SSE response
 
 	// Tracking
 	OriginalFormat  string // "anthropic" or "openai"

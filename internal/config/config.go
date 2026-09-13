@@ -5,9 +5,11 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	arbitererrors "github.com/cnf/arbiter/pkg/errors"
@@ -182,14 +184,31 @@ func Load(path string) (*Config, error) {
 
 	expanded := expandEnv(raw)
 
+	// Strict decoding: an unknown field (e.g. a typo like "api_key" instead
+	// of "key") is a config error, not a silently-ignored no-op.
 	var cfg Config
-	if err := yaml.Unmarshal(expanded, &cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(expanded))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
 		return nil, arbitererrors.NewConfigError(fmt.Sprintf("parsing %s", path), err)
 	}
+
+	cfg.normalizeEndpoints()
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
+}
+
+// normalizeEndpoints strips a trailing slash from each provider endpoint.
+// Upstream requests always build URLs as Endpoint + "/v1/messages" or
+// Endpoint + "/chat/completions"; a trailing slash left in config (e.g.
+// "https://api.example.com/") would otherwise produce a double slash.
+func (c *Config) normalizeEndpoints() {
+	for name, p := range c.Providers {
+		p.Endpoint = strings.TrimRight(p.Endpoint, "/")
+		c.Providers[name] = p
+	}
 }

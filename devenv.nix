@@ -7,6 +7,10 @@
 }:
 
 {
+  env.GREET = "Arbiter";
+  env.LITELLM_URL = config.secretspec.secrets.LITELLM_URL or "";
+  env.LITELLM_API_KEY = config.secretspec.secrets.LITELLM_API_KEY or "";
+
   claude.code = {
     enable = true;
 
@@ -54,7 +58,6 @@
     http http://localhost:8080/models|jq -R -n 'inputs | try (fromjson|empty) catch input_line_number'
   '';
 
-  env.GREET = "Arbiter";
 
   packages = [
     pkgs.git
@@ -80,7 +83,7 @@
   };
 
   processes.arbiter = {
-    exec = "go run ./cmd/arbiter";
+    exec = "secretspec run -- go run ./cmd/arbiter";
     ready = {
       http.get = {
         port = 8080;

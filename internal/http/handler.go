@@ -5,8 +5,10 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -15,6 +17,8 @@ import (
 
 	"github.com/cnf/arbiter/internal/logging"
 	"github.com/cnf/arbiter/internal/pipeline"
+	"github.com/cnf/arbiter/internal/translator"
+	"github.com/cnf/arbiter/internal/upstream"
 	arbitererrors "github.com/cnf/arbiter/pkg/errors"
 )
 
@@ -79,11 +83,67 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, format string) 
 		return
 	}
 
+	// Check if this is a streaming response
+	if streamResp, ok := out.(*upstream.StreamResponse); ok {
+		h.handleStream(ctx, w, r, traceID, streamResp, format)
+		return
+	}
+
+	// Non-streaming response
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Arbiter-Trace-Id", traceID)
 	if err := json.NewEncoder(w).Encode(out); err != nil {
 		h.logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "encode_response"})
 	}
+}
+
+// handleStream writes SSE events from the upstream to the client, translating
+// them to the client's requested format (Anthropic or OpenAI).
+func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, r *http.Request, traceID string, streamResp *upstream.StreamResponse, format string) {
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Arbiter-Trace-Id", traceID)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		h.logger.LogError(ctx, "error", fmt.Errorf("http response doesn't support flushing"), map[string]interface{}{})
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	// Translate and flush each event as it arrives
+	messageID := uuid.NewString()
+	for evt := range streamResp.EventChan {
+		var wireEvent interface{}
+
+		if format == "anthropic" {
+			wireEvent = translator.NormalizedToAnthropicStreamEvent(evt)
+		} else {
+			wireEvent = translator.NormalizedToOpenAIStreamEvent(evt, messageID)
+		}
+
+		// Serialize to JSON
+		eventJSON, err := json.Marshal(wireEvent)
+		if err != nil {
+			h.logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "marshal_stream_event"})
+			break
+		}
+
+		// Write SSE event
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", string(eventJSON)); err != nil {
+			h.logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "write_stream_event"})
+			break
+		}
+		flusher.Flush()
+	}
+
+	// Signal end of stream
+	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+		h.logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "write_stream_done"})
+	}
+	flusher.Flush()
 }
 
 // traceIDFor returns the trace ID to use for this request: an

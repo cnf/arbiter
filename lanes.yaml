@@ -1,6 +1,12 @@
 version: "1.0"
 
 providers:
+  litellm:
+    type: "openai"
+    endpoint: "${LITELLM_URL}"
+    key: "${LITELLM_API_KEY}"
+    models: ["openrouter/free"]
+
   claude:
     type: "anthropic"
     endpoint: "https://api.anthropic.com"
@@ -67,8 +73,12 @@ routers:
   - name: "primary"
     type: "simple"
     config:
-      default_provider: "claude"
-      fallback_provider: "gpt4"
+      default_provider: "litellm"
+#  - name: "primary"
+#    type: "simple"
+#    config:
+#      default_provider: "claude"
+#      fallback_provider: "gpt4"
 
 guardrails:
   pre:

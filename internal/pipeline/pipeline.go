@@ -96,6 +96,11 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 	}
 	p.logger.LogRouting(ctx, route, sig, time.Since(routeStart))
 
+	// Streaming vs. non-streaming: different code paths
+	if req.Stream {
+		return p.executeStream(ctx, format, traceID, route, req)
+	}
+
 	upstreamStart := time.Now()
 	resp, err := p.upstream.Send(ctx, route, req)
 	if err != nil {
@@ -122,6 +127,21 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		return nil, arbitererrors.NewTranslationError("post_routing", "denormalize response", err)
 	}
 	return out, nil
+}
+
+// executeStream handles streaming requests. It returns a channel of normalized
+// stream events that the HTTP handler will translate and send to the client.
+func (p *Pipeline) executeStream(ctx context.Context, format string, traceID string, route types.Route, req *types.NormalizedRequest) (interface{}, error) {
+	// Send the request upstream and get the event channel
+	eventChan, err := p.upstream.SendStream(ctx, route, req)
+	if err != nil {
+		p.logger.LogError(ctx, "error", err, map[string]interface{}{"provider": route.Provider})
+		return nil, err
+	}
+
+	// Return a wrapper that carries the event channel
+	// The HTTP handler will consume this and flush events as SSE
+	return &upstream.StreamResponse{EventChan: eventChan}, nil
 }
 
 // classify runs all configured classifiers and merges their signals. With

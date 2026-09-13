@@ -18,9 +18,23 @@ import (
 )
 
 // Client sends a NormalizedRequest to whatever provider a Route names and
-// returns a NormalizedResponse.
+// returns a NormalizedResponse (or a stream channel if streaming).
 type Client interface {
 	Send(ctx context.Context, route types.Route, req *types.NormalizedRequest) (*types.NormalizedResponse, error)
+	SendStream(ctx context.Context, route types.Route, req *types.NormalizedRequest) (<-chan *types.NormalizedStreamEvent, error)
+}
+
+// StreamResponse carries a channel of normalized stream events from the upstream.
+type StreamResponse struct {
+	EventChan <-chan *types.NormalizedStreamEvent
+}
+
+type StreamError struct {
+	Err error
+}
+
+func (e *StreamError) Error() string {
+	return e.Err.Error()
 }
 
 // Translator is the subset of translator.Translator the upstream client
@@ -31,6 +45,14 @@ type Translator interface {
 	NormalizedToOpenAIRequest(req *types.NormalizedRequest) (*types.OpenAIRequest, error)
 	AnthropicResponseToNormalized(resp *types.AnthropicResponse) (*types.NormalizedResponse, error)
 	OpenAIResponseToNormalized(resp *types.OpenAIResponse) (*types.NormalizedResponse, error)
+}
+
+// StreamEventTranslator handles SSE event translation.
+type StreamEventTranslator interface {
+	AnthropicStreamEventToNormalized(evt interface{}) *types.NormalizedStreamEvent
+	OpenAIStreamEventToNormalized(evt interface{}) *types.NormalizedStreamEvent
+	NormalizedToAnthropicStreamEvent(evt *types.NormalizedStreamEvent) interface{}
+	NormalizedToOpenAIStreamEvent(evt *types.NormalizedStreamEvent, messageID string) interface{}
 }
 
 // HTTPClient calls upstream providers over plain HTTP(S).
@@ -50,7 +72,8 @@ func NewHTTPClient(translator Translator) *HTTPClient {
 }
 
 // Send translates req into the target provider's wire format, POSTs it,
-// and translates the response (or error) back.
+// and translates the response (or error) back. For streaming requests
+// (req.Stream == true), use SendStream instead.
 func (c *HTTPClient) Send(ctx context.Context, route types.Route, req *types.NormalizedRequest) (*types.NormalizedResponse, error) {
 	if route.Config.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -72,6 +95,41 @@ func (c *HTTPClient) Send(ctx context.Context, route types.Route, req *types.Nor
 	default:
 		return nil, arbitererrors.NewUpstreamError(route.Provider, 0, fmt.Sprintf("unknown provider type %q", route.Config.Type), nil)
 	}
+}
+
+// SendStream sends a streaming request to the upstream provider and returns
+// a channel of normalized stream events. The caller is responsible for
+// closing the returned channel; SendStream closes it when done.
+func (c *HTTPClient) SendStream(ctx context.Context, route types.Route, req *types.NormalizedRequest) (<-chan *types.NormalizedStreamEvent, error) {
+	if route.Config.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, route.Config.Timeout)
+		defer cancel()
+	}
+
+	// Route.Model is the resolved model to actually send upstream.
+	reqCopy := *req
+	reqCopy.Model = route.Model
+
+	eventChan := make(chan *types.NormalizedStreamEvent, 10)
+
+	switch route.Config.Type {
+	case "anthropic":
+		if err := c.sendAnthropicStream(ctx, route, &reqCopy, eventChan); err != nil {
+			close(eventChan)
+			return nil, err
+		}
+	case "openai", "ollama":
+		if err := c.sendOpenAIStream(ctx, route, &reqCopy, eventChan); err != nil {
+			close(eventChan)
+			return nil, err
+		}
+	default:
+		close(eventChan)
+		return nil, arbitererrors.NewUpstreamError(route.Provider, 0, fmt.Sprintf("unknown provider type %q", route.Config.Type), nil)
+	}
+
+	return eventChan, nil
 }
 
 func (c *HTTPClient) sendAnthropic(ctx context.Context, route types.Route, req *types.NormalizedRequest) (*types.NormalizedResponse, error) {

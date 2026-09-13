@@ -12,3 +12,7 @@ inputs:
         follows: nixpkgs
   nixpkgs:
     url: github:NixOS/nixpkgs/nixpkgs-unstable
+secretspec:
+  enable: true
+  provider: keyring  # keyring, dotenv, env, 1password, lastpass
+  profile: default   # profile from secretspec.toml

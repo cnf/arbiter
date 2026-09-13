@@ -13,6 +13,22 @@ type NormalizedResponse struct {
 	RateLimit       *RateLimitInfo // populated by upstream client from response headers, if any
 }
 
+// NormalizedStreamEvent is an event emitted during streaming response. Used
+// internally to represent a unified stream format before translation to the
+// client's requested wire format (Anthropic SSE or OpenAI SSE).
+type NormalizedStreamEvent struct {
+	Type           string         // "message_start", "content_block_start", "content_block_delta", "message_delta", "message_stop"
+	MessageID      string         // for message_start, message_delta, message_stop
+	MessageModel   string         // for message_start
+	MessageStopReason string       // for message_stop
+	BlockIndex     int            // for content_block_* (which block in content)
+	BlockType      string         // for content_block_start (e.g. "text", "tool_use")
+	DeltaType      string         // for content_block_delta (e.g. "text_delta", "tool_use_delta")
+	TextDelta      string         // for text_delta
+	InputTokens    int            // for message_start (accumulated through message)
+	OutputTokens   int            // for message_delta (cumulative at this point)
+}
+
 // Usage tracks token consumption and (if the upstream reports it) cost.
 type Usage struct {
 	InputTokens  int

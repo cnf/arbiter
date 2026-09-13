@@ -5,7 +5,10 @@
       "mcp__Lite__brave-brave_web_search",
       "Skill(claude-api)",
       "Skill(claude-api:*)",
-      "Bash(devenv test *)"
+      "Bash(devenv test *)",
+      "Bash(SECRETSPEC_REASON=\"build streaming implementation\" devenv shell -- go build ./...)",
+      "Bash(SECRETSPEC_REASON=\"run tests after streaming implementation\" devenv shell -- go test -race ./...)",
+      "Bash(SECRETSPEC_REASON=\"lint after streaming implementation\" devenv shell -- golangci-lint run)"
     ]
   }
 }

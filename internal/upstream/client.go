@@ -86,13 +86,17 @@ func (c *HTTPClient) Send(ctx context.Context, route types.Route, req *types.Nor
 // closing the returned channel; SendStream closes it when done.
 func (c *HTTPClient) SendStream(ctx context.Context, route types.Route, req *types.NormalizedRequest) (<-chan *types.NormalizedStreamEvent, error) {
 	// The stream is read by a background goroutine that outlives this call,
-	// so the timeout's cancel func must be released there (once the read is
-	// done) rather than deferred here — deferring here would cancel ctx, and
-	// with it the in-flight body read, the instant SendStream returns.
-	cancel := func() {}
-	if route.Config.Timeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, route.Config.Timeout)
-	}
+	// so the cancel func must be released there (once the read is done)
+	// rather than deferred here — deferring here would cancel ctx, and with
+	// it the in-flight body read, the instant SendStream returns.
+	//
+	// route.Config.Timeout is deliberately NOT applied as a total deadline:
+	// on a stream that would sever a long generation mid-flight at an
+	// arbitrary wall-clock point, and a slow answer is not a failed one. It
+	// bounds time-to-headers and then the idle gap between events instead —
+	// see streamWatchdog.
+	ctx, cancel := context.WithCancel(ctx)
+	watchdog := newStreamWatchdog(route.Config.Timeout, cancel)
 
 	// Route.Model is the resolved model to actually send upstream.
 	reqCopy := *req
@@ -102,24 +106,64 @@ func (c *HTTPClient) SendStream(ctx context.Context, route types.Route, req *typ
 
 	switch route.Config.Type {
 	case "anthropic":
-		if err := c.sendAnthropicStream(ctx, route, &reqCopy, eventChan, cancel); err != nil {
-			cancel()
+		if err := c.sendAnthropicStream(ctx, route, &reqCopy, eventChan, watchdog); err != nil {
+			watchdog.stop()
 			close(eventChan)
 			return nil, err
 		}
 	case "openai", "ollama":
-		if err := c.sendOpenAIStream(ctx, route, &reqCopy, eventChan, cancel); err != nil {
-			cancel()
+		if err := c.sendOpenAIStream(ctx, route, &reqCopy, eventChan, watchdog); err != nil {
+			watchdog.stop()
 			close(eventChan)
 			return nil, err
 		}
 	default:
-		cancel()
+		watchdog.stop()
 		close(eventChan)
 		return nil, arbitererrors.NewUpstreamError(route.Provider, 0, fmt.Sprintf("unknown provider type %q", route.Config.Type), nil)
 	}
 
 	return eventChan, nil
+}
+
+// streamWatchdog bounds a stream by *silence* rather than total duration.
+// It arms a timer for idle; every event read pushes the deadline out
+// again, so a stream that keeps producing runs as long as it likes, while
+// one whose upstream goes quiet (hung connection, half-open socket that
+// never returns EOF) is cancelled instead of hanging forever. stop()
+// releases the context and must run exactly once, when the read is done.
+//
+// A zero or negative idle means "no watchdog" — the stream is bounded only
+// by the upstream finishing or the client disconnecting.
+type streamWatchdog struct {
+	cancel context.CancelFunc
+	idle   time.Duration
+	timer  *time.Timer // nil when no idle timeout is configured
+}
+
+func newStreamWatchdog(idle time.Duration, cancel context.CancelFunc) *streamWatchdog {
+	w := &streamWatchdog{cancel: cancel}
+	if idle > 0 {
+		w.timer = time.AfterFunc(idle, cancel)
+		w.idle = idle
+	}
+	return w
+}
+
+// keepalive restarts the idle countdown. Safe to call from the single
+// goroutine reading the stream.
+func (w *streamWatchdog) keepalive() {
+	if w.timer != nil {
+		w.timer.Reset(w.idle)
+	}
+}
+
+// stop cancels the stream context and disarms the watchdog.
+func (w *streamWatchdog) stop() {
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+	w.cancel()
 }
 
 func (c *HTTPClient) sendAnthropic(ctx context.Context, route types.Route, req *types.NormalizedRequest) (*types.NormalizedResponse, error) {

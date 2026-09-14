@@ -61,10 +61,16 @@ func main() {
 	}).Methods("GET")
 
 	srv := &stdhttp.Server{
-		Addr:         ":" + *port,
-		Handler:      r,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		Addr:    ":" + *port,
+		Handler: r,
+		// Deliberately no WriteTimeout: it caps the entire response write,
+		// which on an SSE stream means severing a long generation mid-flight
+		// at an arbitrary wall-clock point. A stream ends when the upstream
+		// finishes, the client disconnects (the request context), or the
+		// provider's idle timeout fires — never on a fixed total duration.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {

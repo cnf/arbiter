@@ -111,7 +111,11 @@ Provider notes:
   — a `type: openai` provider covers OpenAI, OpenRouter, LiteLLM, and
   Ollama's `/v1` alike.
 - `endpoint` is normalized (trailing `/` stripped) at load time.
-- Per-provider `timeout` defaults to 60s if unset.
+- Per-provider `timeout` defaults to 60s if unset. On non-streaming requests
+  it is a total deadline. On streams it is an *idle* timeout instead: it
+  bounds how long the upstream may go silent, and each event received resets
+  it, so a long generation is never cut just for taking a while. Set it to `0`
+  to disable the idle watchdog entirely.
 
 ## Testing
 

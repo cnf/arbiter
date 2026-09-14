@@ -17,8 +17,10 @@ import (
 
 // readSSEStream reads SSE events from a response body and sends them to eventChan.
 // It handles both Anthropic and OpenAI SSE formats, translating to normalized events.
-// The caller must close eventChan when done.
-func (c *HTTPClient) readSSEStream(ctx context.Context, body io.ReadCloser, providerType string, eventChan chan<- *types.NormalizedStreamEvent) error {
+// The caller must close eventChan when done. Every line read — including SSE
+// comments and keepalives — resets the watchdog's idle countdown, so only a
+// genuinely silent upstream trips it.
+func (c *HTTPClient) readSSEStream(ctx context.Context, body io.ReadCloser, providerType string, eventChan chan<- *types.NormalizedStreamEvent, watchdog *streamWatchdog) error {
 	defer func() {
 		_ = body.Close()
 	}()
@@ -30,6 +32,8 @@ func (c *HTTPClient) readSSEStream(ctx context.Context, body io.ReadCloser, prov
 			return ctx.Err()
 		default:
 		}
+
+		watchdog.keepalive()
 
 		line := scanner.Text()
 		if line == "" {
@@ -101,9 +105,10 @@ func (c *HTTPClient) parseOpenAISSEEvent(data string) (*types.NormalizedStreamEv
 }
 
 // sendAnthropicStream sends a streaming request to Anthropic and reads the SSE response.
-// cancel releases the context's timeout once the goroutine reading the SSE
-// body has finished; the caller must not cancel ctx before that on success.
-func (c *HTTPClient) sendAnthropicStream(ctx context.Context, route types.Route, req *types.NormalizedRequest, eventChan chan<- *types.NormalizedStreamEvent, cancel context.CancelFunc) error {
+// watchdog bounds upstream silence and releases the stream context once the
+// goroutine reading the SSE body has finished; the caller must not cancel
+// ctx before that on success.
+func (c *HTTPClient) sendAnthropicStream(ctx context.Context, route types.Route, req *types.NormalizedRequest, eventChan chan<- *types.NormalizedStreamEvent, watchdog *streamWatchdog) error {
 	wireReq, err := c.translator.NormalizedToAnthropicRequest(req)
 	if err != nil {
 		return arbitererrors.NewTranslationError("post_routing", "normalized to anthropic request", err)
@@ -141,19 +146,20 @@ func (c *HTTPClient) sendAnthropicStream(ctx context.Context, route types.Route,
 
 	// Read the SSE stream in a goroutine and close the event channel when done
 	go func() {
-		defer cancel()
+		defer watchdog.stop()
 		defer func() { _ = httpResp.Body.Close() }()
 		defer close(eventChan)
-		_ = c.readSSEStream(ctx, httpResp.Body, "anthropic", eventChan)
+		_ = c.readSSEStream(ctx, httpResp.Body, "anthropic", eventChan, watchdog)
 	}()
 
 	return nil
 }
 
 // sendOpenAIStream sends a streaming request to an OpenAI-compatible provider and reads the SSE response.
-// cancel releases the context's timeout once the goroutine reading the SSE
-// body has finished; the caller must not cancel ctx before that on success.
-func (c *HTTPClient) sendOpenAIStream(ctx context.Context, route types.Route, req *types.NormalizedRequest, eventChan chan<- *types.NormalizedStreamEvent, cancel context.CancelFunc) error {
+// watchdog bounds upstream silence and releases the stream context once the
+// goroutine reading the SSE body has finished; the caller must not cancel
+// ctx before that on success.
+func (c *HTTPClient) sendOpenAIStream(ctx context.Context, route types.Route, req *types.NormalizedRequest, eventChan chan<- *types.NormalizedStreamEvent, watchdog *streamWatchdog) error {
 	wireReq, err := c.translator.NormalizedToOpenAIRequest(req)
 	if err != nil {
 		return arbitererrors.NewTranslationError("post_routing", "normalized to openai request", err)
@@ -190,10 +196,10 @@ func (c *HTTPClient) sendOpenAIStream(ctx context.Context, route types.Route, re
 
 	// Read the SSE stream in a goroutine and close the event channel when done
 	go func() {
-		defer cancel()
+		defer watchdog.stop()
 		defer func() { _ = httpResp.Body.Close() }()
 		defer close(eventChan)
-		_ = c.readSSEStream(ctx, httpResp.Body, route.Config.Type, eventChan)
+		_ = c.readSSEStream(ctx, httpResp.Body, route.Config.Type, eventChan, watchdog)
 	}()
 
 	return nil

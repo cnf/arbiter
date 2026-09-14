@@ -79,6 +79,12 @@ last being OpenAI-compatible transport, preserving provider identity).
 into values as `${VAR_NAME}`. Unknown fields are a config error, not silently
 ignored.
 
+The file is hot-reloaded: edits are picked up without a restart. A reload
+rebuilds the whole pipeline (providers, routers, classifiers, guardrails) and
+swaps it in atomically; requests already in flight finish on the old config,
+and a reload that fails to load, validate, or build is rejected with a logged
+error while the previous config keeps serving.
+
 ```yaml
 providers:
   claude:

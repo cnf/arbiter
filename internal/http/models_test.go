@@ -5,15 +5,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/cnf/arbiter/internal/logging"
 )
 
 func TestModelsHandler(t *testing.T) {
-	h := &Handler{
-		models: []Model{
-			{ID: "gpt-4o", Provider: "openai"},
-			{ID: "llama2", Provider: "local"},
-		},
-	}
+	h := NewHandler(NewRuntime(nil, []Model{
+		{ID: "gpt-4o", Provider: "openai"},
+		{ID: "llama2", Provider: "local"},
+	}), logging.NewStdoutLogger("error"))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	resp := httptest.NewRecorder()

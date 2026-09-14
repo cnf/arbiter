@@ -1,0 +1,112 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"path/filepath"
+	"time"
+
+	"github.com/fsnotify/fsnotify"
+
+	"github.com/cnf/arbiter/internal/config"
+	arbiterhttp "github.com/cnf/arbiter/internal/http"
+	"github.com/cnf/arbiter/internal/logging"
+)
+
+// reloadDebounce coalesces the burst of events a single save produces. Most
+// editors write the file more than once (or via a temp file + rename), and a
+// reload is expensive enough (rebuild every router/classifier/guardrail) that
+// reacting to each event individually is wasteful. A short settle window keeps
+// one save to one reload.
+const reloadDebounce = 150 * time.Millisecond
+
+// watchConfig reloads lanes.yaml whenever it changes on disk, swapping the
+// handler's runtime in place. It watches the *directory* rather than the file
+// itself: editors commonly save by writing a temp file and renaming it over the
+// target (and some remove-then-recreate), which replaces the inode and would
+// silently break a watch held on the file. Watching the directory and filtering
+// by basename survives all of those save styles.
+//
+// A reload only publishes a runtime that was fully loaded, validated, and
+// built. Anything short of that — a syntax error mid-save, an invalid router,
+// an unset ${ENV_VAR} — logs and leaves the current runtime serving, so a bad
+// edit never takes Arbiter down.
+func watchConfig(ctx context.Context, path string, handler *arbiterhttp.Handler, logger logging.Logger) error {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("create config watcher: %w", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	dir := filepath.Dir(path)
+	if err := watcher.Add(dir); err != nil {
+		return fmt.Errorf("watch config directory %s: %w", dir, err)
+	}
+
+	target := filepath.Base(path)
+	var timer *time.Timer
+	var timerC <-chan time.Time
+
+	// stopTimer prevents a lingering timer from firing after this loop returns.
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return nil
+			}
+			// Ignore other files in the directory (editors drop swap files,
+			// backups, etc. alongside the real config).
+			if filepath.Base(event.Name) != target {
+				continue
+			}
+			if timer == nil {
+				timer = time.NewTimer(reloadDebounce)
+			} else {
+				timer.Reset(reloadDebounce)
+			}
+			timerC = timer.C
+
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return nil
+			}
+			logger.LogError(ctx, "warn", err, map[string]interface{}{"phase": "watch_config"})
+
+		case <-timerC:
+			timerC = nil
+			reload(ctx, path, handler, logger)
+		}
+	}
+}
+
+// reload loads, validates, and rebuilds the configuration, then publishes it.
+// On any failure the previous runtime is left untouched.
+func reload(ctx context.Context, path string, handler *arbiterhttp.Handler, logger logging.Logger) {
+	cfg, err := config.Load(path)
+	if err != nil {
+		logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "config_reload"})
+		slog.Warn("config reload rejected; keeping previous configuration", "config", path)
+		return
+	}
+
+	p, err := buildPipeline(cfg, logger)
+	if err != nil {
+		logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "config_reload_build"})
+		slog.Warn("config reload rejected; keeping previous configuration", "config", path)
+		return
+	}
+
+	models := configuredModels(cfg)
+	handler.Swap(arbiterhttp.NewRuntime(p, models))
+	slog.Info("config reloaded", "config", path, "providers", len(cfg.Providers), "models", len(models))
+}

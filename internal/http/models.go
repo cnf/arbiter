@@ -22,9 +22,10 @@ type modelRecord struct {
 
 // ModelsHandler lists every model declared in the current configuration.
 func (h *Handler) ModelsHandler(w http.ResponseWriter, r *http.Request) {
+	rt := h.current()
 	created := time.Now().Unix()
-	data := make([]modelRecord, 0, len(h.models))
-	for _, model := range h.models {
+	data := make([]modelRecord, 0, len(rt.models))
+	for _, model := range rt.models {
 		data = append(data, modelRecord{
 			ID:      model.ID,
 			Object:  "model",

@@ -46,7 +46,7 @@ func main() {
 		slog.Error("failed to build pipeline", "error", err)
 		os.Exit(1)
 	}
-	handler := arbiterhttp.NewHandler(p, logger, configuredModels(cfg))
+	handler := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg)), logger)
 
 	r := mux.NewRouter()
 	r.HandleFunc("/v1/messages", handler.MessagesHandler).Methods("POST")
@@ -80,9 +80,21 @@ func main() {
 		}
 	}()
 
+	// Hot-reload lanes.yaml for the life of the process; errors are logged and
+	// a failed reload leaves the running config in place, but a watcher that
+	// can't start at all is loud enough to be worth noticing.
+	watchCtx, stopWatch := context.WithCancel(context.Background())
+	defer stopWatch()
+	go func() {
+		if err := watchConfig(watchCtx, *configPath, handler, logger); err != nil {
+			slog.Error("config watcher stopped", "error", err)
+		}
+	}()
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
+	stopWatch()
 
 	slog.Info("shutting down")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

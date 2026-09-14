@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,9 +26,8 @@ import (
 
 // Handler handles incoming HTTP requests.
 type Handler struct {
-	pipeline *pipeline.Pipeline
-	logger   logging.Logger
-	models   []Model
+	runtime atomic.Pointer[Runtime]
+	logger  logging.Logger
 }
 
 // Model describes a model exposed by a configured provider.
@@ -36,13 +36,40 @@ type Model struct {
 	Provider string
 }
 
-// NewHandler creates a new HTTP handler.
-func NewHandler(p *pipeline.Pipeline, l logging.Logger, models []Model) *Handler {
-	return &Handler{
-		pipeline: p,
-		logger:   l,
-		models:   models,
-	}
+// Runtime is one generation of Arbiter's configuration: the pipeline that
+// executes requests and the model list /models advertises. They are published
+// as a single unit so the two can never be observed disagreeing, and replaced
+// whole on a config reload.
+type Runtime struct {
+	pipeline *pipeline.Pipeline
+	models   []Model
+}
+
+// NewRuntime pairs a built pipeline with the model list derived from the same
+// config, so a Runtime always describes one consistent configuration.
+func NewRuntime(p *pipeline.Pipeline, models []Model) *Runtime {
+	return &Runtime{pipeline: p, models: models}
+}
+
+// NewHandler creates a new HTTP handler serving the given runtime.
+func NewHandler(rt *Runtime, l logging.Logger) *Handler {
+	h := &Handler{logger: l}
+	h.runtime.Store(rt)
+	return h
+}
+
+// Swap atomically replaces the active runtime. Requests already in flight
+// loaded the previous runtime at entry and finish against it; requests that
+// begin after this call see the new one. Load-then-swap is safe here because
+// the pointer is only ever published in a fully built state.
+func (h *Handler) Swap(rt *Runtime) {
+	h.runtime.Store(rt)
+}
+
+// current returns the runtime to use for this request, read once so a reload
+// mid-request cannot change the config underneath it.
+func (h *Handler) current() *Runtime {
+	return h.runtime.Load()
 }
 
 // MessagesHandler handles Anthropic-style /v1/messages requests.
@@ -62,6 +89,10 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, format string) 
 	ctx := r.Context()
 	traceID := traceIDFor(r)
 
+	// Read the runtime once, at request entry: a reload during this request
+	// must not swap the pipeline mid-flight.
+	rt := h.current()
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to read request body")
@@ -73,7 +104,7 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, format string) 
 		}
 	}()
 
-	out, err := h.pipeline.Execute(ctx, body, format, traceID)
+	out, err := rt.pipeline.Execute(ctx, body, format, traceID)
 	if err != nil {
 		h.logger.LogError(h.logger.WithTraceID(ctx, traceID), "error", err, map[string]interface{}{
 			"path":      requestPath(r),

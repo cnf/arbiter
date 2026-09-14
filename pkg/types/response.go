@@ -110,6 +110,7 @@ type ProviderConfig struct {
 	Headers  map[string]string
 	Timeout  time.Duration
 	RetryMax int
+	CacheTTL time.Duration // 0 means "use the pipeline's default session affinity TTL"
 }
 
 // Route is the routing decision: which provider/model handles this request.

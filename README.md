@@ -105,6 +105,10 @@ guardrails:
   pre: []                              # system_prompt, rate_limit
   post: []
 
+session_affinity:
+  header: "X-Session-Id"               # inbound header carrying a session id
+  default_ttl: "5m"                    # idle TTL for a pinned conversation
+
 logging:
   level: "info"
   format: "json"
@@ -125,6 +129,29 @@ Provider notes:
 - Per-provider `retry_max` bounds how many times a 5xx from that provider is
   retried before falling through to the fallback list. It defaults to `0`,
   which means *no* retries — set it explicitly to enable them.
+- Optional per-provider `cache_ttl` overrides `session_affinity.default_ttl`
+  for conversations pinned to that provider (e.g. to match its prompt-cache
+  expiry).
+
+### Session affinity
+
+Once a request has been routed, Arbiter pins the conversation to whichever
+provider/model actually served it, so later turns skip classification and
+routing entirely and stay on the same upstream — preserving prompt-cache
+reuse and avoiding cost churn from turn-to-turn re-routing. The session key
+is the `X-Session-Id` header (configurable via `session_affinity.header`)
+when present; otherwise it's a hash of the system prompt plus the first
+text-bearing user message. A conversation whose opening carries too little
+text to be distinctive (say, a bare "hi") is deliberately *not* pinned:
+pinning two unrelated chats together is worse than not pinning at all.
+
+The pin overrides classification for as long as the client keeps requesting
+the **same `model` value**. A client that explicitly switches models means
+it, so the pin is discarded and routing runs fresh. The pin is recorded from
+the route that *actually served* the request, so it follows a fallback to
+another provider; a pinned provider currently in 429 cooldown is treated as a
+miss (fresh routing runs). Pins are in-memory and idle-expiring (refreshed on
+each hit); they reset on restart.
 
 ## Testing
 

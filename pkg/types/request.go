@@ -15,6 +15,7 @@ type NormalizedRequest struct {
 	OriginalFormat  string // "anthropic" or "openai"
 	OriginalPayload []byte
 	TraceID         string
+	SessionKey      string // set by the pipeline after guardrails; "" if no usable session key
 }
 
 // Message represents a single conversation turn.
@@ -76,6 +77,22 @@ func LastUserText(req *NormalizedRequest) string {
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == "user" {
 			return ExtractText(req.Messages[i])
+		}
+	}
+	return ""
+}
+
+// FirstUserText returns the plain text of the first user message that
+// actually has text content, skipping user turns whose only content is a
+// tool_result block (agentic clients send those; ExtractText yields "" for
+// them, and a turn with no text carries no useful entropy for the caller).
+func FirstUserText(req *NormalizedRequest) string {
+	for _, m := range req.Messages {
+		if m.Role != "user" {
+			continue
+		}
+		if text := ExtractText(m); text != "" {
+			return text
 		}
 	}
 	return ""

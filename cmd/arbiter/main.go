@@ -46,7 +46,7 @@ func main() {
 		slog.Error("failed to build pipeline", "error", err)
 		os.Exit(1)
 	}
-	handler := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg)), logger)
+	handler := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg), cfg.SessionAffinity.Header), logger)
 
 	r := mux.NewRouter()
 	r.HandleFunc("/v1/messages", handler.MessagesHandler).Methods("POST")
@@ -123,6 +123,12 @@ func buildPipeline(cfg *config.Config, logger logging.Logger) (*pipeline.Pipelin
 				timeout = d
 			}
 		}
+		var cacheTTL time.Duration
+		if pc.CacheTTL != "" {
+			if d, err := time.ParseDuration(pc.CacheTTL); err == nil {
+				cacheTTL = d
+			}
+		}
 		providers[name] = types.ProviderConfig{
 			Name:     name,
 			Type:     pc.Type,
@@ -132,6 +138,7 @@ func buildPipeline(cfg *config.Config, logger logging.Logger) (*pipeline.Pipelin
 			Headers:  pc.Headers,
 			Timeout:  timeout,
 			RetryMax: pc.RetryMax,
+			CacheTTL: cacheTTL,
 		}
 	}
 
@@ -177,7 +184,14 @@ func buildPipeline(cfg *config.Config, logger logging.Logger) (*pipeline.Pipelin
 	t := translator.NewDefaultTranslator()
 	u := upstream.NewHTTPClient(t)
 
-	return pipeline.NewPipeline(t, t, t, classifiers, mainRouter, u, providers, cfg.Routing.FallbackProviders, preGuardrails, postGuardrails, logger), nil
+	var defaultCacheTTL time.Duration
+	if cfg.SessionAffinity.DefaultTTL != "" {
+		if d, err := time.ParseDuration(cfg.SessionAffinity.DefaultTTL); err == nil {
+			defaultCacheTTL = d
+		}
+	}
+
+	return pipeline.NewPipeline(t, t, t, classifiers, mainRouter, u, providers, cfg.Routing.FallbackProviders, preGuardrails, postGuardrails, logger, defaultCacheTTL), nil
 }
 
 func combineRouters(routers []router.Router) router.Router {

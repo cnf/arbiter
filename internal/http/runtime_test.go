@@ -13,8 +13,8 @@ import (
 // A swap must be visible to requests that start after it — /models should
 // advertise the new list, not the one captured at startup.
 func TestSwapUpdatesModels(t *testing.T) {
-	h := NewHandler(NewRuntime(nil, []Model{{ID: "old", Provider: "p"}}), logging.NewStdoutLogger("error"))
-	h.Swap(NewRuntime(nil, []Model{{ID: "new", Provider: "p"}}))
+	h := NewHandler(NewRuntime(nil, []Model{{ID: "old", Provider: "p"}}, ""), logging.NewStdoutLogger("error"))
+	h.Swap(NewRuntime(nil, []Model{{ID: "new", Provider: "p"}}, ""))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	resp := httptest.NewRecorder()
@@ -34,7 +34,7 @@ func TestSwapUpdatesModels(t *testing.T) {
 // in-flight request keeps the config it started with. The race detector
 // exercises the concurrent store/load path.
 func TestCurrentIsStableUnderSwap(t *testing.T) {
-	h := NewHandler(NewRuntime(nil, []Model{{ID: "v0", Provider: "p"}}), logging.NewStdoutLogger("error"))
+	h := NewHandler(NewRuntime(nil, []Model{{ID: "v0", Provider: "p"}}, ""), logging.NewStdoutLogger("error"))
 
 	held := h.current()
 
@@ -43,7 +43,7 @@ func TestCurrentIsStableUnderSwap(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 1000; i++ {
-			h.Swap(NewRuntime(nil, []Model{{ID: "v1", Provider: "p"}}))
+			h.Swap(NewRuntime(nil, []Model{{ID: "v1", Provider: "p"}}, ""))
 		}
 	}()
 

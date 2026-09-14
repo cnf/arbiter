@@ -26,6 +26,22 @@ type Config struct {
 	Guardrails  GuardrailsConfig          `yaml:"guardrails"`
 	Routing     RoutingConfig             `yaml:"routing"`
 	Logging     LoggingConfig             `yaml:"logging"`
+
+	SessionAffinity SessionAffinityConfig `yaml:"session_affinity,omitempty"`
+}
+
+// SessionAffinityConfig controls how requests are pinned to whichever
+// provider/model last served their conversation, so multi-turn
+// conversations keep hitting the same upstream (preserving prompt-cache
+// reuse) instead of re-routing every turn.
+type SessionAffinityConfig struct {
+	// Header names the inbound request header carrying a client-supplied
+	// session identifier. Defaults to "X-Session-Id" if unset.
+	Header string `yaml:"header,omitempty"`
+	// DefaultTTL is how long a pin survives without being reused (idle
+	// timeout, refreshed on every hit), parsed as a Go duration. Defaults to
+	// 5m if unset.
+	DefaultTTL string `yaml:"default_ttl,omitempty"`
 }
 
 // RoutingConfig holds cross-cutting routing behavior that isn't the job of
@@ -46,6 +62,9 @@ type ProviderConfig struct {
 	Headers  map[string]string `yaml:"headers,omitempty"`
 	Timeout  string            `yaml:"timeout,omitempty"`
 	RetryMax int               `yaml:"retry_max,omitempty"`
+	// CacheTTL overrides session_affinity.default_ttl for pins served by
+	// this provider (e.g. to match its own prompt-cache expiry).
+	CacheTTL string `yaml:"cache_ttl,omitempty"`
 }
 
 // ClassifierConfig defines a classifier to load.
@@ -119,6 +138,17 @@ func (c *Config) Validate() error {
 			if _, err := time.ParseDuration(p.Timeout); err != nil {
 				return arbitererrors.NewConfigError(fmt.Sprintf("provider %q: invalid timeout %q", name, p.Timeout), err)
 			}
+		}
+		if p.CacheTTL != "" {
+			if _, err := time.ParseDuration(p.CacheTTL); err != nil {
+				return arbitererrors.NewConfigError(fmt.Sprintf("provider %q: invalid cache_ttl %q", name, p.CacheTTL), err)
+			}
+		}
+	}
+
+	if c.SessionAffinity.DefaultTTL != "" {
+		if _, err := time.ParseDuration(c.SessionAffinity.DefaultTTL); err != nil {
+			return arbitererrors.NewConfigError(fmt.Sprintf("session_affinity: invalid default_ttl %q", c.SessionAffinity.DefaultTTL), err)
 		}
 	}
 

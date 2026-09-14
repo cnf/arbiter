@@ -13,7 +13,7 @@ func TestModelsHandler(t *testing.T) {
 	h := NewHandler(NewRuntime(nil, []Model{
 		{ID: "gpt-4o", Provider: "openai"},
 		{ID: "llama2", Provider: "local"},
-	}), logging.NewStdoutLogger("error"))
+	}, ""), logging.NewStdoutLogger("error"))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	resp := httptest.NewRecorder()

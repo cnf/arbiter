@@ -45,10 +45,19 @@ type Pipeline struct {
 	cooldownMu sync.Mutex
 	cooldowns  map[string]time.Time // provider -> earliest time it may be tried again
 
+	affinity        *affinityStore
+	defaultCacheTTL time.Duration // used when a served provider sets no cache_ttl override
+
 	logger logging.Logger
 }
 
-// NewPipeline creates a new pipeline.
+// defaultAffinityTTL applies when config sets no session_affinity.default_ttl.
+const defaultAffinityTTL = 5 * time.Minute
+
+// NewPipeline creates a new pipeline. cacheTTL is the default idle TTL for
+// session affinity pins (config's session_affinity.default_ttl, or
+// defaultAffinityTTL if unset/zero); individual providers may override it
+// via ProviderConfig.CacheTTL.
 func NewPipeline(
 	t translator.Translator,
 	n translator.Normalizer,
@@ -60,20 +69,26 @@ func NewPipeline(
 	fallbacks []string,
 	preG, postG []guardrail.Guardrail,
 	l logging.Logger,
+	cacheTTL time.Duration,
 ) *Pipeline {
+	if cacheTTL <= 0 {
+		cacheTTL = defaultAffinityTTL
+	}
 	return &Pipeline{
-		translator:     t,
-		normalizer:     n,
-		denormalizer:   d,
-		classifiers:    classifiers,
-		router:         r,
-		upstream:       u,
-		providers:      providers,
-		fallbacks:      fallbacks,
-		cooldowns:      make(map[string]time.Time),
-		preGuardrails:  preG,
-		postGuardrails: postG,
-		logger:         l,
+		translator:      t,
+		normalizer:      n,
+		denormalizer:    d,
+		classifiers:     classifiers,
+		router:          r,
+		upstream:        u,
+		providers:       providers,
+		fallbacks:       fallbacks,
+		cooldowns:       make(map[string]time.Time),
+		affinity:        newAffinityStore(),
+		defaultCacheTTL: cacheTTL,
+		preGuardrails:   preG,
+		postGuardrails:  postG,
+		logger:          l,
 	}
 }
 
@@ -81,8 +96,10 @@ func NewPipeline(
 // route -> upstream -> post-guardrails -> denormalize. format is the
 // caller's already-known wire format ("anthropic" or "openai") — the HTTP
 // layer knows this from which endpoint was hit, so Execute never needs to
-// sniff it.
-func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, traceID string) (interface{}, error) {
+// sniff it. sessionHint is an inbound session identifier (e.g. an
+// X-Session-Id header), used to pin this conversation to whichever
+// provider/model actually serves it — see resolveRoute.
+func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, traceID string, sessionHint string) (interface{}, error) {
 	ctx = p.logger.WithTraceID(ctx, traceID)
 
 	req, err := p.normalizer.ToNormalized(payload, format)
@@ -104,33 +121,36 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		req = mutated
 	}
 
-	sig, err := p.classify(ctx, req)
-	if err != nil {
-		return nil, arbitererrors.NewClassificationError("classify request", err)
-	}
+	// Session key is derived after pre-guardrails, not before: a guardrail
+	// like system_prompt can rewrite req.SystemPrompt, and the key must hash
+	// the final content that actually goes out — otherwise the same
+	// conversation could hash differently across requests.
+	sessionKey, hasKey := SessionKey(sessionHint, req)
+	req.SessionKey = sessionKey
 
-	routeStart := time.Now()
-	route, _, err := p.router.Route(ctx, req, sig)
+	route, err := p.resolveRoute(ctx, req, hasKey)
 	if err != nil {
-		return nil, arbitererrors.NewRoutingError("route request", err)
+		return nil, err
 	}
-	p.logger.LogRouting(ctx, route, sig, time.Since(routeStart))
 
 	// Streaming vs. non-streaming: different code paths
 	if req.Stream {
-		return p.executeStream(ctx, traceID, route, req)
+		return p.executeStream(ctx, traceID, route, req, sessionKey, hasKey)
 	}
 
-	resp, _, err := p.tryUpstream(ctx, route, req)
+	resp, _, served, err := p.tryUpstream(ctx, route, req)
 	if err != nil {
 		p.logger.LogError(ctx, "error", err, map[string]interface{}{"provider": route.Provider})
 		return nil, err
 	}
+	if hasKey {
+		p.affinity.pin(sessionKey, req.Model, served.Provider, served.Model, p.cacheTTLFor(served.Provider))
+	}
 	resp.TraceID = traceID
-	resp.RoutingDecision = route.Rationale
+	resp.RoutingDecision = served.Rationale
 
 	for _, g := range p.postGuardrails {
-		mutated, err := g.ApplyPost(ctx, resp, route)
+		mutated, err := g.ApplyPost(ctx, resp, served)
 		if err != nil {
 			p.logger.LogGuardrail(ctx, g.Name(), "rejected", false)
 			return nil, err
@@ -146,17 +166,79 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 	return out, nil
 }
 
+// resolveRoute decides which route to attempt: an affinity pin when one
+// applies, otherwise a fresh classify+route.
+//
+// The pin overrides classification entirely for as long as the client keeps
+// requesting the same model. It applies when:
+//   - the request has a usable session key, and
+//   - req.Model equals the model the pin was recorded under, and
+//   - the pinned provider isn't currently cooling down.
+//
+// A client that explicitly requests a different model discards the pin and
+// routes fresh — it means what it says. A pinned provider in cooldown is
+// likewise treated as a miss rather than an error, since fresh routing is
+// exactly what should happen when the pin's cache is already unusable.
+//
+// req.Model == "" is not special-cased: it can never match a recorded
+// requested-model (pins are always recorded under a non-empty model), so an
+// empty model simply never hits a pin.
+func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedRequest, hasKey bool) (types.Route, error) {
+	if hasKey {
+		if provider, model, ok := p.affinity.get(req.SessionKey, req.Model); ok {
+			if _, cooling := p.onCooldown(provider); !cooling {
+				if cfg, ok := p.providers[provider]; ok {
+					route := types.Route{
+						Provider:  provider,
+						Model:     model,
+						Config:    cfg,
+						Rationale: "session affinity pin",
+					}
+					p.logger.LogRouting(ctx, route, types.Signals{}, 0)
+					return route, nil
+				}
+			}
+		}
+	}
+
+	sig, err := p.classify(ctx, req)
+	if err != nil {
+		return types.Route{}, arbitererrors.NewClassificationError("classify request", err)
+	}
+
+	routeStart := time.Now()
+	route, _, err := p.router.Route(ctx, req, sig)
+	if err != nil {
+		return types.Route{}, arbitererrors.NewRoutingError("route request", err)
+	}
+	p.logger.LogRouting(ctx, route, sig, time.Since(routeStart))
+	return route, nil
+}
+
+// cacheTTLFor returns the session affinity idle TTL to use for a pin served
+// by provider: the provider's own CacheTTL override if set, else the
+// pipeline's default.
+func (p *Pipeline) cacheTTLFor(provider string) time.Duration {
+	if cfg, ok := p.providers[provider]; ok && cfg.CacheTTL > 0 {
+		return cfg.CacheTTL
+	}
+	return p.defaultCacheTTL
+}
+
 // executeStream handles streaming requests. It returns a channel of normalized
 // stream events that the HTTP handler will translate and send to the client.
-func (p *Pipeline) executeStream(ctx context.Context, traceID string, route types.Route, req *types.NormalizedRequest) (interface{}, error) {
+func (p *Pipeline) executeStream(ctx context.Context, traceID string, route types.Route, req *types.NormalizedRequest, sessionKey string, hasKey bool) (interface{}, error) {
 	// Send the request upstream (with fallback/retry handling) and get the
 	// event channel. A 429/5xx fails SendStream synchronously — the HTTP
 	// status is known before any SSE bytes flow — so fallback works exactly
 	// as on the non-streaming path.
-	_, eventChan, err := p.tryUpstream(ctx, route, req)
+	_, eventChan, served, err := p.tryUpstream(ctx, route, req)
 	if err != nil {
 		p.logger.LogError(ctx, "error", err, map[string]interface{}{"provider": route.Provider})
 		return nil, err
+	}
+	if hasKey {
+		p.affinity.pin(sessionKey, req.Model, served.Provider, served.Model, p.cacheTTLFor(served.Provider))
 	}
 
 	// Forward upstream events, stamping each with the trace ID — the
@@ -173,7 +255,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 		for evt := range eventChan {
 			evt.TraceID = traceID
 			if evt.MessageModel == "" {
-				evt.MessageModel = route.Model
+				evt.MessageModel = served.Model
 			}
 			if evt.InputTokens > 0 {
 				usage.InputTokens = evt.InputTokens
@@ -183,7 +265,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 			}
 			out <- evt
 		}
-		p.logger.LogUpstream(ctx, route.Provider, 200, time.Since(start), usage)
+		p.logger.LogUpstream(ctx, served.Provider, 200, time.Since(start), usage)
 	}()
 
 	// The HTTP handler consumes this and flushes events as SSE.
@@ -207,8 +289,11 @@ const (
 // a bad request. Exactly one of the response / event-channel results is
 // non-nil on success, per req.Stream. Each attempt — success or failure —
 // is logged via LogUpstream (for streams, success is logged when the stream
-// ends, where usage is known).
-func (p *Pipeline) tryUpstream(ctx context.Context, route types.Route, req *types.NormalizedRequest) (*types.NormalizedResponse, <-chan *types.NormalizedStreamEvent, error) {
+// ends, where usage is known). The returned Route is whichever candidate
+// actually served the request (== route on the common path, a fallback
+// candidate otherwise) — callers use it to record the session affinity pin
+// against the outcome that actually happened, not the one that was attempted.
+func (p *Pipeline) tryUpstream(ctx context.Context, route types.Route, req *types.NormalizedRequest) (*types.NormalizedResponse, <-chan *types.NormalizedStreamEvent, types.Route, error) {
 	candidates := append([]types.Route{route}, p.fallbackRoutes(route, req)...)
 
 	var lastErr error
@@ -229,7 +314,7 @@ candidates:
 			if req.Stream {
 				eventChan, err := p.upstream.SendStream(ctx, cand, req)
 				if err == nil {
-					return nil, eventChan, nil
+					return nil, eventChan, cand, nil
 				}
 				lastErr = err
 				switch p.classifyUpstreamError(ctx, cand, err, time.Since(start)) {
@@ -238,14 +323,14 @@ candidates:
 				case actionNextCandidate:
 					continue candidates
 				case actionFailFast:
-					return nil, nil, lastErr
+					return nil, nil, types.Route{}, lastErr
 				}
 			}
 
 			resp, err := p.upstream.Send(ctx, cand, req)
 			if err == nil {
 				p.logger.LogUpstream(ctx, cand.Provider, http.StatusOK, time.Since(start), resp.Usage)
-				return resp, nil, nil
+				return resp, nil, cand, nil
 			}
 			lastErr = err
 			switch p.classifyUpstreamError(ctx, cand, err, time.Since(start)) {
@@ -254,7 +339,7 @@ candidates:
 			case actionNextCandidate:
 				continue candidates
 			case actionFailFast:
-				return nil, nil, lastErr
+				return nil, nil, types.Route{}, lastErr
 			}
 		}
 	}
@@ -263,7 +348,7 @@ candidates:
 		// Every candidate was skipped as cooling down; surface that as a 429.
 		lastErr = arbitererrors.NewUpstreamError(route.Provider, http.StatusTooManyRequests, "all candidate providers are in cooldown", nil)
 	}
-	return nil, nil, lastErr
+	return nil, nil, types.Route{}, lastErr
 }
 
 // classifyUpstreamError logs a failed upstream attempt and decides what to

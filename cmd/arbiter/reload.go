@@ -107,6 +107,6 @@ func reload(ctx context.Context, path string, handler *arbiterhttp.Handler, logg
 	}
 
 	models := configuredModels(cfg)
-	handler.Swap(arbiterhttp.NewRuntime(p, models))
+	handler.Swap(arbiterhttp.NewRuntime(p, models, cfg.SessionAffinity.Header))
 	slog.Info("config reloaded", "config", path, "providers", len(cfg.Providers), "models", len(models))
 }

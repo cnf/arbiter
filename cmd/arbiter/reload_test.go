@@ -80,7 +80,7 @@ func TestWatchConfigReloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build initial pipeline: %v", err)
 	}
-	h := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg)), logger)
+	h := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg), cfg.SessionAffinity.Header), logger)
 
 	if got := modelIDs(t, h); len(got) != 1 || got[0] != "model-a" {
 		t.Fatalf("initial models = %v, want [model-a]", got)
@@ -120,7 +120,7 @@ func TestWatchConfigRejectsInvalidReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg)), logger)
+	h := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg), cfg.SessionAffinity.Header), logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

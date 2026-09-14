@@ -36,19 +36,30 @@ type Model struct {
 	Provider string
 }
 
+// defaultSessionHeader is the inbound header Arbiter reads for a
+// client-supplied session identifier when config sets no override —
+// matching the convention used by OpenRouter/LiteLLM/Bifrost.
+const defaultSessionHeader = "X-Session-Id"
+
 // Runtime is one generation of Arbiter's configuration: the pipeline that
 // executes requests and the model list /models advertises. They are published
 // as a single unit so the two can never be observed disagreeing, and replaced
 // whole on a config reload.
 type Runtime struct {
-	pipeline *pipeline.Pipeline
-	models   []Model
+	pipeline      *pipeline.Pipeline
+	models        []Model
+	sessionHeader string
 }
 
 // NewRuntime pairs a built pipeline with the model list derived from the same
 // config, so a Runtime always describes one consistent configuration.
-func NewRuntime(p *pipeline.Pipeline, models []Model) *Runtime {
-	return &Runtime{pipeline: p, models: models}
+// sessionHeader is the inbound header read for session affinity; "" falls
+// back to defaultSessionHeader.
+func NewRuntime(p *pipeline.Pipeline, models []Model, sessionHeader string) *Runtime {
+	if sessionHeader == "" {
+		sessionHeader = defaultSessionHeader
+	}
+	return &Runtime{pipeline: p, models: models, sessionHeader: sessionHeader}
 }
 
 // NewHandler creates a new HTTP handler serving the given runtime.
@@ -104,7 +115,8 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, format string) 
 		}
 	}()
 
-	out, err := rt.pipeline.Execute(ctx, body, format, traceID)
+	sessionHint := r.Header.Get(rt.sessionHeader)
+	out, err := rt.pipeline.Execute(ctx, body, format, traceID, sessionHint)
 	if err != nil {
 		h.logger.LogError(h.logger.WithTraceID(ctx, traceID), "error", err, map[string]interface{}{
 			"path":      requestPath(r),

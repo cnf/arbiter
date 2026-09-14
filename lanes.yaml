@@ -130,6 +130,17 @@ guardrails:
 
   post: []
 
+# Session affinity: once a request is routed, the conversation is pinned to
+# whichever provider/model actually served it, so later turns reuse the same
+# upstream (prompt-cache friendly) instead of re-routing every turn. The
+# session key is the header below when present, else a hash of the system
+# prompt + first user message. Both fields are optional; defaults shown.
+# A provider may override the idle TTL with its own `cache_ttl`.
+#
+# session_affinity:
+#   header: "X-Session-Id"
+#   default_ttl: "5m"
+
 logging:
   level: "info"
   format: "json"

@@ -19,6 +19,7 @@ providers:
       - "claude-3-opus-20250219"
       - "claude-3-sonnet-20250219"
       - "claude-3-haiku-20250307"
+      - "claude-hal"
 
   gpt4:
     type: "openai"

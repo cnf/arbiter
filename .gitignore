@@ -37,6 +37,10 @@ vendor/
 .env
 .env.local
 
+/.claude/settings.local.json
+/.claude/settings.json
+/.mcp.json
+
 # Build artifacts
 dist/
 build/

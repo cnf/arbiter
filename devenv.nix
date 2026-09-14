@@ -51,6 +51,7 @@
     pkgs.gotools
     pkgs.golangci-lint
     pkgs.sqlc
+    pkgs.logdy
   ];
 
   languages.go = {
@@ -98,10 +99,12 @@
 
 
   processes.arbiter = {
-    exec = "secretspec run -- go run ./cmd/arbiter";
+    ports.logdy.allocate = 8312;
+    ports.http.allocate = 8080;
+    exec = "secretspec run -- go run ./cmd/arbiter --port ${toString config.processes.arbiter.ports.http.value} |logdy --no-analytics -t -p ${toString config.processes.arbiter.ports.logdy.value}";
     ready = {
       http.get = {
-        port = 8080;
+        port = config.processes.arbiter.ports.http.value;
         path = "/health";
         # host = "127.0.0.1";  # default
         # scheme = "http";     # default

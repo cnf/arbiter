@@ -122,6 +122,9 @@ Provider notes:
   bounds how long the upstream may go silent, and each event received resets
   it, so a long generation is never cut just for taking a while. Set it to `0`
   to disable the idle watchdog entirely.
+- Per-provider `retry_max` bounds how many times a 5xx from that provider is
+  retried before falling through to the fallback list. It defaults to `0`,
+  which means *no* retries — set it explicitly to enable them.
 
 ## Testing
 

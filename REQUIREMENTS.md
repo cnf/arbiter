@@ -254,10 +254,21 @@ step 3 + the 4a query surface is currently greenlit.
 > (the full row: confidence, cache token counts, tool calls). Both GET-only
 > under the existing `/admin/*` gate; query and response shapes are documented
 > in `README.md`'s admin section; live-verified end to end against fakellm.
-> Two facts that constrain 7b: the store records **no request/response
-> content** (the `request_text`/`response_text` fields exist but are always
-> empty until a schema decision is made), and there is deliberately **no way
-> to filter for requests with no session key** (the zero value means "any").
+>
+> **Content capture BUILT, COMMITTED as `7b9e971`** (2026-09-15) — the other
+> prerequisite 7b was waiting on, done as its own change before any UI work:
+> prompt/response bodies are now stored content-addressed at message-block
+> granularity (`storage.capture_content`, off by default;
+> `storage.content_ttl`, empty = never expire). This is what makes the detail
+> view able to show a conversation at all, and it also *answers* §3's
+> client-injected-prompt-stripper requirement's hardest question — how you'd
+> detect injected text — via `GET /admin/content/repeated` (blocks recurring
+> across requests, with distinct-session counts). See `README.md`'s "Content
+> store" section. Two facts that still constrain 7b: there is deliberately
+> **no way to filter for requests with no session key** (the zero value means
+> "any"), and tool-call arguments from streams are stored hash-only rather
+> than reassembled.
+>
 > **Next: the user's mini-planning session for 7b** — the UI design is
 > expected to be preliminary and to change through use.
 

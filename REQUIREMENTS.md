@@ -80,10 +80,18 @@ Explicitly out of scope:
 
 - Deployment: Caddy (or similar) in front, terminating TLS and doing
   `forward_auth`. Arbiter trusts Caddy's forwarded-auth headers.
-- Additionally: basic **per-client/app API keys**, checked by Arbiter
-  itself — not a full user-management system. Purpose is (a) keep Arbiter
-  from being wide open, (b) attribute usage in logs/insight data by
-  client/app, not just by network trust.
+- Additionally: **per-client/app API keys**, checked by Arbiter itself —
+  not a full user-management system. These are explicitly **not a security
+  measure** and are not a gate. Their job is:
+  (a) **attribution** — "was this the automated script, opencode, or the
+  iPhone?" — so usage in logs/insight data is attributed by client app, not
+  just by network trust; and
+  (b) **per-client shaping** (horizon shaping) — a key may carry
+  client-specific overrides: defaults, the model horizon offered to that
+  client, guardrail tuning (e.g. the §3 hidden-prompt stripper's per-client
+  log-only-vs-strip setting).
+  A missing or unknown key is therefore **not rejected** — it degrades to an
+  *unattributed* client, unlike a gate. Eventual; not urgent.
 - No user accounts, roles, or permissions system.
 
 ---

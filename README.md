@@ -46,7 +46,8 @@ Arbiter's structured logs by ID alone.
 ```
 arbiter/
 ├── cmd/
-│   └── arbiter/          # main entry point; wires config -> pipeline
+│   ├── arbiter/          # main entry point; wires config -> pipeline
+│   └── catalog-convert/  # litellm price list -> model_catalog file
 ├── internal/
 │   ├── http/             # ingress: the two endpoints, SSE flushing, trace IDs
 │   ├── pipeline/         # request lifecycle: normalize -> guardrails -> classify -> force -> route -> upstream
@@ -235,10 +236,35 @@ The catalog file is inert on write: the config watcher tracks only the config
 file itself, so regenerating `catalog.yaml` does not reload anything until you
 ask for it.
 
-The file is meant to be produced by a converter that normalizes an external
-price list (e.g. LiteLLM's `model_prices_and_context_window.json`) into this
-shape — the runtime never parses a foreign schema. That converter is a
-separate follow-up.
+The file is produced by `cmd/catalog-convert`, which normalizes LiteLLM's
+price list (`model_prices_and_context_window.json`) into this shape — the
+runtime never parses a foreign schema itself. LiteLLM keys its list by model
+name and quotes USD *per token*; the catalog is keyed by provider/model in
+USD *per million tokens*, so the converter needs a small mapping file saying
+which provider each entry belongs to (the two changes are not interchangeable
+by guesswork):
+
+```bash
+devenv shell
+go run ./cmd/catalog-convert \
+  -mapping cmd/catalog-convert/mapping.example.yaml \
+  -out catalog.yaml \
+  model_prices_and_context_window.json
+```
+
+`-mapping` is required (copy `mapping.example.yaml` and edit); the price list
+comes from the positional argument or stdin; output goes to stdout unless
+`-out` is given. Latency is not in LiteLLM's list at all, so the mapping
+supplies it — a per-provider default with per-model overrides. A mapped model
+with no usable LiteLLM entry (missing, non-chat, or filed under a different
+`litellm_provider` than the mapping claims) is *skipped with a reason* on
+stderr rather than guessed at, so it simply has no catalog row; `-strict`
+turns any such skip into a non-zero exit. Rows are emitted in sorted order,
+so regenerating the same inputs produces the same file.
+
+A rejected conversion is the safe failure: the generated catalog is inert on
+write, so nothing changes in the running config until you call
+`POST /admin/reload`.
 
 ### Admin surface and access
 

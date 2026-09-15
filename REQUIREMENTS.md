@@ -248,15 +248,18 @@ step 3 + the 4a query surface is currently greenlit.
 > page is to be gated by a specific header value rather than by Caddy's
 > cookie session.
 >
-> **7a BUILT 2026-09-15 (awaiting commit):** `GET /admin/requests` (filters
-> `since`, `provider`, `session`, `alias`, `status`, `errors`, `limit`; newest
-> first) and `GET /admin/requests/{id}` (the full row: confidence, cache token
-> counts, tool calls). Both under the existing `/admin/*` gate. Query and
-> response shapes are documented in `README.md`'s admin section. Two facts
-> that constrain 7b: the store records **no request/response content** (the
-> `request_text`/`response_text` fields exist but are always empty until a
-> schema decision is made), and there is deliberately **no way to filter for
-> requests with no session key** (the zero value means "any").
+> **7a BUILT, COMMITTED as `c7c1f48`** (2026-09-15): `GET /admin/requests`
+> (filters `since`, `provider`, `session`, `alias`, `status`, `errors`,
+> `limit`; newest first, `ts DESC, id DESC`) and `GET /admin/requests/{id}`
+> (the full row: confidence, cache token counts, tool calls). Both GET-only
+> under the existing `/admin/*` gate; query and response shapes are documented
+> in `README.md`'s admin section; live-verified end to end against fakellm.
+> Two facts that constrain 7b: the store records **no request/response
+> content** (the `request_text`/`response_text` fields exist but are always
+> empty until a schema decision is made), and there is deliberately **no way
+> to filter for requests with no session key** (the zero value means "any").
+> **Next: the user's mini-planning session for 7b** — the UI design is
+> expected to be preliminary and to change through use.
 
 1. ~~Model alias layer + wiring it into the router selection (the "auto /
    auto-coding / pinned model / model group" mechanism).~~ **DONE** —

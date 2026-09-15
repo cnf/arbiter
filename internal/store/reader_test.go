@@ -254,6 +254,146 @@ func TestToolsOnEmptyStoreReturnsEmpty(t *testing.T) {
 // the writer's insert failed instantly. WAL + busy_timeout (see dsn) is what
 // makes the two coexist; this drives writes through the real writer while
 // reading, which an in-memory single-connection test would never catch.
+// TestListRequestsFiltersAndOrders covers the list endpoint's contract: newest
+// first, and each filter actually narrowing rather than being accepted and
+// ignored (the failure mode that makes a UI's filter UI lie).
+func TestListRequestsFiltersAndOrders(t *testing.T) {
+	r, q := newTestReader(t)
+	base := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+
+	insertRow(t, q, InsertRequestParams{Ts: base, Provider: "a", Model: "m1", SessionKey: strptr("s1"), AliasUsed: strptr("auto"), StatusCode: 200})
+	insertRow(t, q, InsertRequestParams{Ts: base.Add(time.Minute), Provider: "b", Model: "m2", SessionKey: strptr("s1"), AliasUsed: strptr("coding"), StatusCode: 500})
+	insertRow(t, q, InsertRequestParams{Ts: base.Add(2 * time.Minute), Provider: "a", Model: "m3", SessionKey: strptr("s2"), StatusCode: 200})
+
+	// Newest first, with no filter.
+	all, err := r.ListRequests(context.Background(), RequestFilter{})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("len = %d, want 3", len(all))
+	}
+	if all[0].Model != "m3" || all[2].Model != "m1" {
+		t.Errorf("order = %s..%s, want m3..m1", all[0].Model, all[2].Model)
+	}
+
+	// A row inside the window but outside ?since is excluded.
+	recent, err := r.ListRequests(context.Background(), RequestFilter{Since: base.Add(90 * time.Second)})
+	if err != nil {
+		t.Fatalf("ListRequests(since): %v", err)
+	}
+	if len(recent) != 1 || recent[0].Model != "m3" {
+		t.Errorf("since filter returned %d rows (%v), want just m3", len(recent), recent)
+	}
+
+	cases := []struct {
+		name   string
+		filter RequestFilter
+		want   int
+	}{
+		{"provider", RequestFilter{Provider: "a"}, 2},
+		{"session", RequestFilter{SessionKey: "s1"}, 2},
+		{"alias", RequestFilter{Alias: "coding"}, 1},
+		{"status", RequestFilter{StatusCode: 500}, 1},
+		{"errors", RequestFilter{ErrorsOnly: true}, 1},
+		{"provider+errors", RequestFilter{Provider: "a", ErrorsOnly: true}, 0},
+	}
+	for _, tc := range cases {
+		got, err := r.ListRequests(context.Background(), tc.filter)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if len(got) != tc.want {
+			t.Errorf("%s returned %d rows, want %d", tc.name, len(got), tc.want)
+		}
+	}
+
+	// limit truncates to the newest N, not an arbitrary N.
+	limited, err := r.ListRequests(context.Background(), RequestFilter{Limit: 2})
+	if err != nil {
+		t.Fatalf("ListRequests(limit): %v", err)
+	}
+	if len(limited) != 2 || limited[0].Model != "m3" || limited[1].Model != "m2" {
+		t.Errorf("limit=2 returned %v, want the two newest (m3, m2)", limited)
+	}
+
+	// An over-large limit is clamped by the reader, not passed to sqlite.
+	clamped, err := r.ListRequests(context.Background(), RequestFilter{Limit: maxRequestListLimit * 10})
+	if err != nil {
+		t.Fatalf("ListRequests(clamped): %v", err)
+	}
+	if len(clamped) != 3 {
+		t.Errorf("clamped limit returned %d rows, want all 3", len(clamped))
+	}
+}
+
+// TestListRequestsIsEmptyArrayNotNull keeps the "no rows" and "query failed"
+// cases distinguishable on the wire, matching the aggregate endpoints.
+func TestListRequestsIsEmptyArrayNotNull(t *testing.T) {
+	r, _ := newTestReader(t)
+	out, err := r.ListRequests(context.Background(), RequestFilter{})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	if out == nil {
+		t.Fatal("ListRequests returned nil; must be an empty slice so JSON is [] not null")
+	}
+	if len(out) != 0 {
+		t.Fatalf("len = %d, want 0", len(out))
+	}
+}
+
+// TestGetRequestReturnsFullRowAndMissingIsNotAnError pins both halves of the
+// detail contract: the nullable columns survive the round trip, and an unknown
+// id is (zero, false, nil) so the handler can answer 404 rather than 500.
+func TestGetRequestReturnsFullRowAndMissingIsNotAnError(t *testing.T) {
+	r, q := newTestReader(t)
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+
+	insertRow(t, q, InsertRequestParams{
+		Ts: now, Provider: "a", Model: "m1", SessionKey: strptr("s1"),
+		AliasUsed: strptr("auto"), Domain: strptr("code_generation"),
+		Effort: strptr("hard"), CostClass: strptr("budget"), ConfigEpoch: strptr("epoch-a"),
+		InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5, CacheWriteTokens: 7,
+		CostUsd: 1.5, LatencyMs: 250, StatusCode: 200,
+		ToolCallsJson: strptr(`["read","write"]`),
+	})
+
+	rows, err := r.ListRequests(context.Background(), RequestFilter{})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListRequests = %v, %v; want one row", rows, err)
+	}
+
+	d, ok, err := r.GetRequest(context.Background(), rows[0].ID)
+	if err != nil || !ok {
+		t.Fatalf("GetRequest = ok %v, err %v; want ok", ok, err)
+	}
+	if d.Model != "m1" || d.SessionKey != "s1" || d.AliasUsed != "auto" {
+		t.Errorf("route fields = %+v, want m1/s1/auto", d.RequestRow)
+	}
+	if d.Domain != "code_generation" || d.Effort != "hard" || d.CostClass != "budget" {
+		t.Errorf("axes = %q/%q/%q, want code_generation/hard/budget", d.Domain, d.Effort, d.CostClass)
+	}
+	if d.CacheReadTokens != 5 || d.CacheWriteTokens != 7 {
+		t.Errorf("cache tokens = %d/%d, want 5/7", d.CacheReadTokens, d.CacheWriteTokens)
+	}
+	if d.ToolCalls != `["read","write"]` {
+		t.Errorf("ToolCalls = %q, want the raw JSON array", d.ToolCalls)
+	}
+	if d.Ts == "" {
+		t.Error("Ts is empty; want RFC3339")
+	}
+
+	// Content is not captured — the detail shape says so rather than lying.
+	if d.RequestText != "" || d.ResponseText != "" {
+		t.Errorf("content fields = %q/%q, want empty (not stored)", d.RequestText, d.ResponseText)
+	}
+
+	if _, ok, err := r.GetRequest(context.Background(), 424242); ok || err != nil {
+		t.Errorf("missing id = ok %v, err %v; want false, nil", ok, err)
+	}
+}
+
 func TestReaderCoexistsWithActiveWriter(t *testing.T) {
 	w, path := newTestWriter(t)
 

@@ -49,6 +49,8 @@ overrides both. Loopback is the default on purpose — see
 | `GET /admin/stats/epochs` | spend by config epoch             |
 | `GET /admin/stats/session?key=` | one session's trajectory      |
 | `GET /admin/stats/tools` | tool-name usage counts            |
+| `GET /admin/requests` | request list, newest first           |
+| `GET /admin/requests/{id}` | one request in full             |
 
 Both chat endpoints accept `stream: true` and respond with SSE in the same
 wire format as the request (formats are never mixed). Every response —
@@ -389,6 +391,22 @@ The `/admin/stats*` endpoints are read-only and need the event store enabled
 result, so "store disabled" and "no traffic yet" stay distinguishable. Each
 takes an optional `?since=<duration>` (e.g. `?since=24h`), defaulting to the
 last 7 days, and `/admin/stats/session` takes the session key as `?key=`.
+
+`/admin/requests` is the same data one row at a time — the aggregates above
+cannot answer "what just happened", so this returns the requests themselves,
+newest first. `?since`, `?provider`, `?session`, `?alias`, `?status=<code>`,
+`?errors` (presence only: status ≥ 400) and `?limit=<n>` (default and maximum
+500) narrow it; a malformed `status` or `limit` is a **400**, not a silently
+ignored filter. Ordering is `ts DESC, id DESC` — the id tiebreaker matters
+because rows written within one timestamp tick would otherwise come back in an
+arbitrary order. `/admin/requests/{id}` takes the `id` the list returns and
+adds the fields a list row omits (confidence, cache token counts, tool calls);
+`404` for an unknown id, `400` for a malformed one.
+
+Request and response *bodies* are not stored — the detail response has
+`request_text`/`response_text` fields for shape completeness, and they are
+always empty. Capturing content is a storage and privacy decision that has to
+be made in the schema first; the read surface does not pretend otherwise.
 
 That is why Arbiter **binds loopback by default** (`--bind`, default
 `127.0.0.1`) and can bind a unix socket instead (`--socket /path`, overriding

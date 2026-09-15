@@ -5,8 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
+
+	"github.com/gorilla/mux"
 
 	"github.com/cnf/arbiter/internal/logging"
 	"github.com/cnf/arbiter/internal/store"
@@ -156,6 +159,161 @@ func TestToolsHandlerCountsUsage(t *testing.T) {
 	}
 }
 
+// TestRequestsHandlerFiltersAndOrders proves the filter query parameters reach
+// the Reader and narrow the result — a filter param that is accepted and
+// ignored is the failure a UI's filter controls would hide.
+func TestRequestsHandlerFiltersAndOrders(t *testing.T) {
+	base := time.Now().UTC()
+	h := newTestStatsHandler(t,
+		store.Event{TraceID: "t1", Format: "openai", Provider: "a", Model: "old", Ts: base.Add(-2 * time.Hour)},
+		store.Event{TraceID: "t2", Format: "openai", Provider: "a", Model: "new", Ts: base, StatusCode: 200},
+		store.Event{TraceID: "t3", Format: "openai", Provider: "b", Model: "failed", Ts: base, StatusCode: 500},
+	)
+
+	// Newest first, unfiltered: two rows share the newest ts, so the id
+	// tiebreaker is what makes their order deterministic.
+	resp := httptest.NewRecorder()
+	h.RequestsHandler(resp, httptest.NewRequest(http.MethodGet, "/admin/requests", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", resp.Code, resp.Body.String())
+	}
+	var all []store.RequestRow
+	if err := json.Unmarshal(resp.Body.Bytes(), &all); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("len = %d, want 3", len(all))
+	}
+	if all[2].Model != "old" {
+		t.Errorf("last row = %q, want the oldest (old)", all[2].Model)
+	}
+	if all[0].Model != "failed" || all[1].Model != "new" {
+		t.Errorf("same-timestamp order = %q,%q; want failed,new by descending id", all[0].Model, all[1].Model)
+	}
+
+	cases := []struct {
+		query string
+		want  int
+	}{
+		{"/admin/requests?provider=b", 1},
+		{"/admin/requests?errors", 1},
+		{"/admin/requests?status=500", 1},
+		{"/admin/requests?status=200", 1},
+		{"/admin/requests?provider=a&errors", 0},
+		{"/admin/requests?limit=1", 1},
+		{"/admin/requests?since=1h", 2},
+	}
+	for _, tc := range cases {
+		resp := httptest.NewRecorder()
+		h.RequestsHandler(resp, httptest.NewRequest(http.MethodGet, tc.query, nil))
+		if resp.Code != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200", tc.query, resp.Code)
+			continue
+		}
+		var got []store.RequestRow
+		if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
+			t.Errorf("%s: decode: %v", tc.query, err)
+			continue
+		}
+		if len(got) != tc.want {
+			t.Errorf("%s returned %d rows, want %d", tc.query, len(got), tc.want)
+		}
+	}
+}
+
+// TestRequestsHandlerRejectsBadParams proves a malformed status/limit is a 400
+// naming the parameter, not a silent fallback to "no filter" — which would
+// answer a broken query with plausible-looking unfiltered data.
+func TestRequestsHandlerRejectsBadParams(t *testing.T) {
+	h := newTestStatsHandler(t)
+
+	for _, q := range []string{
+		"/admin/requests?status=abc",
+		"/admin/requests?status=99",
+		"/admin/requests?status=600",
+		"/admin/requests?limit=0",
+		"/admin/requests?limit=-3",
+		"/admin/requests?limit=abc",
+	} {
+		resp := httptest.NewRecorder()
+		h.RequestsHandler(resp, httptest.NewRequest(http.MethodGet, q, nil))
+		if resp.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", q, resp.Code)
+		}
+	}
+}
+
+// TestRequestsHandlerOnDisabledStoreReturns503 keeps "store off" distinct from
+// "no traffic", same as the aggregate endpoints.
+func TestRequestsHandlerOnDisabledStoreReturns503(t *testing.T) {
+	h := NewStatsHandler(nil, logging.NewStdoutLogger("error"))
+
+	for name, fn := range map[string]http.HandlerFunc{
+		"list":   h.RequestsHandler,
+		"detail": h.RequestHandler,
+	} {
+		resp := httptest.NewRecorder()
+		fn(resp, httptest.NewRequest(http.MethodGet, "/admin/requests", nil))
+		if resp.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s: status = %d, want 503 with the store disabled", name, resp.Code)
+		}
+	}
+}
+
+// TestRequestHandlerDetail proves the detail route reads the {id} the list
+// returned, and that bad/missing ids are told apart: 400 for malformed, 404
+// for well-formed but absent.
+func TestRequestHandlerDetail(t *testing.T) {
+	h := newTestStatsHandler(t,
+		store.Event{TraceID: "t1", Format: "openai", Provider: "p", Model: "m1",
+			Domain: "code_generation", Effort: "hard", ConfigEpoch: "epoch-a",
+			Usage:     types.Usage{InputTokens: 10, OutputTokens: 20, CostUSD: 1.5, CacheRead: 5, CacheWrite: 7},
+			ToolCalls: []string{"read_file"}},
+	)
+
+	// The id comes from the list, so the two endpoints agree on the handle.
+	listResp := httptest.NewRecorder()
+	h.RequestsHandler(listResp, httptest.NewRequest(http.MethodGet, "/admin/requests", nil))
+	var rows []store.RequestRow
+	if err := json.Unmarshal(listResp.Body.Bytes(), &rows); err != nil || len(rows) != 1 {
+		t.Fatalf("list = %v, %v; want one row", rows, err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/requests/1", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": strconv.FormatInt(rows[0].ID, 10)})
+	resp := httptest.NewRecorder()
+	h.RequestHandler(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", resp.Code, resp.Body.String())
+	}
+	var got store.RequestDetail
+	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Model != "m1" || got.Effort != "hard" || got.CacheReadTokens != 5 || got.CacheWriteTokens != 7 {
+		t.Errorf("detail = %+v, want m1/hard/5/7", got)
+	}
+	if got.ToolCalls != `["read_file"]` {
+		t.Errorf("ToolCalls = %q, want the raw JSON array", got.ToolCalls)
+	}
+
+	for id, want := range map[string]int{
+		"abc": http.StatusBadRequest,
+		"0":   http.StatusBadRequest,
+		"-1":  http.StatusBadRequest,
+		"999": http.StatusNotFound,
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/admin/requests/"+id, nil)
+		req = mux.SetURLVars(req, map[string]string{"id": id})
+		resp := httptest.NewRecorder()
+		h.RequestHandler(resp, req)
+		if resp.Code != want {
+			t.Errorf("id %q: status = %d, want %d", id, resp.Code, want)
+		}
+	}
+}
+
 // TestEmptyListIsJSONArrayNotNull proves an empty result marshals as [] rather
 // than null — a null body reads to an operator as "broken", not "nothing yet".
 func TestEmptyListIsJSONArrayNotNull(t *testing.T) {
@@ -165,6 +323,7 @@ func TestEmptyListIsJSONArrayNotNull(t *testing.T) {
 		"providers": h.ProvidersHandler,
 		"epochs":    h.EpochsHandler,
 		"tools":     h.ToolsHandler,
+		"requests":  h.RequestsHandler,
 	} {
 		resp := httptest.NewRecorder()
 		fn(resp, httptest.NewRequest(http.MethodGet, "/admin/stats/"+name, nil))

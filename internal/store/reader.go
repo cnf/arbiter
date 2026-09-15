@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -105,6 +107,71 @@ type SessionRequest struct {
 type ToolStat struct {
 	Tool string `json:"tool"`
 	Uses int64  `json:"uses"`
+}
+
+// RequestFilter selects rows for the request list. Every field is optional;
+// the zero value means "no restriction". Empty strings and 0 therefore cannot
+// be asked for as *values* (a status of 0, a provider named ""), which is
+// correct for this store: the recorded provider is never empty and a status
+// code of 0 never occurs.
+type RequestFilter struct {
+	Since          time.Time // inclusive lower bound on ts; zero means all time
+	Provider       string
+	SessionKey     string // "none" is not special-cased — see ListRequests
+	Alias          string
+	StatusCode     int
+	ErrorsOnly     bool // status_code >= 400
+	Limit          int  // clamped to [1, maxRequestListLimit]; 0 means the default
+	IncludeContent bool // include prompt/response text — see RequestDetail
+}
+
+// RequestRow is one request as it appears in a list: enough to see what
+// happened and where it went, without the prompt/response bodies. It is what
+// a dashboard's main table renders.
+type RequestRow struct {
+	ID               int64   `json:"id"`
+	TraceID          string  `json:"trace_id"`
+	Ts               string  `json:"ts"`
+	SessionKey       string  `json:"session_key,omitempty"`
+	Format           string  `json:"format"`
+	Provider         string  `json:"provider"`
+	Model            string  `json:"model"`
+	AliasUsed        string  `json:"alias_used,omitempty"`
+	RoutingRationale string  `json:"routing_rationale"`
+	Domain           string  `json:"domain,omitempty"`
+	Effort           string  `json:"effort,omitempty"`
+	CostClass        string  `json:"cost_class,omitempty"`
+	InputTokens      int64   `json:"input_tokens"`
+	OutputTokens     int64   `json:"output_tokens"`
+	CostUSD          float64 `json:"cost_usd"`
+	LatencyMs        int64   `json:"latency_ms"`
+	StatusCode       int64   `json:"status_code"`
+	Error            string  `json:"error,omitempty"`
+	Stream           bool    `json:"stream"`
+	ConfigEpoch      string  `json:"config_epoch,omitempty"`
+}
+
+// RequestDetail is the full record for one request. Unlike RequestRow it
+// carries the low-confidence classification score, the cache token counts,
+// the tool calls, and — only when explicitly asked for — the request and
+// response payloads.
+//
+// Prompts and responses are *not stored* by the event store (see the store's
+// schema): it records routing, usage and outcome, not content. The two text
+// fields are therefore always empty and exist so the shape of "eventually,
+// optionally" is visible rather than surprising. Filling them means capturing
+// request/response bodies in the schema first, which is a storage and privacy
+// decision, not a read-side one.
+type RequestDetail struct {
+	RequestRow
+	Confidence       float64 `json:"confidence"`
+	CacheReadTokens  int64   `json:"cache_read_tokens"`
+	CacheWriteTokens int64   `json:"cache_write_tokens"`
+	ToolCalls        string  `json:"tool_calls,omitempty"` // raw JSON array
+	ClientID         string  `json:"client_id,omitempty"`  // NULL until per-client keys land
+
+	RequestText  string `json:"request_text,omitempty"`
+	ResponseText string `json:"response_text,omitempty"`
 }
 
 // Overall answers the headline numbers over a window.
@@ -278,6 +345,167 @@ ORDER BY COUNT(*) DESC`
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// maxRequestListLimit caps a single list query. The default (when the caller
+// asks for no limit) is deliberately the cap: a dashboard shows recent rows,
+// and truncating to the newest N is a more useful failure than a slow query.
+const maxRequestListLimit = 500
+
+// requestRowColumns is the list projection, shared by ListRequests and
+// GetRequest so the two cannot drift into returning differently-shaped rows.
+const requestRowColumns = `
+    id, trace_id, ts, session_key, format, provider, model, alias_used,
+    routing_rationale, domain, effort, cost_class, input_tokens, output_tokens,
+    cost_usd, latency_ms, status_code, error, stream, config_epoch`
+
+// ListRequests returns requests newest first, narrowed by f.
+//
+// A note on the session filter: an empty SessionKey means "any", so there is
+// no way to ask for the requests that have *no* session key. That case is
+// reachable (the affinity derivation declines to produce a key) and a UI may
+// eventually want it, but it needs an explicit sentinel or a separate
+// boolean; guessing at a magic string now would be worse than not offering it.
+func (r *Reader) ListRequests(ctx context.Context, f RequestFilter) ([]RequestRow, error) {
+	where := []string{"1 = 1"}
+	args := []interface{}{}
+
+	if !f.Since.IsZero() {
+		where = append(where, "ts >= ?")
+		args = append(args, f.Since)
+	}
+	if f.Provider != "" {
+		where = append(where, "provider = ?")
+		args = append(args, f.Provider)
+	}
+	if f.SessionKey != "" {
+		where = append(where, "session_key = ?")
+		args = append(args, f.SessionKey)
+	}
+	if f.Alias != "" {
+		where = append(where, "alias_used = ?")
+		args = append(args, f.Alias)
+	}
+	if f.StatusCode != 0 {
+		where = append(where, "status_code = ?")
+		args = append(args, f.StatusCode)
+	}
+	if f.ErrorsOnly {
+		where = append(where, "status_code >= 400")
+	}
+
+	limit := f.Limit
+	if limit <= 0 {
+		limit = maxRequestListLimit
+	}
+	if limit > maxRequestListLimit {
+		limit = maxRequestListLimit
+	}
+
+	// id as the tiebreaker matters: ts has sub-second precision, and rows
+	// written within the same tick would otherwise come back in an arbitrary
+	// order, making paging and "what just happened" both unreliable.
+	q := "SELECT" + requestRowColumns + " FROM requests WHERE " +
+		strings.Join(where, " AND ") + " ORDER BY ts DESC, id DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list requests: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []RequestRow{}
+	for rows.Next() {
+		s, err := scanRequestRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// GetRequest returns one request by id. ok=false means no such row, which the
+// caller reports as 404 — an unknown id is a normal outcome, not an error.
+func (r *Reader) GetRequest(ctx context.Context, id int64) (RequestDetail, bool, error) {
+	const q = `SELECT` + requestRowColumns + `,
+    confidence, cache_read_tokens, cache_write_tokens, tool_calls_json, client_id
+FROM requests WHERE id = ?`
+
+	var (
+		d       RequestDetail
+		tsRaw   interface{}
+		session sql.NullString
+		alias   sql.NullString
+		domain  sql.NullString
+		effort  sql.NullString
+		costCl  sql.NullString
+		errText sql.NullString
+		epoch   sql.NullString
+		conf    sql.NullFloat64
+		tools   sql.NullString
+		client  sql.NullString
+	)
+	err := r.db.QueryRowContext(ctx, q, id).Scan(
+		&d.ID, &d.TraceID, &tsRaw, &session, &d.Format, &d.Provider, &d.Model, &alias,
+		&d.RoutingRationale, &domain, &effort, &costCl, &d.InputTokens, &d.OutputTokens,
+		&d.CostUSD, &d.LatencyMs, &d.StatusCode, &errText, &d.Stream, &epoch,
+		&conf, &d.CacheReadTokens, &d.CacheWriteTokens, &tools, &client)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RequestDetail{}, false, nil
+	}
+	if err != nil {
+		return RequestDetail{}, false, fmt.Errorf("get request %d: %w", id, err)
+	}
+
+	d.Ts = formatTime(tsRaw)
+	d.SessionKey = session.String
+	d.AliasUsed = alias.String
+	d.Domain = domain.String
+	d.Effort = effort.String
+	d.CostClass = costCl.String
+	d.Error = errText.String
+	d.ConfigEpoch = epoch.String
+	d.Confidence = conf.Float64
+	d.ToolCalls = tools.String
+	d.ClientID = client.String
+	// RequestText/ResponseText stay empty: content is not captured. See the
+	// type's doc comment.
+	return d, true, nil
+}
+
+// scanRequestRow reads the shared list projection. The nullable columns come
+// back as sql.Null* and are flattened to "" in the JSON — a NULL session key
+// and an empty-string one are not distinguished on the wire, matching how the
+// aggregate queries already behave.
+func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
+	var (
+		s       RequestRow
+		tsRaw   interface{}
+		session sql.NullString
+		alias   sql.NullString
+		domain  sql.NullString
+		effort  sql.NullString
+		costCl  sql.NullString
+		errText sql.NullString
+		epoch   sql.NullString
+	)
+	if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &session, &s.Format, &s.Provider,
+		&s.Model, &alias, &s.RoutingRationale, &domain, &effort, &costCl,
+		&s.InputTokens, &s.OutputTokens, &s.CostUSD, &s.LatencyMs, &s.StatusCode,
+		&errText, &s.Stream, &epoch); err != nil {
+		return RequestRow{}, fmt.Errorf("scan request row: %w", err)
+	}
+	s.Ts = formatTime(tsRaw)
+	s.SessionKey = session.String
+	s.AliasUsed = alias.String
+	s.Domain = domain.String
+	s.Effort = effort.String
+	s.CostClass = costCl.String
+	s.Error = errText.String
+	s.ConfigEpoch = epoch.String
+	return s, nil
 }
 
 // formatTime renders a sqlite timestamp, which the driver may hand back as a

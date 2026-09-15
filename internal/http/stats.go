@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gorilla/mux"
+
 	"github.com/cnf/arbiter/internal/logging"
 	"github.com/cnf/arbiter/internal/store"
 )
@@ -112,6 +114,79 @@ func (h *StatsHandler) ToolsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeJSON(w, r, stats)
+}
+
+// RequestsHandler handles GET /admin/requests: the request list, newest first.
+// This is the read the aggregate /admin/stats* endpoints cannot serve — a UI
+// needs the rows themselves, not just their sums.
+//
+// Query parameters, all optional: since, provider, session, alias, status,
+// errors (presence = only status >= 400), limit.
+func (h *StatsHandler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
+	if h.reader == nil {
+		writeError(w, http.StatusServiceUnavailable, "event store disabled (storage.path unset)")
+		return
+	}
+	q := r.URL.Query()
+
+	f := store.RequestFilter{
+		Since:      window(r).Since,
+		Provider:   q.Get("provider"),
+		SessionKey: q.Get("session"),
+		Alias:      q.Get("alias"),
+		ErrorsOnly: q.Has("errors"),
+	}
+	if raw := q.Get("status"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 100 || n > 599 {
+			writeError(w, http.StatusBadRequest, "status must be an HTTP status code (100-599)")
+			return
+		}
+		f.StatusCode = n
+	}
+	if raw := q.Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, "limit must be a positive integer")
+			return
+		}
+		f.Limit = n // the reader clamps to its own maximum
+	}
+
+	rows, err := h.reader.ListRequests(r.Context(), f)
+	if err != nil {
+		h.logger.LogError(r.Context(), "error", err, map[string]interface{}{"phase": "admin_requests"})
+		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+	h.writeJSON(w, r, rows)
+}
+
+// RequestHandler handles GET /admin/requests/{id}: one request in full. The id
+// is the store's rowid, which the list returns as `id`.
+func (h *StatsHandler) RequestHandler(w http.ResponseWriter, r *http.Request) {
+	if h.reader == nil {
+		writeError(w, http.StatusServiceUnavailable, "event store disabled (storage.path unset)")
+		return
+	}
+	raw := mux.Vars(r)["id"]
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id < 1 {
+		writeError(w, http.StatusBadRequest, "request id must be a positive integer")
+		return
+	}
+
+	detail, ok, err := h.reader.GetRequest(r.Context(), id)
+	if err != nil {
+		h.logger.LogError(r.Context(), "error", err, map[string]interface{}{"phase": "admin_request"})
+		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "no request with that id")
+		return
+	}
+	h.writeJSON(w, r, detail)
 }
 
 // SessionHandler handles GET /admin/stats/session?key=<key>&limit=<n>: one

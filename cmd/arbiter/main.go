@@ -171,6 +171,13 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	r.HandleFunc("/admin/stats/epochs", arbiterhttp.Gate(forwardAuthHeader, stats.EpochsHandler)).Methods("GET")
 	r.HandleFunc("/admin/stats/tools", arbiterhttp.Gate(forwardAuthHeader, stats.ToolsHandler)).Methods("GET")
 	r.HandleFunc("/admin/stats/session", arbiterhttp.Gate(forwardAuthHeader, stats.SessionHandler)).Methods("GET")
+
+	// Request list and detail. Same /admin/* gate and the same path-and-verb
+	// registration, so a proxy can allow reads (GET) and the reload (POST)
+	// independently. The detail route takes the store's rowid, which the list
+	// returns as `id`.
+	r.HandleFunc("/admin/requests", arbiterhttp.Gate(forwardAuthHeader, stats.RequestsHandler)).Methods("GET")
+	r.HandleFunc("/admin/requests/{id}", arbiterhttp.Gate(forwardAuthHeader, stats.RequestHandler)).Methods("GET")
 	return r
 }
 

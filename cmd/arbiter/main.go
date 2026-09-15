@@ -71,7 +71,26 @@ func main() {
 		return reload(ctx, *configPath, handler, logger, writer)
 	}, logger)
 
-	r := newRouter(handler, admin, cfg.Admin.ForwardAuthHeader)
+	// The stats reader opens its own handle on the same database file the
+	// writer feeds, rather than sharing the writer's handle, so a read never
+	// contends with the writer's single drain goroutine. A disabled store
+	// (storage.path unset) leaves it nil; the stats handlers report 503.
+	var reader *store.Reader
+	if cfg.Storage.Path != "" {
+		reader, err = store.OpenReader(cfg.Storage.Path)
+		if err != nil {
+			slog.Error("failed to open event store for reading", "error", err)
+			os.Exit(1)
+		}
+		defer func() {
+			if err := reader.Close(); err != nil {
+				slog.Error("failed to close stats reader", "error", err)
+			}
+		}()
+	}
+	stats := arbiterhttp.NewStatsHandler(reader, logger)
+
+	r := newRouter(handler, admin, stats, cfg.Admin.ForwardAuthHeader)
 
 	srv := &stdhttp.Server{
 		Handler: r,
@@ -130,7 +149,7 @@ func main() {
 // inline in main so the /admin/* gate is exercised by a real request in tests
 // rather than asserted by reading the wiring. forwardAuthHeader is the
 // configured admin gate header ("" = ungated).
-func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, forwardAuthHeader string) *mux.Router {
+func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, stats *arbiterhttp.StatsHandler, forwardAuthHeader string) *mux.Router {
 	r := mux.NewRouter()
 	r.HandleFunc("/v1/messages", handler.MessagesHandler).Methods("POST")
 	r.HandleFunc("/chat/completions", handler.CompletionsHandler).Methods("POST")
@@ -147,6 +166,11 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, fo
 	// proxy in front can match on either independently; Arbiter's own control
 	// is the presence-only forward-auth gate.
 	r.HandleFunc("/admin/reload", arbiterhttp.Gate(forwardAuthHeader, admin.ReloadHandler)).Methods("POST")
+	r.HandleFunc("/admin/stats", arbiterhttp.Gate(forwardAuthHeader, stats.OverallHandler)).Methods("GET")
+	r.HandleFunc("/admin/stats/providers", arbiterhttp.Gate(forwardAuthHeader, stats.ProvidersHandler)).Methods("GET")
+	r.HandleFunc("/admin/stats/epochs", arbiterhttp.Gate(forwardAuthHeader, stats.EpochsHandler)).Methods("GET")
+	r.HandleFunc("/admin/stats/tools", arbiterhttp.Gate(forwardAuthHeader, stats.ToolsHandler)).Methods("GET")
+	r.HandleFunc("/admin/stats/session", arbiterhttp.Gate(forwardAuthHeader, stats.SessionHandler)).Methods("GET")
 	return r
 }
 
@@ -294,7 +318,11 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 		}
 	}
 
-	return pipeline.NewPipeline(t, t, t, classifiers, mainRouter, u, providers, cfg.Routing.FallbackProviders, preGuardrails, postGuardrails, logger, defaultCacheTTL, resolver, writer, costLookup), nil
+	p := pipeline.NewPipeline(t, t, t, classifiers, mainRouter, u, providers, cfg.Routing.FallbackProviders, preGuardrails, postGuardrails, logger, defaultCacheTTL, resolver, writer, costLookup)
+	// Every event this pipeline records is stamped with the hash of the config
+	// that built it, so spend can be compared across config changes.
+	p.SetConfigEpoch(cfg.Epoch())
+	return p, nil
 }
 
 func combineRouters(routers []router.Router) router.Router {

@@ -71,6 +71,11 @@ type Pipeline struct {
 	// upstream didn't report one. nil means no catalog configured — cost
 	// then stays 0 for those requests.
 	costCatalog router.CostLatencyLookup
+
+	// configEpoch identifies the resolved config that built this pipeline. It
+	// is stamped on every recorded event so spend can later be compared across
+	// config changes. Empty when unknown (tests building a bare pipeline).
+	configEpoch string
 }
 
 // defaultAffinityTTL applies when config sets no session_affinity.default_ttl.
@@ -140,6 +145,13 @@ func NewPipeline(
 		store:           writer,
 		costCatalog:     costCatalog,
 	}
+}
+
+// SetConfigEpoch records which resolved config built this pipeline, so every
+// event it records can be attributed to that config. It is called once by the
+// wiring code before the pipeline is published, not on the request path.
+func (p *Pipeline) SetConfigEpoch(epoch string) {
+	p.configEpoch = epoch
 }
 
 // Execute runs the full pipeline: normalize -> pre-guardrails -> classify ->
@@ -261,6 +273,10 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 // the request path: a configured store owns the enqueue policy (drop with a
 // warning when saturated), and the default NoopWriter discards outright.
 func (p *Pipeline) record(ev store.Event) {
+	// Stamped centrally rather than at each call site: the epoch is a property
+	// of the pipeline, not of any one request, and every recorded event must
+	// carry it for the per-epoch cost comparison to be complete.
+	ev.ConfigEpoch = p.configEpoch
 	p.store.Record(ev)
 }
 
@@ -584,9 +600,9 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 type upstreamAction int
 
 const (
-	actionRetrySame      upstreamAction = iota // transient (5xx): try this provider again
-	actionNextCandidate                        // move on to the next fallback provider
-	actionFailFast                             // give up; a retry can't help
+	actionRetrySame     upstreamAction = iota // transient (5xx): try this provider again
+	actionNextCandidate                       // move on to the next fallback provider
+	actionFailFast                            // give up; a retry can't help
 )
 
 // tryUpstream sends the request to the routed provider — retrying it on 5xx

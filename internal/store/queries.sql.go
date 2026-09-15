@@ -15,12 +15,13 @@ INSERT INTO requests (
     trace_id, session_key, client_id, ts, format, provider, model,
     alias_used, routing_rationale, domain, effort, cost_class, confidence,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-    cost_usd, latency_ms, status_code, error, stream, tool_calls_json
+    cost_usd, latency_ms, status_code, error, stream, tool_calls_json,
+    config_epoch
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?
 )
 RETURNING id
 `
@@ -49,6 +50,7 @@ type InsertRequestParams struct {
 	Error            *string
 	Stream           bool
 	ToolCallsJson    *string
+	ConfigEpoch      *string
 }
 
 func (q *Queries) InsertRequest(ctx context.Context, arg InsertRequestParams) (int64, error) {
@@ -76,6 +78,7 @@ func (q *Queries) InsertRequest(ctx context.Context, arg InsertRequestParams) (i
 		arg.Error,
 		arg.Stream,
 		arg.ToolCallsJson,
+		arg.ConfigEpoch,
 	)
 	var id int64
 	err := row.Scan(&id)
@@ -83,21 +86,22 @@ func (q *Queries) InsertRequest(ctx context.Context, arg InsertRequestParams) (i
 }
 
 const recentRequests = `-- name: RecentRequests :many
-SELECT id, trace_id, provider, model, cost_usd, latency_ms, status_code, ts
+SELECT id, trace_id, provider, model, cost_usd, latency_ms, status_code, ts, config_epoch
 FROM requests
 ORDER BY ts DESC
 LIMIT ?
 `
 
 type RecentRequestsRow struct {
-	ID         int64
-	TraceID    string
-	Provider   string
-	Model      string
-	CostUsd    float64
-	LatencyMs  int64
-	StatusCode int64
-	Ts         time.Time
+	ID          int64
+	TraceID     string
+	Provider    string
+	Model       string
+	CostUsd     float64
+	LatencyMs   int64
+	StatusCode  int64
+	Ts          time.Time
+	ConfigEpoch *string
 }
 
 func (q *Queries) RecentRequests(ctx context.Context, limit int64) ([]RecentRequestsRow, error) {
@@ -118,6 +122,7 @@ func (q *Queries) RecentRequests(ctx context.Context, limit int64) ([]RecentRequ
 			&i.LatencyMs,
 			&i.StatusCode,
 			&i.Ts,
+			&i.ConfigEpoch,
 		); err != nil {
 			return nil, err
 		}

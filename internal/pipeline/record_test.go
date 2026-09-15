@@ -97,6 +97,52 @@ func TestExecuteRecordsCompletedRequest(t *testing.T) {
 	}
 }
 
+// TestRecordStampsConfigEpoch proves every recorded event carries the config
+// epoch the pipeline was told about — this is what makes per-epoch cost
+// comparison possible at all. The epoch must reach the event without any
+// record call site knowing about it.
+func TestRecordStampsConfigEpoch(t *testing.T) {
+	fu := &fakeUpstream{resp: &types.NormalizedResponse{Usage: types.Usage{InputTokens: 10}}}
+	w := &capturingWriter{}
+	p := NewPipeline(
+		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
+		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
+		fakeLogger{}, time.Minute, nil, w, nil,
+	)
+	p.SetConfigEpoch("epoch-abc123")
+
+	if _, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	ev, ok := w.last()
+	if !ok {
+		t.Fatal("no event recorded")
+	}
+	if ev.ConfigEpoch != "epoch-abc123" {
+		t.Fatalf("ConfigEpoch = %q, want epoch-abc123", ev.ConfigEpoch)
+	}
+}
+
+// An unset epoch must stay empty rather than being invented — a bare test
+// pipeline carries no config identity, and NULL is the honest representation.
+func TestRecordLeavesEpochEmptyWhenUnset(t *testing.T) {
+	fu := &fakeUpstream{resp: &types.NormalizedResponse{Usage: types.Usage{InputTokens: 10}}}
+	w := &capturingWriter{}
+	p := NewPipeline(
+		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
+		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
+		fakeLogger{}, time.Minute, nil, w, nil,
+	)
+
+	if _, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if ev, ok := w.last(); !ok || ev.ConfigEpoch != "" {
+		t.Fatalf("ConfigEpoch = %q, want empty", ev.ConfigEpoch)
+	}
+}
+
 // TestUpstreamReportedCostIsNotOverwritten proves a provider-reported cost
 // (OpenRouter) is authoritative: the catalog is not consulted over it.
 func TestUpstreamReportedCostIsNotOverwritten(t *testing.T) {

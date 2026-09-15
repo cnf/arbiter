@@ -33,4 +33,5 @@ type Request struct {
 	Error            *string
 	Stream           bool
 	ToolCallsJson    *string
+	ConfigEpoch      *string
 }

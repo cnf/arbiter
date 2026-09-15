@@ -11,6 +11,10 @@
 -- key, and those requests must still be recorded.
 --
 -- client_id stays NULL until per-client API keys land (attribution, not auth).
+--
+-- config_epoch is the hash of the resolved config that served this request
+-- (Config.Epoch): the join key for "did this config change save or cost
+-- money?". NULL for rows written before the column existed.
 CREATE TABLE IF NOT EXISTS requests (
     id                    INTEGER PRIMARY KEY,
     trace_id              TEXT NOT NULL,
@@ -35,7 +39,8 @@ CREATE TABLE IF NOT EXISTS requests (
     status_code           INTEGER NOT NULL,
     error                 TEXT,
     stream                BOOLEAN NOT NULL,
-    tool_calls_json       TEXT                 -- JSON array of tool names used
+    tool_calls_json       TEXT,                -- JSON array of tool names used
+    config_epoch          TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_requests_trace ON requests(trace_id);
@@ -44,3 +49,5 @@ CREATE INDEX IF NOT EXISTS idx_requests_ts ON requests(ts);
 -- Feeds "usage per provider per window" (future upstream-mirrored limits,
 -- dashboard). Cheap to add now, avoids a table scan later.
 CREATE INDEX IF NOT EXISTS idx_requests_provider_ts ON requests(provider, ts);
+-- Feeds the per-epoch cost comparison — the whole point of config_epoch.
+CREATE INDEX IF NOT EXISTS idx_requests_epoch_ts ON requests(config_epoch, ts);

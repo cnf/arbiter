@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,6 +49,10 @@ type Event struct {
 	Model            string
 	AliasUsed        string
 	RoutingRationale string
+
+	// ConfigEpoch identifies the resolved config that served this request
+	// (config.Config.Epoch). Empty is written as NULL.
+	ConfigEpoch string
 
 	Domain     string
 	Effort     string
@@ -93,11 +98,21 @@ type SQLiteWriter struct {
 	closed bool
 }
 
+// dsn builds the connection string for the event store. Both the writer and
+// the reader must go through it: WAL lets a reader query while the writer's
+// drain goroutine is mid-transaction, and busy_timeout makes the two wait for
+// each other instead of failing instantly with SQLITE_BUSY. journal_mode is
+// persisted in the database file, but busy_timeout is per-connection, so the
+// reader cannot inherit it from the writer.
+func dsn(path string) string {
+	return "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+}
+
 // NewSQLiteWriter opens (creating if needed) the database at path, applies
 // the schema, and starts the drain goroutine. The caller owns the writer's
 // lifetime and must Close it to flush the queue.
 func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("open event store %q: %w", path, err)
 	}
@@ -110,6 +125,16 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 	if _, err := db.ExecContext(context.Background(), string(schema)); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply event store schema: %w", err)
+	}
+	// CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so a column
+	// added to schema.sql after a database was first created never appears on
+	// it. Add the ones we know about explicitly; an insert referencing a
+	// missing column fails every time, which would silently lose events.
+	for _, col := range []string{"config_epoch TEXT"} {
+		if err := addColumnIfMissing(db, "requests", col); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("migrate event store schema: %w", err)
+		}
 	}
 
 	w := &SQLiteWriter{
@@ -164,6 +189,45 @@ func (w *SQLiteWriter) Close() error {
 	return w.db.Close()
 }
 
+// addColumnIfMissing runs ALTER TABLE ... ADD COLUMN unless the column
+// already exists. SQLite has no ADD COLUMN IF NOT EXISTS, so the check is a
+// PRAGMA read. decl is the full column declaration, e.g. "config_epoch TEXT".
+func addColumnIfMissing(db *sql.DB, table, decl string) error {
+	name := strings.SplitN(decl, " ", 2)[0]
+
+	rows, err := db.QueryContext(context.Background(), "PRAGMA table_info("+table+")")
+	if err != nil {
+		return fmt.Errorf("read %s columns: %w", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var (
+			cid       int
+			colName   string
+			colType   string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &colName, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("scan %s columns: %w", table, err)
+		}
+		if colName == name {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read %s columns: %w", table, err)
+	}
+
+	if _, err := db.ExecContext(context.Background(),
+		"ALTER TABLE "+table+" ADD COLUMN "+decl); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, name, err)
+	}
+	return nil
+}
+
 // run drains the queue until Close closes it, inserting each event. A failed
 // insert is logged and skipped — one bad row must not stop the drain.
 func (w *SQLiteWriter) run() {
@@ -203,6 +267,7 @@ func insertParams(ev Event) InsertRequestParams {
 		Error:            nullStr(ev.Error),
 		Stream:           ev.Stream,
 		ToolCallsJson:    toolCallsJSON(ev.ToolCalls),
+		ConfigEpoch:      nullStr(ev.ConfigEpoch),
 	}
 }
 

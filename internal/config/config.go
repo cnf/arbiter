@@ -6,6 +6,8 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -447,9 +449,9 @@ func (c *Config) validateModelCatalog() error {
 // validateAliasMember checks one pinned/group member: its Provider must be
 // a configured provider, and Model must be one of that provider's declared
 // Models (the Member row may set Model to override the first declared model,
- // which is useful when a single provider lists several models and only one
- // is the alias's representative). Empty Model is accepted when the provider
- // has no declared models.
+// which is useful when a single provider lists several models and only one
+// is the alias's representative). Empty Model is accepted when the provider
+// has no declared models.
 //
 // If the Member itself names another alias, the caller (detectAliasCycles)
 // resolves it elsewhere; here the Provider is another alias name and we skip
@@ -660,6 +662,47 @@ func (c *Config) mergeModelCatalogFile(configPath string) error {
 
 	c.ModelCatalog = append(merged, c.ModelCatalog...)
 	return nil
+}
+
+// Epoch returns a short, stable identifier for this *resolved* configuration:
+// a hash over the config as it exists after env expansion, catalog-file merge,
+// and endpoint normalization. Two loads that produce the same effective
+// config yield the same epoch, across reloads and across process restarts;
+// any change to a behavior-bearing field yields a new one.
+//
+// It exists so recorded requests can be attributed to the configuration that
+// produced them — "did this config change save or cost money?" is otherwise
+// unanswerable, since a reload is not a commit and the resolved config never
+// exists on disk in one piece. The hash covers the merged catalog rows, so a
+// regenerated catalog file is itself a new epoch.
+//
+// Provider API keys are blanked before hashing: rotating a secret changes no
+// behavior and must not split the data. Logging level is *not* blanked, so
+// changing it does start a new epoch — a deliberate simplification (it is a
+// config change), not an oversight.
+//
+// The value is a hex-encoded SHA-256 truncated to 16 chars — long enough that
+// accidental collisions across a hand-edited config are not a concern, short
+// enough to read in a log line or query filter.
+func (c *Config) Epoch() string {
+	redacted := *c
+	redacted.Providers = make(map[string]ProviderConfig, len(c.Providers))
+	for name, p := range c.Providers {
+		p.Key = ""
+		redacted.Providers[name] = p
+	}
+
+	// yaml.Marshal emits map keys in sorted order, so the same config always
+	// produces the same bytes regardless of map iteration order.
+	raw, err := yaml.Marshal(&redacted)
+	if err != nil {
+		// Marshaling a config that just decoded successfully cannot fail; if
+		// it somehow does, an empty epoch is better than panicking on the
+		// startup path.
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 // normalizeEndpoints strips a trailing slash from each provider endpoint.

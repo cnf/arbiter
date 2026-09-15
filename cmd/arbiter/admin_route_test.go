@@ -32,7 +32,8 @@ func newTestRouter(t *testing.T, configPath, forwardAuthHeader string) (*arbiter
 	admin := arbiterhttp.NewAdminHandler(func(ctx context.Context) error {
 		return reload(ctx, configPath, h, logger, store.NoopWriter{})
 	}, logger)
-	return h, newRouter(h, admin, forwardAuthHeader)
+	stats := arbiterhttp.NewStatsHandler(nil, logger)
+	return h, newRouter(h, admin, stats, forwardAuthHeader)
 }
 
 // The gate must be wired onto the *route*, not just available as a helper:

@@ -37,6 +37,21 @@ func loadConfig(t *testing.T, contents string) error {
 	return err
 }
 
+// loadConfigOK writes and loads a config, failing the test on any error, and
+// returns the resolved Config.
+func loadConfigOK(t *testing.T, contents string) *Config {
+	t.Helper()
+	path := t.TempDir() + "/lanes.yaml"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return cfg
+}
+
 func TestAliasConfigLoadsPinnedAndGroup(t *testing.T) {
 	err := loadConfig(t, baseConfig+`
 aliases:

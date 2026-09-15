@@ -83,6 +83,7 @@ func TestRecordPersistsFullEvent(t *testing.T) {
 		StatusCode:       200,
 		Stream:           true,
 		ToolCalls:        []string{"read_file", "grep"},
+		ConfigEpoch:      "abc123def456",
 	})
 
 	if err := w.Close(); err != nil {
@@ -102,6 +103,9 @@ func TestRecordPersistsFullEvent(t *testing.T) {
 	}
 	if got.CostUsd != 0.000725 || got.LatencyMs != 910 || got.StatusCode != 200 {
 		t.Errorf("usage/latency/status wrong: %+v", got)
+	}
+	if got.ConfigEpoch == nil || *got.ConfigEpoch != "abc123def456" {
+		t.Errorf("config_epoch = %v, want abc123def456", got.ConfigEpoch)
 	}
 }
 

@@ -100,9 +100,10 @@ Explicitly out of scope:
 
 > **This is a dated snapshot, not a live status.** It was written at commit
 > `5598a2b` to record the gap between these requirements and the code as it
-> then stood. Each item below carries a status marker added 2026-09-15; the
-> original text is kept so the reasoning survives. For current status see the
-> project memory's changelog, which tracks each phase as it lands.
+> then stood. Each item below carries a status marker added 2026-09-15 and
+> refreshed alongside the Phase 4a commit itself; the original text is kept
+> so the reasoning survives. For current status see the project memory's
+> changelog, which tracks each phase as it lands.
 >
 > Markers: **DONE** (gap closed, with the commit that closed it) ·
 > **PARTIAL** (partly closed — the remainder is named) · **OPEN** (still
@@ -122,8 +123,10 @@ Explicitly out of scope:
   it's currently global/process-wide, not per-provider.
 - **Structured JSON logging with trace-ID correlation**
   (`internal/logging/logger.go`) — good foundation, but see gaps below
-  (stdout-only isn't "queryable"). **PARTIAL** — stdout-only is still true;
-  the store's schema now exists but nothing writes to it yet.
+  (stdout-only isn't "queryable"). **DONE** (write path `90b570d`, read
+  surface, Phase 4a) — every completed request is persisted with its routing
+  decision, usage, cost and session linkage, and `/admin/stats/*` serves it;
+  the JSON log lines remain the transport, not the store.
 
 ## Diverges — needs changing
 
@@ -157,16 +160,17 @@ Explicitly out of scope:
 - **`Usage.CostUSD`** (`pkg/types/response.go:39`) is populated only when
   an upstream reports it directly (e.g. OpenRouter) — no static cost-table
   fallback, so most providers (plain Anthropic/OpenAI) show $0 always.
-  **OPEN** — the catalog is used to *choose* a route, never to compute a
-  reported cost. Phase 3b is scoped to close this for the store's
-  `cost_usd` column (not for the response body).
+  **DONE for the store** (`90b570d`) — catalog-derived cost now fills the
+  stored `cost_usd` when the upstream reports none; the response body still
+  carries only upstream-reported cost.
 - **Observability is stdout-only.** `LogRouting`/`LogUpstream`/etc. write
   JSON lines and nothing else — no persistence, no session/trajectory
   concept, no tool-call attribution, no client-identity tagging. Fine as a
   transport, not sufficient as the queryable store the requirements call
-  for. **PARTIAL** — the sqlite schema and sqlc-generated queries now exist
-  (`internal/store/`, Phase 3a `a9b3b1b`), but **no code writes to it**: the
-  write path is Phase 3b.
+  for. **DONE** (schema `a9b3b1b`, write path `90b570d`, read surface,
+  Phase 4a) — each completed request is a persisted row (routing rationale,
+  tokens, cost, latency, session key, tool calls, config epoch), and the
+  `/admin/stats/*` endpoints answer the §2 target questions directly.
 
 ## Missing entirely — needs developing
 
@@ -190,10 +194,11 @@ Explicitly out of scope:
   decision/rationale/signals, tokens, cost, latency, client identity,
   session/trajectory linkage, tool calls. This is the foundation the
   dashboard/cost-tracking/alerting features would later read from — build
-  once, not per-feature. **PARTIAL** (schema `a9b3b1b`) — schema and typed
-  queries exist with columns for all of the above; the write path, and with
-  it the required catalog-derived cost computation, is Phase 3b. Sub-agent /
-  child-request attribution is deliberately *not* in the schema.
+  once, not per-feature. **DONE** (schema `a9b3b1b`, write path `90b570d`,
+  read surface, Phase 4a) — the schema carries all of the above plus the
+  `config_epoch` join key, the writer records every completed request with
+  catalog-derived cost, and `/admin/stats/*` serves the aggregates. Sub-agent
+  / child-request attribution is deliberately *not* in the schema.
 - **API key authentication middleware** — nothing currently reads
   `Authorization` or any Caddy forward-auth header; `internal/http/handler.go`
   has no auth check at all. Needs: per-key config, validate against either
@@ -218,7 +223,8 @@ Explicitly out of scope:
 
 ## Suggested build order (routing-first, per your priority)
 
-Status as of 2026-09-15: **1 and 2 are done; 3 is half done (schema only).**
+Status as of 2026-09-15: **1, 2 and 3 are done; 4 is reframed (attribution,
+not auth); 7 is partial (query surface exists, UI does not).**
 
 1. ~~Model alias layer + wiring it into the router selection (the "auto /
    auto-coding / pinned model / model group" mechanism).~~ **DONE** —
@@ -228,11 +234,14 @@ Status as of 2026-09-15: **1 and 2 are done; 3 is half done (schema only).**
    built; considered optional).
 3. Persistent event store capturing routing+usage+session data (schema
    informed by #1–2 so routing decisions land in it from day one). — **3a
-   DONE** (`a9b3b1b`, schema + generated queries); **3b (write path, incl.
-   catalog-derived cost) NOT STARTED.**
+   DONE** (`a9b3b1b`, schema + generated queries); **3b DONE** (`90b570d`,
+   write path incl. catalog-derived cost); **read surface DONE** (Phase 4a,
+   config-epoch join key + `/admin/stats/*`).
 4. API key auth + client identity threaded into the store. — not started;
    reframed as attribution + per-client shaping, not auth (see §4).
 5. Budget-cap guardrail (consumes the same usage data as #3). — not started.
 6. Client-injected-prompt stripper guardrail. — not started.
-7. Dashboard/query tooling over the store from #3 (explicitly last). — not
-   started.
+7. Dashboard/query tooling over the store from #3 (explicitly last). —
+   **PARTIAL** (Phase 4a) — the HTTP query surface exists (`/admin/stats/*`:
+   overall, provider/model, per-epoch, session trajectory, tools); a UI or
+   dashboard over it does not.

@@ -19,7 +19,7 @@ func TestAliasResolverForce(t *testing.T) {
 		"coding": {Name: "coding", Force: map[string][]string{"domain": {"code_generation"}}},
 		"pinned": {Name: "pinned", Type: "pinned", Provider: "claude", Model: "claude-3-haiku-20250307"},
 	}
-	r := NewAliasResolver(aliases, aliasProviders(), nil)
+	r := NewAliasResolver(aliases, aliasProviders(), nil, nil)
 
 	force, ok := r.Force("coding")
 	if !ok {
@@ -41,7 +41,7 @@ func TestAliasResolverResolvePinned(t *testing.T) {
 	aliases := map[string]Alias{
 		"cheap-claude": {Name: "cheap-claude", Type: "pinned", Provider: "claude", Model: "claude-3-haiku-20250307"},
 	}
-	r := NewAliasResolver(aliases, aliasProviders(), nil)
+	r := NewAliasResolver(aliases, aliasProviders(), nil, nil)
 
 	provider, model, ok, err := r.Resolve("cheap-claude")
 	if err != nil {
@@ -68,11 +68,11 @@ func TestAliasResolverResolveGroup(t *testing.T) {
 	}
 	// Fixed picker so the test is deterministic.
 	pickCalls := 0
-	pick := func(members []AliasMember) AliasMember {
+	pick := func(members []AliasMember, _ string, _ CostLatencyLookup) AliasMember {
 		pickCalls++
 		return members[0]
 	}
-	r := NewAliasResolver(aliases, aliasProviders(), pick)
+	r := NewAliasResolver(aliases, aliasProviders(), pick, nil)
 
 	provider, model, ok, err := r.Resolve("free-search")
 	if err != nil {
@@ -90,7 +90,7 @@ func TestAliasResolverResolveGroup(t *testing.T) {
 }
 
 func TestAliasResolverResolveUnknownNameOK(t *testing.T) {
-	r := NewAliasResolver(nil, aliasProviders(), nil)
+	r := NewAliasResolver(nil, aliasProviders(), nil, nil)
 
 	_, _, ok, err := r.Resolve("not-an-alias")
 	if err != nil {
@@ -106,8 +106,8 @@ func TestAliasResolverResolveAliasToAlias(t *testing.T) {
 		"inner": {Name: "inner", Type: "pinned", Provider: "claude", Model: "claude-3-opus-20250219"},
 		"outer": {Name: "outer", Type: "group", Members: []AliasMember{{Provider: "inner"}}},
 	}
-	pick := func(members []AliasMember) AliasMember { return members[0] }
-	r := NewAliasResolver(aliases, aliasProviders(), pick)
+	pick := func(members []AliasMember, _ string, _ CostLatencyLookup) AliasMember { return members[0] }
+	r := NewAliasResolver(aliases, aliasProviders(), pick, nil)
 
 	provider, model, ok, err := r.Resolve("outer")
 	if err != nil {
@@ -127,8 +127,8 @@ func TestAliasResolverResolveAliasToAliasModelOverride(t *testing.T) {
 		// outer's member names inner but overrides its model.
 		"outer": {Name: "outer", Type: "group", Members: []AliasMember{{Provider: "inner", Model: "claude-3-haiku-20250307"}}},
 	}
-	pick := func(members []AliasMember) AliasMember { return members[0] }
-	r := NewAliasResolver(aliases, aliasProviders(), pick)
+	pick := func(members []AliasMember, _ string, _ CostLatencyLookup) AliasMember { return members[0] }
+	r := NewAliasResolver(aliases, aliasProviders(), pick, nil)
 
 	provider, model, ok, err := r.Resolve("outer")
 	if err != nil {
@@ -147,8 +147,8 @@ func TestAliasResolverResolveCycleErrors(t *testing.T) {
 		"a": {Name: "a", Type: "group", Members: []AliasMember{{Provider: "b"}}},
 		"b": {Name: "b", Type: "group", Members: []AliasMember{{Provider: "a"}}},
 	}
-	pick := func(members []AliasMember) AliasMember { return members[0] }
-	r := NewAliasResolver(aliases, aliasProviders(), pick)
+	pick := func(members []AliasMember, _ string, _ CostLatencyLookup) AliasMember { return members[0] }
+	r := NewAliasResolver(aliases, aliasProviders(), pick, nil)
 
 	_, _, ok, err := r.Resolve("a")
 	if err == nil {
@@ -163,7 +163,7 @@ func TestAliasResolverForceAliasCannotBeATarget(t *testing.T) {
 	aliases := map[string]Alias{
 		"coding": {Name: "coding", Force: map[string][]string{"domain": {"code_generation"}}},
 	}
-	r := NewAliasResolver(aliases, aliasProviders(), nil)
+	r := NewAliasResolver(aliases, aliasProviders(), nil, nil)
 
 	_, _, ok, err := r.Resolve("coding")
 	if err == nil {
@@ -181,7 +181,7 @@ func TestAliasResolverForceEmptyIsStillAForceAlias(t *testing.T) {
 	aliases := map[string]Alias{
 		"auto": {Name: "auto", Force: map[string][]string{}},
 	}
-	r := NewAliasResolver(aliases, aliasProviders(), nil)
+	r := NewAliasResolver(aliases, aliasProviders(), nil, nil)
 
 	force, ok := r.Force("auto")
 	if !ok {
@@ -192,6 +192,36 @@ func TestAliasResolverForceEmptyIsStillAForceAlias(t *testing.T) {
 	}
 	if _, _, _, err := r.Resolve("auto"); err == nil {
 		t.Error("resolving a force alias as a concrete target should error")
+	}
+}
+
+func TestAliasResolverGroupSelectCheapest(t *testing.T) {
+	aliases := map[string]Alias{
+		"budget": {
+			Name: "budget",
+			Type: "group",
+			Select: "cheapest_input",
+			Members: []AliasMember{
+				{Provider: "claude", Model: "claude-3-opus-20250219"},
+				{Provider: "claude", Model: "claude-3-haiku-20250307"},
+			},
+		},
+	}
+	cat := NewStaticCatalog([]types.ModelCost{
+		{Provider: "claude", Model: "claude-3-opus-20250219", InputCostPerMTok: 15.0},
+		{Provider: "claude", Model: "claude-3-haiku-20250307", InputCostPerMTok: 0.25},
+	})
+	r := NewAliasResolver(aliases, aliasProviders(), nil, cat)
+
+	_, model, ok, err := r.Resolve("budget")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected budget to resolve")
+	}
+	if model != "claude-3-haiku-20250307" {
+		t.Errorf("select: cheapest_input picked %q, want the haiku model", model)
 	}
 }
 
@@ -206,7 +236,7 @@ func TestAliasResolverGroupFallbacks(t *testing.T) {
 			},
 		},
 	}
-	r := NewAliasResolver(aliases, aliasProviders(), nil)
+	r := NewAliasResolver(aliases, aliasProviders(), nil, nil)
 
 	fallbacks := r.GroupFallbacks("free-search", AliasMember{Provider: "gpt4", Model: "gpt-4o"})
 	if len(fallbacks) != 1 {

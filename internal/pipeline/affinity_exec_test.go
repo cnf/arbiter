@@ -208,7 +208,7 @@ func TestForceAliasOverridesOnlyNamedAxes(t *testing.T) {
 	}
 	resolver := router.NewAliasResolver(map[string]router.Alias{
 		"coding": {Name: "coding", Force: map[string][]string{"domain": {"code_generation"}}},
-	}, provs, nil)
+	}, provs, nil, nil)
 
 	effort := classifier.NewHeuristicClassifier("effort", classifier.AxisEffort, map[string][]string{
 		"easy":   {"quick", "simple"},

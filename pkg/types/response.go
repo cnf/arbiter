@@ -129,9 +129,7 @@ type Route struct {
 
 // Metadata augments a Route with runtime info captured at decision time.
 type Metadata struct {
-	CostTier       string
-	QuotaRemaining int
-	LatencyTarget  string // "fast", "normal", "quality"
-	TraceID        string
-	RoutedAt       time.Time
+	LatencyTarget string // "fast", "normal", "quality"
+	TraceID       string
+	RoutedAt      time.Time
 }

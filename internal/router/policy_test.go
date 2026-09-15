@@ -148,7 +148,7 @@ func TestPolicyRouterTargetResolvesPinnedAlias(t *testing.T) {
 	aliases := map[string]Alias{
 		"cheap-claude": {Name: "cheap-claude", Type: "pinned", Provider: "claude", Model: "claude-3-opus-20250219"},
 	}
-	resolver := NewAliasResolver(aliases, testProviders(), nil)
+	resolver := NewAliasResolver(aliases, testProviders(), nil, nil)
 	rules := []PolicyRule{
 		{When: PolicyCondition{}, Target: "cheap-claude"},
 	}
@@ -174,8 +174,8 @@ func TestPolicyRouterTargetResolvesGroupWithFallbacks(t *testing.T) {
 			},
 		},
 	}
-	pick := func(members []AliasMember) AliasMember { return members[0] }
-	resolver := NewAliasResolver(aliases, testProviders(), pick)
+	pick := func(members []AliasMember, _ string, _ CostLatencyLookup) AliasMember { return members[0] }
+	resolver := NewAliasResolver(aliases, testProviders(), pick, nil)
 	rules := []PolicyRule{
 		{When: PolicyCondition{}, Target: "free-search"},
 	}

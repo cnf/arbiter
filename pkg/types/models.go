@@ -1,19 +1,16 @@
 package types
 
-// ModelInfo holds metadata about a specific model.
-type ModelInfo struct {
-	Name            string
-	Provider        string
-	ContextWindow   int
-	MaxOutputTokens int
-	CostPerMTok     float64 // per million tokens (input)
-	HasVision       bool
-	HasTools        bool
-	HasSearching    bool
+// ModelCost is one entry in the cost/latency catalog, keyed by
+// provider+model. Costs are US dollars per million tokens. LatencyMsP50 is
+// a static estimate supplied by config; an empirical source (observed
+// latencies) can populate the same struct later without changing callers.
+type ModelCost struct {
+	Provider          string
+	Model             string
+	InputCostPerMTok  float64
+	OutputCostPerMTok float64
+	LatencyMsP50      int
 }
-
-// ModelRegistry is a lookup table for model metadata.
-type ModelRegistry map[string]ModelInfo
 
 // Signals is the output of classification: the axes a router matches on.
 // Each axis is independently classified and independently overridable by a
@@ -32,11 +29,3 @@ type Signals struct {
 // spellings and maps them onto these.
 var KnownAxes = []string{"domain", "effort", "cost_class", "capabilities"}
 
-// CostTier represents a cost/quota tier.
-type CostTier struct {
-	Name              string
-	MaxPerMinute      float64 // USD
-	MaxPerDay         float64 // USD
-	FallbackProviders []string
-	Priority          int
-}

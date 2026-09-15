@@ -151,7 +151,7 @@ func buildPipeline(cfg *config.Config, logger logging.Logger) (*pipeline.Pipelin
 		classifiers = append(classifiers, c)
 	}
 
-	resolver := buildAliasResolver(cfg.Aliases, providers)
+	resolver := buildAliasResolver(cfg.Aliases, providers, modelCostEntries(cfg.ModelCatalog))
 
 	routers := make([]router.Router, 0, len(cfg.Routers))
 	for _, rc := range cfg.Routers {
@@ -257,7 +257,7 @@ func buildClassifier(cc config.ClassifierConfig) (classifier.Classifier, error) 
 // policy routers that only use literal provider/model targets don't need one
 // at all; the resolver is nonetheless always built and passed through so a
 // nil isn't threaded separately.
-func buildAliasResolver(aliasesCfg map[string]config.AliasConfig, providers map[string]types.ProviderConfig) *router.AliasResolver {
+func buildAliasResolver(aliasesCfg map[string]config.AliasConfig, providers map[string]types.ProviderConfig, catalog []types.ModelCost) *router.AliasResolver {
 	aliases := make(map[string]router.Alias, len(aliasesCfg))
 	for name, a := range aliasesCfg {
 		alias := router.Alias{
@@ -273,7 +273,27 @@ func buildAliasResolver(aliasesCfg map[string]config.AliasConfig, providers map[
 		}
 		aliases[name] = alias
 	}
-	return router.NewAliasResolver(aliases, providers, nil)
+	var lookup router.CostLatencyLookup
+	if len(catalog) > 0 {
+		lookup = router.NewStaticCatalog(catalog)
+	}
+	return router.NewAliasResolver(aliases, providers, nil, lookup)
+}
+
+// modelCostEntries converts the config's catalog rows into the type the
+// router's lookup consumes.
+func modelCostEntries(entries []config.ModelCatalogEntry) []types.ModelCost {
+	out := make([]types.ModelCost, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, types.ModelCost{
+			Provider:          e.Provider,
+			Model:             e.Model,
+			InputCostPerMTok:  e.InputCostPerMTok,
+			OutputCostPerMTok: e.OutputCostPerMTok,
+			LatencyMsP50:      e.LatencyMsP50,
+		})
+	}
+	return out
 }
 
 func buildRouter(rc config.RouterConfig, providers map[string]types.ProviderConfig, resolver *router.AliasResolver) (router.Router, error) {

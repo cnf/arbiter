@@ -116,10 +116,22 @@ aliases:
     model: "claude-3-haiku-20250307"
   free-search:                         # group: ordered candidates + fallback chain
     type: "group"
-    select: "random"
+    select: "random"                   # random | cheapest_input | cheapest_output | fastest
     members:
       - { provider: "litellm", model: "openrouter/free" }
       - { provider: "local", model: "llama2" }
+
+model_catalog:                         # feeds the cost/latency select strategies
+  - provider: "litellm"
+    model: "openrouter/free"
+    input_cost_per_mtok: 0
+    output_cost_per_mtok: 0
+    latency_ms_p50: 2500
+  - provider: "claude"
+    model: "claude-3-haiku-20250307"
+    input_cost_per_mtok: 0.25
+    output_cost_per_mtok: 1.25
+    latency_ms_p50: 900
 
 routers:
   - name: "policy"
@@ -180,6 +192,29 @@ Aliases are client-facing and appear in `/models` alongside provider models
 (listed with provider `"alias"`). Any rule `target` may name an alias, and a
 group member may itself be another alias; resolution is depth-limited and a
 cycle is rejected at config load.
+
+### Group selection strategies
+
+A `group` alias's `select:` decides which member becomes the primary:
+
+| `select` | Picks |
+| --- | --- |
+| `random` (default) | a random member |
+| `cheapest_input` | lowest `input_cost_per_mtok` |
+| `cheapest_output` | lowest `output_cost_per_mtok` |
+| `fastest` | lowest `latency_ms_p50` |
+
+The cost/latency strategies read the `model_catalog` block — static figures,
+keyed by provider+model, in USD per million tokens and milliseconds. Members
+with no catalog entry are treated as *unknown cost* and rank last rather than
+erroring; if no member has an entry (or no catalog is configured), selection
+falls back to the first-listed member, deterministically, so a missing row is
+visible as a routing decision instead of being masked by randomness. Ties
+break the same way. The unselected members remain the fallback chain.
+
+The catalog is populated by hand today; a generator that converts an external
+price list (e.g. LiteLLM's `model_prices_and_context_window.json`) into the
+same shape is a separate follow-up.
 
 Classifier note: `axis` is optional on a `heuristic` classifier (defaults to
 `domain`, as before this field existed). The legacy `capability_detector` type

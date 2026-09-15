@@ -30,6 +30,22 @@ type Config struct {
 	Aliases     map[string]AliasConfig    `yaml:"aliases,omitempty"`
 
 	SessionAffinity SessionAffinityConfig `yaml:"session_affinity,omitempty"`
+
+	// ModelCatalog supplies static cost/latency figures for group-alias
+	// selection strategies (cheapest_input, cheapest_output, fastest). A
+	// provider/model with no entry is "unknown cost" and ranks last rather
+	// than erroring.
+	ModelCatalog []ModelCatalogEntry `yaml:"model_catalog,omitempty"`
+}
+
+// ModelCatalogEntry is one row of the static cost/latency catalog. Costs are
+// US dollars per million tokens; latency is a p50 estimate in milliseconds.
+type ModelCatalogEntry struct {
+	Provider          string  `yaml:"provider"`
+	Model             string  `yaml:"model"`
+	InputCostPerMTok  float64 `yaml:"input_cost_per_mtok"`
+	OutputCostPerMTok float64 `yaml:"output_cost_per_mtok"`
+	LatencyMsP50      int     `yaml:"latency_ms_p50,omitempty"`
 }
 
 // SessionAffinityConfig controls how requests are pinned to whichever
@@ -215,6 +231,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateModelCatalog(); err != nil {
+		return err
+	}
+
 	switch c.Logging.Level {
 	case "", "debug", "info", "warn", "error":
 	default:
@@ -321,8 +341,8 @@ func (c *Config) validateAliases() error {
 			if len(a.Members) == 0 {
 				return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: group has no members", name), nil)
 			}
-			if a.Select != "" && a.Select != "random" {
-				return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: unknown select %q (want \"random\"; other strategies arrive in a later phase)", name, a.Select), nil)
+			if !validSelect(a.Select) {
+				return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: unknown select %q (want one of %s)", name, a.Select, strings.Join(selectStrategies, ", ")), nil)
 			}
 			for _, m := range a.Members {
 				if err := c.validateAliasMember(name, m); err != nil {
@@ -336,6 +356,45 @@ func (c *Config) validateAliases() error {
 	}
 
 	return c.detectAliasCycles()
+}
+
+// selectStrategies are the values a group alias's `select:` accepts. The
+// cost/latency ones require catalog entries to be useful; without them they
+// degrade to first-listed (see router.selectMember).
+var selectStrategies = []string{"random", "cheapest_input", "cheapest_output", "fastest"}
+
+// validSelect reports whether s is a known strategy. Empty means the default
+// (random).
+func validSelect(s string) bool {
+	if s == "" {
+		return true
+	}
+	for _, v := range selectStrategies {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+// validateModelCatalog checks catalog rows: the provider must be configured,
+// and the model must be one of that provider's declared Models. Both are
+// errors — a row that can never match is a config bug, and the lookup's
+// unknown-row tolerance is for genuinely absent entries, not typos.
+func (c *Config) validateModelCatalog() error {
+	for i, e := range c.ModelCatalog {
+		if e.Provider == "" || e.Model == "" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("model_catalog[%d]: provider and model are required", i), nil)
+		}
+		p, ok := c.Providers[e.Provider]
+		if !ok {
+			return arbitererrors.NewConfigError(fmt.Sprintf("model_catalog[%d]: provider %q is not configured", i, e.Provider), nil)
+		}
+		if !slicesContain(p.Models, e.Model) {
+			return arbitererrors.NewConfigError(fmt.Sprintf("model_catalog[%d]: model %q is not declared by provider %q", i, e.Model, e.Provider), nil)
+		}
+	}
+	return nil
 }
 
 // validateAliasMember checks one pinned/group member: its Provider must be

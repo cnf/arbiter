@@ -53,19 +53,24 @@ type AliasMember struct {
 type AliasResolver struct {
 	aliases   map[string]Alias
 	providers map[string]types.ProviderConfig
-	// pick chooses a member from a group. Injected so the strategy can
-	// change (random now; cost- or latency-aware in Phase 2) without
-	// touching resolution.
-	pick func([]AliasMember) AliasMember
+	// pick chooses a member from a group, applying the group's `select:`
+	// strategy against the catalog. Injected so tests can substitute a fake
+	// and so the strategy set can grow without touching resolution.
+	pick picker
+	// catalog answers cost/latency lookups for the cost- and latency-aware
+	// strategies. nil means none configured; those strategies then degrade
+	// to first-listed.
+	catalog CostLatencyLookup
 }
 
-// NewAliasResolver builds a resolver. A nil pick defaults to random
-// selection, which is the only strategy Phase 1 defines.
-func NewAliasResolver(aliases map[string]Alias, providers map[string]types.ProviderConfig, pick func([]AliasMember) AliasMember) *AliasResolver {
+// NewAliasResolver builds a resolver. A nil pick defaults to the built-in
+// strategy dispatch (random, cheapest_input, cheapest_output, fastest).
+// catalog may be nil when no cost/latency strategies are configured.
+func NewAliasResolver(aliases map[string]Alias, providers map[string]types.ProviderConfig, pick picker, catalog CostLatencyLookup) *AliasResolver {
 	if pick == nil {
-		pick = randomPick
+		pick = selectMember
 	}
-	return &AliasResolver{aliases: aliases, providers: providers, pick: pick}
+	return &AliasResolver{aliases: aliases, providers: providers, pick: pick, catalog: catalog}
 }
 
 // Has reports whether name is a configured alias.
@@ -123,7 +128,7 @@ func (r *AliasResolver) resolve(name string, depth int) (string, string, bool, e
 		if len(a.Members) == 0 {
 			return "", "", true, fmt.Errorf("alias %q: group has no members", name)
 		}
-		member := r.pick(a.Members)
+		member := r.pick(a.Members, a.Select, r.catalog)
 		// A member's Provider may itself be an alias name.
 		innerProvider, innerModel, isAlias, err := r.resolve(member.Provider, depth+1)
 		if err != nil {

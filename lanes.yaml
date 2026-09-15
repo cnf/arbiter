@@ -122,10 +122,27 @@ aliases:
 
   free-search:
     type: "group"
-    select: "random"               # cheapest_input/fastest arrive in a later phase
+    select: "random"               # random | cheapest_input | cheapest_output | fastest
     members:
       - { provider: "litellm", model: "openrouter/free" }
       - { provider: "local", model: "llama2" }
+
+# Static cost/latency catalog for the cost- and latency-aware group `select:`
+# strategies. Costs are USD per million tokens; latency is a p50 estimate in
+# ms. A provider/model with no entry is treated as unknown cost and ranks
+# last — it does not error. Provider must be configured and model must be one
+# of its declared models.
+# model_catalog:
+#   - provider: "litellm"
+#     model: "openrouter/free"
+#     input_cost_per_mtok: 0
+#     output_cost_per_mtok: 0
+#     latency_ms_p50: 2500
+#   - provider: "claude"
+#     model: "claude-3-haiku-20250307"
+#     input_cost_per_mtok: 0.25
+#     output_cost_per_mtok: 1.25
+#     latency_ms_p50: 900
 
 routers:
   - name: "primary"

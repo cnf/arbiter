@@ -224,3 +224,73 @@ classifiers:
 		t.Fatalf("Load: want capability_detector axis error, got %v", err)
 	}
 }
+
+func TestModelCatalogLoads(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+model_catalog:
+  - provider: "claude"
+    model: "claude-3-haiku"
+    input_cost_per_mtok: 0.25
+    output_cost_per_mtok: 1.25
+    latency_ms_p50: 900
+`)
+	if err != nil {
+		t.Fatalf("Load: want catalog to load, got %v", err)
+	}
+}
+
+func TestModelCatalogRejectsUnconfiguredProvider(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+model_catalog:
+  - provider: "nope"
+    model: "whatever"
+    input_cost_per_mtok: 1
+`)
+	if err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("Load: want unconfigured-provider error, got %v", err)
+	}
+}
+
+func TestModelCatalogRejectsUndeclaredModel(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+model_catalog:
+  - provider: "claude"
+    model: "not-a-declared-model"
+    input_cost_per_mtok: 1
+`)
+	if err == nil || !strings.Contains(err.Error(), "not declared") {
+		t.Fatalf("Load: want undeclared-model error, got %v", err)
+	}
+}
+
+func TestAliasGroupAcceptsCostSelectStrategies(t *testing.T) {
+	for _, sel := range []string{"cheapest_input", "cheapest_output", "fastest"} {
+		err := loadConfig(t, baseConfig+`
+aliases:
+  budget:
+    type: "group"
+    select: "`+sel+`"
+    members:
+      - provider: "claude"
+        model: "claude-3-haiku"
+`)
+		if err != nil {
+			t.Errorf("Load with select %q: want success, got %v", sel, err)
+		}
+	}
+}
+
+func TestAliasGroupRejectsUnknownSelect(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+aliases:
+  budget:
+    type: "group"
+    select: "bogus"
+    members:
+      - provider: "claude"
+        model: "claude-3-haiku"
+`)
+	if err == nil || !strings.Contains(err.Error(), "unknown select") {
+		t.Fatalf("Load: want unknown-select error, got %v", err)
+	}
+}

@@ -224,8 +224,26 @@ routers:
 # is fixed for the process lifetime. Cost is computed from `model_catalog`
 # rates whenever the upstream reports none (see the catalog section above).
 #
+# `capture_content` additionally stores prompt and response BODIES. They are
+# content-addressed and deduplicated at message-block granularity, so a
+# conversation that re-sends its earlier turns on every request stores each
+# block once — which also makes "the text this client prepends to everything"
+# a query (`/admin/content/repeated`) rather than a guess. Off by default: this
+# is the one setting that writes conversation text to disk. Capture happens
+# BEFORE pre-guardrails, so the client's own system prompt is what is stored,
+# never the text Arbiter injects.
+#
+# `content_ttl` is how long captured bodies are kept (a Go duration — "72h",
+# NOT "3d"). Empty or "0" means NEVER EXPIRE, deliberately: retention is
+# opt-in, so an upgrade cannot silently start deleting data. Request metadata
+# is not on this clock; it stays useful far longer than conversation text does.
+# Binary/image blocks are recorded by hash only (no file is stored), so they
+# still deduplicate without being kept.
+#
 # storage:
 #   path: "arbiter.db"
+#   capture_content: true
+#   content_ttl: "72h"
 
 guardrails:
   pre:

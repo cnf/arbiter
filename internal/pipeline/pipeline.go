@@ -5,6 +5,8 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/http"
@@ -76,6 +78,11 @@ type Pipeline struct {
 	// is stamped on every recorded event so spend can later be compared across
 	// config changes. Empty when unknown (tests building a bare pipeline).
 	configEpoch string
+
+	// captureContent turns on request/response body capture (storage.
+	// capture_content). Off unless the operator asks for it: this is the only
+	// path that writes conversation text to disk.
+	captureContent bool
 }
 
 // defaultAffinityTTL applies when config sets no session_affinity.default_ttl.
@@ -154,6 +161,15 @@ func (p *Pipeline) SetConfigEpoch(epoch string) {
 	p.configEpoch = epoch
 }
 
+// SetCaptureContent turns request/response body capture on or off. Like
+// SetConfigEpoch, it is a setter rather than a constructor parameter: capture
+// is wiring-time policy, and a 17th positional argument would churn every
+// NewPipeline call site in the tests for something no test currently varies.
+// Called once by the wiring code before the pipeline is published.
+func (p *Pipeline) SetCaptureContent(on bool) {
+	p.captureContent = on
+}
+
 // Execute runs the full pipeline: normalize -> pre-guardrails -> classify ->
 // route -> upstream -> post-guardrails -> denormalize. format is the
 // caller's already-known wire format ("anthropic" or "openai") — the HTTP
@@ -167,9 +183,21 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 
 	req, err := p.normalizer.ToNormalized(payload, format)
 	if err != nil {
+		// The payload never even normalized, so there is no conversation to
+		// capture — only the raw bytes, which is what OriginalPayload holds for
+		// the formats that get that far. Nothing to store here.
 		return nil, arbitererrors.NewTranslationError("pre_routing", "normalize request", err)
 	}
 	req.TraceID = traceID
+
+	// Capture content BEFORE any pre-guardrail runs. A guardrail such as
+	// system_prompt rewrites req.SystemPrompt, and capturing after it would
+	// store Arbiter's own injected prompt as though the client had sent it —
+	// destroying exactly the distinction the dedup queries exist to expose.
+	var content store.CapturedContent
+	if p.captureContent {
+		content.Request = store.CaptureRequest(req)
+	}
 
 	for _, g := range p.preGuardrails {
 		if !g.ShouldRun(req) {
@@ -178,6 +206,10 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		mutated, err := g.ApplyPre(ctx, req)
 		if err != nil {
 			p.logger.LogGuardrail(ctx, g.Name(), "rejected", false)
+			// A guardrail rejection is a real request the operator will want to
+			// see ("why was this refused?"), and it never reaches the requests
+			// table. Its content goes in under owner_kind="rejected".
+			p.recordRejected(traceID, content)
 			return nil, err
 		}
 		p.logger.LogGuardrail(ctx, g.Name(), "applied", true)
@@ -193,12 +225,16 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 
 	route, sig, err := p.resolveRoute(ctx, req, hasKey)
 	if err != nil {
+		// Routing failed (no rule matched and no fallback router, or a config
+		// the request can't be routed under). Same reasoning as a guardrail
+		// rejection: the content is worth keeping even though no row will exist.
+		p.recordRejected(traceID, content)
 		return nil, err
 	}
 
 	// Streaming vs. non-streaming: different code paths
 	if req.Stream {
-		return p.executeStream(ctx, traceID, route, req, sessionKey, hasKey, sig, start)
+		return p.executeStream(ctx, traceID, route, req, sessionKey, hasKey, sig, start, content)
 	}
 
 	resp, _, _, served, err := p.tryUpstream(ctx, route, req)
@@ -223,6 +259,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 			LatencyMs:        time.Since(start).Milliseconds(),
 			StatusCode:       status,
 			Error:            err.Error(),
+			Content:          contentOrNil(content),
 		})
 		return nil, err
 	}
@@ -249,6 +286,13 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 
 	usage := resp.Usage
 	usage.CostUSD = p.computeCost(served.Provider, served.Model, usage)
+	// The response is captured here, after post-guardrails and denormalization,
+	// because this is the content that actually goes back to the client — a
+	// post-guardrail that rewrites the response must be reflected in what is
+	// stored, or the UI would show something the client never received.
+	if p.captureContent {
+		content.Response = store.CaptureResponse(resp, "assistant")
+	}
 	p.record(store.Event{
 		TraceID:          traceID,
 		SessionKey:       sessionKey,
@@ -262,6 +306,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		CostClass:        sig.CostClass,
 		Confidence:       sig.Confidence,
 		Usage:            usage,
+		Content:          contentOrNil(content),
 		LatencyMs:        time.Since(start).Milliseconds(),
 		StatusCode:       http.StatusOK,
 		ToolCalls:        toolCallNames(resp.Content),
@@ -278,6 +323,67 @@ func (p *Pipeline) record(ev store.Event) {
 	// carry it for the per-epoch cost comparison to be complete.
 	ev.ConfigEpoch = p.configEpoch
 	p.store.Record(ev)
+}
+
+// recordRejected stores the captured content of a request that will never get
+// a requests row. It is a no-op when capture is off or nothing was captured,
+// so the error paths cost nothing in the default configuration.
+//
+// The id passed as the owner is derived from the trace id, which is stable for
+// one request across all its error paths and distinguishes it from other
+// rejections. It is not a rowid and there is no row: content_refs records the
+// owner as ('rejected', <this>) on purpose, so a later change of policy that
+// gives rejected requests real rows can promote them without rewriting these
+// references (see content_refs in schema.sql).
+func (p *Pipeline) recordRejected(traceID string, content store.CapturedContent) {
+	if !p.captureContent || content.Empty() {
+		return
+	}
+	if rec, ok := p.store.(store.ContentRecorder); ok {
+		rec.RecordRejected(rejectionID(traceID), content)
+	}
+}
+
+// capturedStreamBlocks turns the per-index text accumulated from a stream into
+// capture blocks, matching CaptureResponse's indexing (position == block
+// index) so streamed and non-streamed responses store the same shape. Empty
+// entries — a block that produced no text, such as tool_use — are skipped
+// rather than stored as an empty block that would dedup against every other
+// empty block.
+func capturedStreamBlocks(orderedText []string) []store.Block {
+	var out []store.Block
+	for index, text := range orderedText {
+		if text == "" {
+			continue
+		}
+		out = append(out, store.Block{
+			Kind:     "text",
+			Body:     []byte(text),
+			Role:     "assistant",
+			MsgIndex: 0,
+			Position: index,
+		})
+	}
+	return out
+}
+
+// contentOrNil returns a pointer to the capture, or nil when there is nothing
+// to store, so the Event carries no content field at all in the common case
+// (capture off, or nothing extracted) rather than an empty non-nil value.
+func contentOrNil(c store.CapturedContent) *store.CapturedContent {
+	if c.Empty() {
+		return nil
+	}
+	return &c
+}
+
+// rejectionID turns a trace id into the stable numeric owner id used for
+// rejected content. Hashing keeps it collision-resistant and independent of
+// how the trace id was formed; only the low 63 bits are kept so the value is
+// always a positive int64.
+func rejectionID(traceID string) int64 {
+	sum := sha256.Sum256([]byte("rejected:" + traceID))
+	return int64(binary.BigEndian.Uint64(sum[:8]) >> 1)
 }
 
 // aliasName reports the alias the client named, if req.Model resolves to one.
@@ -493,7 +599,7 @@ func (p *Pipeline) cacheTTLFor(provider string) time.Duration {
 
 // executeStream handles streaming requests. It returns a channel of normalized
 // stream events that the HTTP handler will translate and send to the client.
-func (p *Pipeline) executeStream(ctx context.Context, traceID string, route types.Route, req *types.NormalizedRequest, sessionKey string, hasKey bool, sig types.Signals, start time.Time) (interface{}, error) {
+func (p *Pipeline) executeStream(ctx context.Context, traceID string, route types.Route, req *types.NormalizedRequest, sessionKey string, hasKey bool, sig types.Signals, start time.Time, content store.CapturedContent) (interface{}, error) {
 	// Send the request upstream (with fallback/retry handling) and get the
 	// event channel. A 429/5xx fails SendStream synchronously — the HTTP
 	// status is known before any SSE bytes flow — so fallback works exactly
@@ -521,6 +627,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 			StatusCode:       status,
 			Error:            err.Error(),
 			Stream:           true,
+			Content:          contentOrNil(content),
 		})
 		return nil, err
 	}
@@ -545,6 +652,10 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 		defer close(out)
 		streamStart := time.Now()
 		var usage types.Usage
+		// orderedText accumulates text deltas per block index so the streamed
+		// response body can be captured after the fact. A slice indexed by
+		// BlockIndex preserves the block order the client saw.
+		var orderedText []string
 		for evt := range eventChan {
 			evt.TraceID = traceID
 			if evt.MessageModel == "" {
@@ -555,6 +666,15 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 			}
 			if evt.OutputTokens > 0 {
 				usage.OutputTokens = evt.OutputTokens
+			}
+			if evt.TextDelta != "" {
+				if evt.BlockIndex >= len(orderedText) {
+					// Grow to the index; a gap (a block that produced no text,
+					// such as tool_use) leaves an empty entry rather than
+					// shifting later blocks into the wrong position.
+					orderedText = append(orderedText, make([]string, evt.BlockIndex-len(orderedText)+1)...)
+				}
+				orderedText[evt.BlockIndex] += evt.TextDelta
 			}
 			out <- evt
 		}
@@ -572,6 +692,15 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 		p.logger.LogUpstream(ctx, served.Provider, status, time.Since(streamStart), usage)
 
 		usage.CostUSD = p.computeCost(served.Provider, served.Model, usage)
+		// Response capture on the streaming path: the text arrives as deltas,
+		// so it is accumulated per block index as the events flow and stored
+		// when the stream ends. Only successfully completed text is captured —
+		// tool_use arguments arrive as JSON fragments and are not reassembled
+		// yet, so those blocks are stored hash-only rather than guessed at.
+		var respContent store.CapturedContent
+		if p.captureContent {
+			respContent.Response = capturedStreamBlocks(orderedText)
+		}
 		p.record(store.Event{
 			TraceID:          traceID,
 			SessionKey:       sessionKey,
@@ -589,6 +718,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 			StatusCode:       status,
 			Error:            errMsg,
 			Stream:           true,
+			Content:          contentOrNil(respContent),
 		})
 	}()
 

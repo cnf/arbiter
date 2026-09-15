@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -311,6 +312,135 @@ func TestRequestHandlerDetail(t *testing.T) {
 		if resp.Code != want {
 			t.Errorf("id %q: status = %d, want %d", id, resp.Code, want)
 		}
+	}
+}
+
+// TestRequestHandlerIncludesCapturedContent proves the detail endpoint surfaces
+// stored blocks, and that a request with no captured content omits the field
+// entirely rather than returning an empty array — "capture off" must not read
+// the same as "this request had no content".
+func TestRequestHandlerIncludesCapturedContent(t *testing.T) {
+	h := newTestStatsHandler(t,
+		store.Event{TraceID: "t1", Format: "openai", Provider: "p", Model: "m1", StatusCode: 200,
+			Content: &store.CapturedContent{
+				Request: []store.Block{
+					{Kind: "text", Body: []byte("the client's system prompt"), Role: "system", MsgIndex: 0, Position: 0},
+					{Kind: "text", Body: []byte("what is the sky"), Role: "user", MsgIndex: 1, Position: 0},
+				},
+				Response: []store.Block{
+					{Kind: "text", Body: []byte("blue"), Role: "assistant", MsgIndex: 0, Position: 0},
+				},
+			}},
+		store.Event{TraceID: "t2", Format: "openai", Provider: "p", Model: "m2", StatusCode: 200},
+	)
+
+	listResp := httptest.NewRecorder()
+	h.RequestsHandler(listResp, httptest.NewRequest(http.MethodGet, "/admin/requests", nil))
+	var rows []store.RequestRow
+	if err := json.Unmarshal(listResp.Body.Bytes(), &rows); err != nil || len(rows) != 2 {
+		t.Fatalf("list = %v, %v; want 2 rows", rows, err)
+	}
+
+	// Find the captured one (ordering is newest first).
+	var withContent, without store.RequestRow
+	for _, r := range rows {
+		if r.Model == "m1" {
+			withContent = r
+		} else {
+			without = r
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/requests/1", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": strconv.FormatInt(withContent.ID, 10)})
+	resp := httptest.NewRecorder()
+	h.RequestHandler(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", resp.Code, resp.Body.String())
+	}
+	var got store.RequestDetail
+	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Content) != 3 {
+		t.Fatalf("content blocks = %d, want 3: %+v", len(got.Content), got.Content)
+	}
+	if got.Content[0].Body != "the client's system prompt" || !got.Content[0].Captured {
+		t.Errorf("first block = %+v, want the captured system text", got.Content[0])
+	}
+	if got.Content[0].Hash == "" {
+		t.Error("hash is empty; the UI needs the address to group repeats")
+	}
+	if got.Content[2].Direction != "response" || got.Content[2].Body != "blue" {
+		t.Errorf("last block = %+v, want the response body", got.Content[2])
+	}
+
+	// The request with no captured content omits the field.
+	req = httptest.NewRequest(http.MethodGet, "/admin/requests/2", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": strconv.FormatInt(without.ID, 10)})
+	resp = httptest.NewRecorder()
+	h.RequestHandler(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.Code)
+	}
+	if strings.Contains(resp.Body.String(), `"content"`) {
+		t.Errorf("body = %s, want no content field for a request with nothing captured", resp.Body.String())
+	}
+}
+
+// TestRepeatedContentHandler proves the boilerplate-detection endpoint reaches
+// the reader and honours min_sessions, which is the parameter that separates a
+// client's preamble from one long conversation.
+func TestRepeatedContentHandler(t *testing.T) {
+	base := time.Now().UTC()
+	preamble := store.Block{Kind: "text", Body: []byte("Always answer in Markdown."), Role: "system", MsgIndex: 0, Position: 0}
+
+	var events []store.Event
+	for i, session := range []string{"s1", "s2"} {
+		events = append(events, store.Event{
+			TraceID: "t", Ts: base, SessionKey: session, Format: "openai",
+			Provider: "p", Model: "m", StatusCode: 200,
+			Content: &store.CapturedContent{Request: []store.Block{
+				preamble,
+				{Kind: "text", Body: []byte("unique question " + string(rune('a'+i)) + " with padding"),
+					Role: "user", MsgIndex: 1, Position: 0},
+			}},
+		})
+	}
+	h := newTestStatsHandler(t, events...)
+
+	resp := httptest.NewRecorder()
+	h.RepeatedContentHandler(resp, httptest.NewRequest(http.MethodGet, "/admin/content/repeated?since=1h", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", resp.Code, resp.Body.String())
+	}
+	var got []store.RepeatedContent
+	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("repeated = %+v, want just the preamble", got)
+	}
+	if got[0].Requests != 2 || got[0].Sessions != 2 || got[0].Role != "system" {
+		t.Errorf("preamble reach = %+v, want 2 requests / 2 sessions / system", got[0])
+	}
+
+	// min_sessions above what exists excludes it.
+	resp = httptest.NewRecorder()
+	h.RepeatedContentHandler(resp, httptest.NewRequest(http.MethodGet, "/admin/content/repeated?since=1h&min_sessions=9", nil))
+	var none []store.RepeatedContent
+	if err := json.Unmarshal(resp.Body.Bytes(), &none); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("min_sessions=9 returned %+v, want none", none)
+	}
+
+	// A malformed threshold is a 400, not a silently ignored parameter.
+	resp = httptest.NewRecorder()
+	h.RepeatedContentHandler(resp, httptest.NewRequest(http.MethodGet, "/admin/content/repeated?min_sessions=abc", nil))
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for a malformed min_sessions", resp.Code)
 	}
 }
 

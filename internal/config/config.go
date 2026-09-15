@@ -63,6 +63,18 @@ type StorageConfig struct {
 	// Path is the sqlite database file. Empty means "no event store": every
 	// request still runs, but nothing is persisted.
 	Path string `yaml:"path,omitempty"`
+
+	// CaptureContent stores prompt and response bodies, content-addressed and
+	// deduplicated, alongside the request metadata. Off by default — this is
+	// the one setting that writes conversation text to disk.
+	CaptureContent bool `yaml:"capture_content,omitempty"`
+
+	// ContentTTL is how long captured content is kept, as a Go duration
+	// ("72h", "7d" is NOT valid — use "168h"). Empty or "0" means never
+	// expire: retention is opt-in so an upgrade cannot silently begin deleting
+	// data. Request metadata is not on this clock — it stays useful far longer
+	// than conversation text does.
+	ContentTTL string `yaml:"content_ttl,omitempty"`
 }
 
 // ModelCatalogEntry is one row of the static cost/latency catalog. Costs are
@@ -238,6 +250,12 @@ func (c *Config) Validate() error {
 	if c.SessionAffinity.DefaultTTL != "" {
 		if _, err := time.ParseDuration(c.SessionAffinity.DefaultTTL); err != nil {
 			return arbitererrors.NewConfigError(fmt.Sprintf("session_affinity: invalid default_ttl %q", c.SessionAffinity.DefaultTTL), err)
+		}
+	}
+
+	if c.Storage.ContentTTL != "" {
+		if _, err := time.ParseDuration(c.Storage.ContentTTL); err != nil {
+			return arbitererrors.NewConfigError(fmt.Sprintf("storage: invalid content_ttl %q (note \"7d\" is not a Go duration; use \"168h\")", c.Storage.ContentTTL), err)
 		}
 	}
 

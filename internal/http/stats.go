@@ -164,6 +164,11 @@ func (h *StatsHandler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 
 // RequestHandler handles GET /admin/requests/{id}: one request in full. The id
 // is the store's rowid, which the list returns as `id`.
+//
+// When content capture is on, the response additionally carries `content`: the
+// captured request/response blocks in conversation order. It is absent (not an
+// empty array) when nothing was captured, so "capture is off" stays
+// distinguishable from "this request had no content".
 func (h *StatsHandler) RequestHandler(w http.ResponseWriter, r *http.Request) {
 	if h.reader == nil {
 		writeError(w, http.StatusServiceUnavailable, "event store disabled (storage.path unset)")
@@ -186,7 +191,59 @@ func (h *StatsHandler) RequestHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no request with that id")
 		return
 	}
+
+	blocks, err := h.reader.ContentForRequest(r.Context(), id)
+	if err != nil {
+		h.logger.LogError(r.Context(), "error", err, map[string]interface{}{"phase": "admin_request_content"})
+		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+	if len(blocks) > 0 {
+		detail.Content = blocks
+	}
 	h.writeJSON(w, r, detail)
+}
+
+// RepeatedContentHandler handles GET /admin/content/repeated: blocks that recur
+// across requests, which is how client-injected boilerplate is found after the
+// fact. Query parameters: since (default 7d), min_requests (default 2),
+// min_sessions (default 0), limit (default 50, max 200).
+//
+// min_sessions is the parameter that makes the result useful: a block present in
+// every request of one long conversation is unremarkable, while the same block
+// across many sessions is a client's own preamble.
+func (h *StatsHandler) RepeatedContentHandler(w http.ResponseWriter, r *http.Request) {
+	if h.reader == nil {
+		writeError(w, http.StatusServiceUnavailable, "event store disabled (storage.path unset)")
+		return
+	}
+	q := r.URL.Query()
+
+	minRequests, minSessions, limit := 2, 0, 50
+	for name, target := range map[string]*int{
+		"min_requests": &minRequests,
+		"min_sessions": &minSessions,
+		"limit":        &limit,
+	} {
+		raw := q.Get(name)
+		if raw == "" {
+			continue
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, name+" must be a non-negative integer")
+			return
+		}
+		*target = n
+	}
+
+	blocks, err := h.reader.RepeatedContent(r.Context(), window(r), minRequests, minSessions, limit)
+	if err != nil {
+		h.logger.LogError(r.Context(), "error", err, map[string]interface{}{"phase": "admin_repeated_content"})
+		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+	h.writeJSON(w, r, blocks)
 }
 
 // SessionHandler handles GET /admin/stats/session?key=<key>&limit=<n>: one

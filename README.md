@@ -49,7 +49,8 @@ overrides both. Loopback is the default on purpose — see
 | `GET /admin/stats/session?key=` | one session's trajectory      |
 | `GET /admin/stats/tools` | tool-name usage counts            |
 | `GET /admin/requests` | request list, newest first           |
-| `GET /admin/requests/{id}` | one request in full             |
+| `GET /admin/requests/{id}` | one request in full, incl. captured content |
+| `GET /admin/content/repeated` | blocks recurring across requests |
 
 Both chat endpoints accept `stream: true` and respond with SSE in the same
 wire format as the request (formats are never mixed). Every response —
@@ -400,10 +401,62 @@ arbitrary order. `/admin/requests/{id}` takes the `id` the list returns and
 adds the fields a list row omits (confidence, cache token counts, tool calls);
 `404` for an unknown id, `400` for a malformed one.
 
-Request and response *bodies* are not stored — the detail response has
-`request_text`/`response_text` fields for shape completeness, and they are
-always empty. Capturing content is a storage and privacy decision that has to
-be made in the schema first; the read surface does not pretend otherwise.
+Request and response *bodies* are not stored by default. Set
+`storage.capture_content: true` to store them — content-addressed and
+deduplicated (below) — and `/admin/requests/{id}` then carries a `content`
+array of the request/response blocks in conversation order. The
+`request_text`/`response_text` fields on that response predate capture and are
+always empty; `content` is the field that carries bodies.
+
+### Content store
+
+Capture is content-addressed at **message-block** granularity: every block is
+hashed and the body stored once, with a reference row recording which request it
+belonged to, in which direction, and at which position. That granularity is the
+whole point — a conversation re-sends its earlier turns on every request, so
+hash-the-whole-request would store turn 1's text 28 times, while hashing each
+block makes turn 28 cost one new body plus references to blocks already there.
+A block whose bytes are deliberately not kept (images and other binary content —
+hash only, no file) still gets its reference and still deduplicates.
+
+Capture runs **before** pre-guardrails, so what is stored is the request as the
+client sent it. A `system_prompt` guardrail rewrites `NormalizedRequest`; if
+capture ran after it, the store would hold Arbiter's own injected text as though
+the client had sent it.
+
+The system prompt is kept as its own block rather than folded into the first
+user turn, and text blocks are hashed over their raw text rather than JSON. Both
+choices exist so one specific question is answerable:
+
+**`GET /admin/content/repeated?since=…&min_requests=2&min_sessions=2`** returns
+blocks seen across multiple requests, with how many requests and how many
+distinct sessions contain each. That is the post-hoc detection mechanism for
+client-injected boilerplate: the preamble a client prepends to every request
+shows up as a block spanning many sessions, without anyone having to know the
+prompt in advance. `min_sessions` is what separates it from mere repetition —
+a block in every request of one long conversation is unremarkable; the same
+block across many sessions is the client's own text.
+
+Retention is two independent clocks, and only one of them applies here. Captured
+bodies expire on `storage.content_ttl` (a Go duration — `72h`, not `3d`);
+**empty or `0` means never expire**, so retention is opt-in and an upgrade cannot
+silently start deleting data. Request metadata is *not* on a clock: routing,
+cost and epoch data stay useful for months while conversation text does not.
+Reclaiming is a two-step sweep — delete references whose request is older than
+the TTL, then delete any body no longer referenced — run on startup and hourly
+thereafter, on its own connection so it never contends with the writer. There is
+no reference count to keep correct; that is deliberate, because refcounts are
+where content-addressed collectors historically go wrong.
+
+Requests Arbiter *rejects* — a normalize failure, a pre-guardrail refusal, a
+routing failure — never get a row in `requests`, but their content is still
+stored, with `owner_kind = 'rejected'`. "Why was this refused" is a first-class
+question for a router, and those requests would otherwise leave no content
+trace at all. Their references are addressed by `(owner_kind, owner_id)` rather
+than by a bare request id, so a later decision to give rejected requests real
+rows is an insert plus an update, not a rewrite of the read queries. Rejected
+content is deliberately invisible to every query that joins `requests`, so it
+cannot leak into the aggregates.
 
 That is why Arbiter **binds loopback by default** (`--bind`, default
 `127.0.0.1`) and can bind a unix socket instead (`--socket /path`, overriding

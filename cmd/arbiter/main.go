@@ -90,6 +90,14 @@ func main() {
 	}
 	stats := arbiterhttp.NewStatsHandler(reader, logger)
 
+	// Content retention runs on its own goroutine and its own connection, so an
+	// expiry sweep never blocks a request. With no TTL configured, content never
+	// expires and no sweeper is started — an upgrade must not silently begin
+	// deleting data.
+	sweepCtx, stopSweeper := context.WithCancel(context.Background())
+	defer stopSweeper()
+	startContentSweeper(sweepCtx, cfg.Storage.Path, cfg.Storage.ContentTTL, logger)
+
 	r := newRouter(handler, admin, stats, cfg.Admin.ForwardAuthHeader)
 
 	srv := &stdhttp.Server{
@@ -178,6 +186,11 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	// returns as `id`.
 	r.HandleFunc("/admin/requests", arbiterhttp.Gate(forwardAuthHeader, stats.RequestsHandler)).Methods("GET")
 	r.HandleFunc("/admin/requests/{id}", arbiterhttp.Gate(forwardAuthHeader, stats.RequestHandler)).Methods("GET")
+
+	// Content surface. Only useful with storage.capture_content on; without it
+	// these return empty results rather than an error, because "no content
+	// stored" is a legitimate answer and the endpoints are harmless.
+	r.HandleFunc("/admin/content/repeated", arbiterhttp.Gate(forwardAuthHeader, stats.RepeatedContentHandler)).Methods("GET")
 	return r
 }
 
@@ -228,7 +241,67 @@ func openStore(cfg *config.Config, logger logging.Logger) (storeHandle, error) {
 		return nil, err
 	}
 	slog.Info("event store enabled", "path", cfg.Storage.Path)
+	if cfg.Storage.CaptureContent {
+		slog.Info("content capture enabled",
+			"content_ttl", cfg.Storage.ContentTTL,
+			"note", "prompt and response bodies are stored; empty content_ttl means never expire")
+	}
 	return w, nil
+}
+
+// sweepInterval is how often expired captured content is reclaimed. Hourly is
+// far more often than a TTL measured in days needs, and cheap: the sweep is two
+// indexed deletes.
+const sweepInterval = time.Hour
+
+// startContentSweeper runs the retention sweep in the background until ctx is
+// done. It runs once immediately so a long-idle store is reclaimed at startup
+// rather than after the first interval.
+//
+// Only a non-zero TTL sweeps; with TTL unset ("never expire") starting a
+// goroutine that can only ever delete nothing would be pointless, so it isn't
+// started at all.
+func startContentSweeper(ctx context.Context, path, ttlSpec string, logger logging.Logger) {
+	if path == "" || ttlSpec == "" {
+		return
+	}
+	ttl, err := time.ParseDuration(ttlSpec)
+	if err != nil || ttl <= 0 {
+		if err != nil {
+			slog.Error("content_ttl is not a valid duration; content will not expire", "content_ttl", ttlSpec, "error", err)
+		}
+		return
+	}
+
+	// A separate reader connection from the writer's: the sweep must not
+	// contend with the drain goroutine, and it is exactly the read-while-writing
+	// case the shared DSN's WAL + busy_timeout exist for.
+	reader, err := store.OpenReader(path)
+	if err != nil {
+		slog.Error("cannot start content sweeper", "error", err)
+		return
+	}
+
+	go func() {
+		defer func() { _ = reader.Close() }()
+		ticker := time.NewTicker(sweepInterval)
+		defer ticker.Stop()
+		for {
+			bodies, refs, err := reader.SweepContent(ctx, ttl)
+			if err != nil {
+				if ctx.Err() == nil {
+					logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "content_sweep"})
+				}
+			} else if refs > 0 || bodies > 0 {
+				slog.Info("expired captured content", "refs", refs, "bodies", bodies)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 }
 
 // buildPipeline turns config into a fully wired Pipeline: provider table,
@@ -329,6 +402,9 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 	// Every event this pipeline records is stamped with the hash of the config
 	// that built it, so spend can be compared across config changes.
 	p.SetConfigEpoch(cfg.Epoch())
+	// Body capture is wiring-time policy, so it rides the same path as the
+	// epoch rather than joining the constructor's positional arguments.
+	p.SetCaptureContent(cfg.Storage.CaptureContent)
 	return p, nil
 }
 

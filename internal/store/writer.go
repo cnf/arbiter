@@ -65,6 +65,18 @@ type Event struct {
 	Error      string
 	Stream     bool
 	ToolCalls  []string
+
+	// Content is the request/response body capture (see content.go). Nil when
+	// nothing was captured, so the common case costs the writer no extra work.
+	// It rides on the Event deliberately: the blobs, their references and the
+	// request row are then written in one transaction, which is what makes a
+	// half-stored request impossible.
+	Content *CapturedContent
+
+	// RejectedID is non-zero for a request that never produced a requests row
+	// (see ContentRecorder). The drain path then stores Content under
+	// owner_kind="rejected" and skips the request insert entirely.
+	RejectedID int64
 }
 
 // Writer records completed requests. Record must be non-blocking in the
@@ -73,12 +85,26 @@ type Writer interface {
 	Record(ev Event)
 }
 
+// ContentRecorder records content for a request that will never get a requests
+// row — a normalize failure, a pre-guardrail rejection, a routing failure.
+// Those requests are the ones worth asking "why was this rejected?" about, and
+// they would otherwise have no stored content at all.
+//
+// rejectID is caller-chosen and unique per rejection; it is what a later
+// promotion to a real request row would key on (see content_refs' owner_kind).
+type ContentRecorder interface {
+	RecordRejected(rejectID int64, content CapturedContent)
+}
+
 // NoopWriter discards every event. It is the default when no store is
 // configured, so tests and local dev without a DB file work unchanged.
 type NoopWriter struct{}
 
 // Record implements Writer.
 func (NoopWriter) Record(Event) {}
+
+// RecordRejected implements ContentRecorder.
+func (NoopWriter) RecordRejected(int64, CapturedContent) {}
 
 // Close satisfies the handle main uses for both writer kinds; a no-op here.
 func (NoopWriter) Close() error { return nil }
@@ -171,6 +197,20 @@ func (w *SQLiteWriter) Record(ev Event) {
 	}
 }
 
+// RecordRejected implements ContentRecorder: content for a request that never
+// becomes a requests row. It reuses the same queue and drain goroutine as
+// Record, so there is one writer and one ordering, and it does not block the
+// caller for the same reason Record doesn't.
+func (w *SQLiteWriter) RecordRejected(rejectID int64, content CapturedContent) {
+	w.Record(Event{
+		Ts:      time.Now().UTC(),
+		Content: &content,
+		// TraceID is empty and no request fields are set: the drain path sees
+		// RejectedID and writes content references only.
+		RejectedID: rejectID,
+	})
+}
+
 // Close stops accepting events, drains the queue, and closes the database.
 // It is safe to call more than once.
 func (w *SQLiteWriter) Close() error {
@@ -231,22 +271,87 @@ func addColumnIfMissing(db *sql.DB, table, decl string) error {
 func (w *SQLiteWriter) run() {
 	defer close(w.done)
 	for ev := range w.events {
-		if err := insertRequest(context.Background(), w.db, ev); err != nil {
+		if err := writeEvent(context.Background(), w.db, ev); err != nil {
 			w.logger.LogError(context.Background(), "error", err,
 				map[string]interface{}{"component": "event_store", "trace_id": ev.TraceID})
 		}
 	}
 }
 
-// insertRequest writes one event as a row. Hand-written rather than generated:
-// sqlc was retired (see README's "Event store" section) after the read side
-// turned out to need queries its sqlite parser cannot express, leaving one
-// generated function in use and two generator defects to work around.
+// writeEvent stores one event and, when present, its captured content — all in
+// a single transaction, so a request can never be half-stored (row without
+// bodies, or bodies without the row that references them).
+//
+// A RejectedID event is the same transaction minus the request insert: content
+// for a request Arbiter refused, which has no requests row to hang off.
+func writeEvent(ctx context.Context, db *sql.DB, ev Event) error {
+	if ev.RejectedID == 0 && (ev.Content == nil || ev.Content.Empty()) {
+		// The common path: metadata only, no transaction needed.
+		return insertRequest(ctx, db, ev)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin event transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if ev.RejectedID != 0 {
+		// Reference rows point at a caller-supplied id, not a rowid, because
+		// there is no row. Promoting a rejection to a real request later is an
+		// INSERT plus an UPDATE of owner_kind/owner_id — no rewrite of the
+		// reference queries.
+		if ev.Content != nil && !ev.Content.Empty() {
+			if err := writeContent(ctx, tx, "rejected", ev.RejectedID, *ev.Content); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit rejected content: %w", err)
+		}
+		return nil
+	}
+
+	id, err := insertRequestTx(ctx, tx, ev)
+	if err != nil {
+		return err
+	}
+	if ev.Content != nil && !ev.Content.Empty() {
+		if err := writeContent(ctx, tx, "request", id, *ev.Content); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit event: %w", err)
+	}
+	return nil
+}
+
+// insertRequest writes one event as a row outside any transaction. It is the
+// no-content fast path; insertRequestTx is the one that returns the row id the
+// content references need.
+func insertRequest(ctx context.Context, db *sql.DB, ev Event) error {
+	_, err := insertRequestTx(ctx, db, ev)
+	return err
+}
+
+// execer is satisfied by both *sql.DB and *sql.Tx, so the insert runs either
+// standalone or inside writeEvent's transaction without a second copy of the
+// statement.
+type execer interface {
+	ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
+}
+
+// insertRequestTx writes one event's row and returns its id. Hand-written
+// rather than generated: sqlc was retired (see README's "Event store" section)
+// after the read side turned out to need queries its sqlite parser cannot
+// express, leaving one generated function in use and two generator defects to
+// work around.
 //
 // Empty strings in the nullable columns are written as NULL — an absent value
 // and an empty one mean the same thing here, and the nullable-column readers
 // flatten NULL back to "".
-func insertRequest(ctx context.Context, db *sql.DB, ev Event) error {
+func insertRequestTx(ctx context.Context, db execer, ev Event) (int64, error) {
 	const q = `
 INSERT INTO requests (
     trace_id, session_key, client_id, ts, format, provider, model,
@@ -261,7 +366,7 @@ INSERT INTO requests (
     ?, ?, ?, ?, ?, ?, ?
 )`
 
-	_, err := db.ExecContext(ctx, q,
+	res, err := db.ExecContext(ctx, q,
 		ev.TraceID,
 		nullStr(ev.SessionKey),
 		nullStr(ev.ClientID),
@@ -287,9 +392,13 @@ INSERT INTO requests (
 		toolCallsJSON(ev.ToolCalls),
 		nullStr(ev.ConfigEpoch))
 	if err != nil {
-		return fmt.Errorf("insert request: %w", err)
+		return 0, fmt.Errorf("insert request: %w", err)
 	}
-	return nil
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("insert request: read id: %w", err)
+	}
+	return id, nil
 }
 
 func nullStr(s string) *string {

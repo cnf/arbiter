@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -173,6 +174,13 @@ type RequestDetail struct {
 
 	RequestText  string `json:"request_text,omitempty"`
 	ResponseText string `json:"response_text,omitempty"`
+
+	// Content is the captured request/response blocks, present only when
+	// capture was on and something was stored. Omitted otherwise so "capture
+	// off" and "nothing captured" are not confused on the wire — the
+	// request_text/response_text fields above remain always-empty
+	// placeholders from before capture existed and are superseded by this.
+	Content []ContentBlock `json:"content,omitempty"`
 }
 
 // Overall answers the headline numbers over a window.
@@ -352,6 +360,145 @@ ORDER BY COUNT(*) DESC`
 // asks for no limit) is deliberately the cap: a dashboard shows recent rows,
 // and truncating to the newest N is a more useful failure than a slow query.
 const maxRequestListLimit = 500
+
+// ContentBlock is one stored block as read back for display: its address, its
+// kind, and the body when it was captured (binary blocks are hash-only, so
+// Body is empty for those while the reference still exists).
+type ContentBlock struct {
+	Hash      string `json:"hash"`
+	Direction string `json:"direction"` // "request" | "response"
+	MsgIndex  int64  `json:"msg_index"`
+	Position  int64  `json:"position"`
+	Role      string `json:"role,omitempty"`
+	BlockType string `json:"block_type"`
+	Body      string `json:"body,omitempty"`
+	Captured  bool   `json:"captured"`
+}
+
+// ContentForRequest returns every captured block belonging to one request, in
+// conversation order, for the detail view. An unknown id yields an empty slice.
+func (r *Reader) ContentForRequest(ctx context.Context, id int64) ([]ContentBlock, error) {
+	return r.contentFor(ctx, "request", id)
+}
+
+// contentFor is the shared body behind ContentForRequest and (once rejected
+// requests get rows) whatever promotes them: the owner is a (kind, id) pair,
+// never a bare request id, which is what keeps that promotion a no-op here.
+func (r *Reader) contentFor(ctx context.Context, ownerKind string, ownerID int64) ([]ContentBlock, error) {
+	const q = `
+SELECT cr.hash, cr.direction, cr.msg_index, cr.position, COALESCE(cr.role, ''),
+       cr.block_type, c.body
+FROM content_refs cr
+LEFT JOIN content c ON c.hash = cr.hash
+WHERE cr.owner_kind = ? AND cr.owner_id = ?
+ORDER BY cr.direction ASC, cr.msg_index ASC, cr.position ASC`
+
+	rows, err := r.db.QueryContext(ctx, q, ownerKind, ownerID)
+	if err != nil {
+		return nil, fmt.Errorf("content for %s %d: %w", ownerKind, ownerID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []ContentBlock{}
+	for rows.Next() {
+		var (
+			b        ContentBlock
+			hash     []byte
+			body     []byte
+			bodyNull sql.NullString
+		)
+		if err := rows.Scan(&hash, &b.Direction, &b.MsgIndex, &b.Position, &b.Role,
+			&b.BlockType, &bodyNull); err != nil {
+			return nil, fmt.Errorf("scan content block: %w", err)
+		}
+		// hash is a BLOB; render it as hex so it is usable as a URL segment and
+		// comparable in JSON without a byte-array encoding.
+		b.Hash = hex.EncodeToString(hash)
+		if bodyNull.Valid {
+			body = []byte(bodyNull.String)
+		}
+		b.Body = string(body)
+		b.Captured = bodyNull.Valid
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// RepeatedContent is one block that appears more than once, with the reach of
+// its repetition: how many requests contain it and how many distinct sessions.
+//
+// This is the query the whole content-addressed design exists to make possible
+// — "find the text that appears in every query" is the post-hoc detection
+// mechanism for client-injected boilerplate, with no need to know the prompt in
+// advance. A block appearing across many sessions but few requests is noise; one
+// appearing in every session is the client's own preamble.
+type RepeatedContent struct {
+	Hash      string `json:"hash"`
+	BlockType string `json:"block_type"`
+	Role      string `json:"role,omitempty"`
+	Preview   string `json:"preview"` // first 200 chars of the body, for recognisability
+	Requests  int64  `json:"requests"`
+	Sessions  int64  `json:"sessions"`
+	FirstSeen string `json:"first_seen"`
+	LastSeen  string `json:"last_seen"`
+}
+
+// RepeatedContent finds blocks seen in at least minRequests distinct requests
+// over a window, most widespread first. minSessions>0 additionally requires the
+// block to span at least that many distinct sessions, which is what separates
+// "this client always prepends X" from "this one conversation is long".
+func (r *Reader) RepeatedContent(ctx context.Context, w Window, minRequests, minSessions, limit int) ([]RepeatedContent, error) {
+	if minRequests < 2 {
+		minRequests = 2
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	// Sessions are counted with COUNT(DISTINCT) because session_key is
+	// nullable: rows with no session key collapse into one group rather than
+	// inflating the count, which is the honest reading of "distinct sessions".
+	const q = `
+SELECT cr.hash,
+       MIN(cr.block_type),
+       COALESCE(MIN(cr.role), ''),
+       COALESCE(SUBSTR(c.body, 1, 200), ''),
+       COUNT(DISTINCT cr.owner_id) AS requests,
+       COUNT(DISTINCT r.session_key) AS sessions,
+       MIN(r.ts), MAX(r.ts)
+FROM content_refs cr
+JOIN requests r ON r.id = cr.owner_id AND cr.owner_kind = 'request'
+LEFT JOIN content c ON c.hash = cr.hash
+WHERE r.ts >= ?
+GROUP BY cr.hash
+HAVING COUNT(DISTINCT cr.owner_id) >= ?
+   AND COUNT(DISTINCT r.session_key) >= ?
+ORDER BY requests DESC, sessions DESC
+LIMIT ?`
+
+	rows, err := r.db.QueryContext(ctx, q, w.Since, minRequests, minSessions, limit)
+	if err != nil {
+		return nil, fmt.Errorf("repeated content: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []RepeatedContent{}
+	for rows.Next() {
+		var (
+			rc             RepeatedContent
+			hash           []byte
+			first, lastRaw interface{}
+		)
+		if err := rows.Scan(&hash, &rc.BlockType, &rc.Role, &rc.Preview,
+			&rc.Requests, &rc.Sessions, &first, &lastRaw); err != nil {
+			return nil, fmt.Errorf("scan repeated content: %w", err)
+		}
+		rc.Hash = hex.EncodeToString(hash)
+		rc.FirstSeen = formatTime(first)
+		rc.LastSeen = formatTime(lastRaw)
+		out = append(out, rc)
+	}
+	return out, rows.Err()
+}
 
 // requestRowColumns is the list projection, shared by ListRequests and
 // GetRequest so the two cannot drift into returning differently-shaped rows.

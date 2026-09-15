@@ -280,6 +280,131 @@ aliases:
 	}
 }
 
+// loadConfigWithFile writes lanes.yaml plus a sibling catalog file in the same
+// temp dir, so relative resolution of model_catalog_file is exercised.
+func loadConfigWithFile(t *testing.T, mainYAML, catalogYAML string) (*Config, error) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/lanes.yaml", []byte(mainYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(dir+"/catalog.yaml", []byte(catalogYAML), 0o600); err != nil {
+		t.Fatalf("write catalog: %v", err)
+	}
+	return Load(dir + "/lanes.yaml")
+}
+
+func TestModelCatalogFileMergesRows(t *testing.T) {
+	cfg, err := loadConfigWithFile(t, baseConfig+`
+model_catalog_file: "catalog.yaml"
+`, `
+model_catalog:
+  - provider: "claude"
+    model: "claude-3-haiku"
+    input_cost_per_mtok: 0.25
+    output_cost_per_mtok: 1.25
+    latency_ms_p50: 900
+  - provider: "claude"
+    model: "claude-3-opus"
+    input_cost_per_mtok: 15
+    output_cost_per_mtok: 75
+    latency_ms_p50: 4000
+`)
+	if err != nil {
+		t.Fatalf("Load: want merge to succeed, got %v", err)
+	}
+	if len(cfg.ModelCatalog) != 2 {
+		t.Fatalf("ModelCatalog has %d rows, want 2 from the file", len(cfg.ModelCatalog))
+	}
+}
+
+// An inline row for a provider/model the file also declares replaces the file
+// row wholesale — the file must not contribute any of its own fields.
+func TestModelCatalogInlineRowReplacesFileRow(t *testing.T) {
+	cfg, err := loadConfigWithFile(t, baseConfig+`
+model_catalog:
+  - provider: "claude"
+    model: "claude-3-haiku"
+    input_cost_per_mtok: 0.30
+model_catalog_file: "catalog.yaml"
+`, `
+model_catalog:
+  - provider: "claude"
+    model: "claude-3-haiku"
+    input_cost_per_mtok: 0.25
+    output_cost_per_mtok: 1.25
+    latency_ms_p50: 900
+  - provider: "claude"
+    model: "claude-3-opus"
+    input_cost_per_mtok: 15
+    output_cost_per_mtok: 75
+`)
+	if err != nil {
+		t.Fatalf("Load: want merge to succeed, got %v", err)
+	}
+	if len(cfg.ModelCatalog) != 2 {
+		t.Fatalf("ModelCatalog has %d rows, want 2 (inline haiku + file opus)", len(cfg.ModelCatalog))
+	}
+
+	for _, e := range cfg.ModelCatalog {
+		if e.Model != "claude-3-haiku" {
+			continue
+		}
+		// The inline row has no output cost or latency; those must be zero,
+		// NOT inherited from the file's row for the same model.
+		if e.InputCostPerMTok != 0.30 {
+			t.Errorf("haiku input cost = %v, want the inline 0.30", e.InputCostPerMTok)
+		}
+		if e.OutputCostPerMTok != 0 || e.LatencyMsP50 != 0 {
+			t.Errorf("haiku = %+v, want file fields cleared: inline row replaces the whole row", e)
+		}
+		return
+	}
+	t.Fatal("no row for claude-3-haiku in merged catalog")
+}
+
+// A missing catalog file is a hard error, not a silent skip: it usually means
+// the generator hasn't run yet, and silently routing on stale/absent costs is
+// the failure mode this feature exists to avoid.
+func TestModelCatalogFileMissingIsError(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+model_catalog_file: "nope.yaml"
+`)
+	if err == nil || !strings.Contains(err.Error(), "model_catalog_file") {
+		t.Fatalf("Load: want missing-file error, got %v", err)
+	}
+}
+
+// The file's rows get the same validation as inline rows.
+func TestModelCatalogFileRowIsValidated(t *testing.T) {
+	_, err := loadConfigWithFile(t, baseConfig+`
+model_catalog_file: "catalog.yaml"
+`, `
+model_catalog:
+  - provider: "claude"
+    model: "not-a-declared-model"
+    input_cost_per_mtok: 1
+`)
+	if err == nil || !strings.Contains(err.Error(), "not declared") {
+		t.Fatalf("Load: want undeclared-model error from the file's row, got %v", err)
+	}
+}
+
+func TestModelCatalogRejectsDuplicateRow(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+model_catalog:
+  - provider: "claude"
+    model: "claude-3-haiku"
+    input_cost_per_mtok: 0.25
+  - provider: "claude"
+    model: "claude-3-haiku"
+    input_cost_per_mtok: 0.30
+`)
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("Load: want duplicate-row error, got %v", err)
+	}
+}
+
 func TestAliasGroupRejectsUnknownSelect(t *testing.T) {
 	err := loadConfig(t, baseConfig+`
 aliases:

@@ -131,7 +131,17 @@ aliases:
 # strategies. Costs are USD per million tokens; latency is a p50 estimate in
 # ms. A provider/model with no entry is treated as unknown cost and ranks
 # last — it does not error. Provider must be configured and model must be one
-# of its declared models.
+# of its declared models. Duplicate provider/model rows are an error.
+#
+# `model_catalog_file:` names a second catalog file (usually a generated
+# artifact; see the catalog converter tool), read relative to this file's
+# directory. Rows there are DEFAULTS: an inline row for the same
+# provider/model replaces the file's row entirely. Writes to that file do NOT
+# trigger a config reload — the watcher only tracks this file — so a
+# regenerated catalog needs an explicit reload.
+#
+# model_catalog_file: "catalog.yaml"
+#
 # model_catalog:
 #   - provider: "litellm"
 #     model: "openrouter/free"

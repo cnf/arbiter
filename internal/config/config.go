@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -36,6 +37,17 @@ type Config struct {
 	// provider/model with no entry is "unknown cost" and ranks last rather
 	// than erroring.
 	ModelCatalog []ModelCatalogEntry `yaml:"model_catalog,omitempty"`
+
+	// ModelCatalogFile names a second catalog file, usually a generated
+	// artifact (see the catalog converter tool). It is read relative to the
+	// config file's directory. Rows here are *defaults*: when both this file
+	// and the inline ModelCatalog declare the same provider/model, the inline
+	// row replaces the file's row entirely.
+	//
+	// Writes to this file are deliberately inert — the config watcher filters
+	// on the config file's basename, so a regenerated catalog is only picked
+	// up by an explicit reload.
+	ModelCatalogFile string `yaml:"model_catalog_file,omitempty"`
 }
 
 // ModelCatalogEntry is one row of the static cost/latency catalog. Costs are
@@ -382,6 +394,7 @@ func validSelect(s string) bool {
 // errors — a row that can never match is a config bug, and the lookup's
 // unknown-row tolerance is for genuinely absent entries, not typos.
 func (c *Config) validateModelCatalog() error {
+	seen := make(map[string]int, len(c.ModelCatalog))
 	for i, e := range c.ModelCatalog {
 		if e.Provider == "" || e.Model == "" {
 			return arbitererrors.NewConfigError(fmt.Sprintf("model_catalog[%d]: provider and model are required", i), nil)
@@ -393,6 +406,11 @@ func (c *Config) validateModelCatalog() error {
 		if !slicesContain(p.Models, e.Model) {
 			return arbitererrors.NewConfigError(fmt.Sprintf("model_catalog[%d]: model %q is not declared by provider %q", i, e.Model, e.Provider), nil)
 		}
+		key := e.Provider + "\x00" + e.Model
+		if prev, dup := seen[key]; dup {
+			return arbitererrors.NewConfigError(fmt.Sprintf("model_catalog[%d]: duplicate row for %s/%s (already at index %d)", i, e.Provider, e.Model, prev), nil)
+		}
+		seen[key] = i
 	}
 	return nil
 }
@@ -542,11 +560,77 @@ func Load(path string) (*Config, error) {
 
 	cfg.normalizeEndpoints()
 
+	// Merge the external catalog before validation so its rows get the same
+	// provider/model checks as inline ones.
+	if err := cfg.mergeModelCatalogFile(path); err != nil {
+		return nil, err
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
+}
+
+// catalogFile is the on-disk shape of a model_catalog_file: the same key the
+// inline block uses, so a generated catalog is a drop-in config fragment.
+type catalogFile struct {
+	ModelCatalog []ModelCatalogEntry `yaml:"model_catalog"`
+}
+
+// mergeModelCatalogFile loads ModelCatalogFile (if set), resolved relative to
+// the directory of the config file at configPath, and prepends its rows to
+// ModelCatalog. Merge is row-wise: the inline catalog wins, and an inline row
+// for a provider/model present in the file replaces that file row entirely
+// rather than overriding it field by field.
+//
+// Row-wise (rather than per-field) is deliberate: costs are plain float64,
+// where 0 is a meaningful value (a free model), so a field-wise merge could
+// not distinguish "unset" from "free" and would let a file row resurrect a
+// cost the inline row meant to clear.
+func (c *Config) mergeModelCatalogFile(configPath string) error {
+	if c.ModelCatalogFile == "" {
+		return nil
+	}
+
+	dir := filepath.Dir(configPath)
+	catPath := c.ModelCatalogFile
+	if !filepath.IsAbs(catPath) {
+		catPath = filepath.Join(dir, catPath)
+	}
+
+	raw, err := os.ReadFile(catPath)
+	if err != nil {
+		return arbitererrors.NewConfigError(fmt.Sprintf("model_catalog_file: reading %s", catPath), err)
+	}
+
+	var cf catalogFile
+	dec := yaml.NewDecoder(bytes.NewReader(expandEnv(raw)))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cf); err != nil {
+		return arbitererrors.NewConfigError(fmt.Sprintf("model_catalog_file: parsing %s", catPath), err)
+	}
+
+	if len(cf.ModelCatalog) == 0 {
+		return nil
+	}
+
+	inline := make(map[string]bool, len(c.ModelCatalog))
+	for _, e := range c.ModelCatalog {
+		inline[e.Provider+"\x00"+e.Model] = true
+	}
+
+	merged := make([]ModelCatalogEntry, 0, len(cf.ModelCatalog)+len(c.ModelCatalog))
+	for _, e := range cf.ModelCatalog {
+		if inline[e.Provider+"\x00"+e.Model] {
+			continue // an inline row replaces this one wholesale
+		}
+		merged = append(merged, e)
+	}
+
+	c.ModelCatalog = append(merged, c.ModelCatalog...)
+	return nil
 }
 
 // normalizeEndpoints strips a trailing slash from each provider endpoint.

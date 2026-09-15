@@ -212,9 +212,32 @@ falls back to the first-listed member, deterministically, so a missing row is
 visible as a routing decision instead of being masked by randomness. Ties
 break the same way. The unselected members remain the fallback chain.
 
-The catalog is populated by hand today; a generator that converts an external
-price list (e.g. LiteLLM's `model_prices_and_context_window.json`) into the
-same shape is a separate follow-up.
+The catalog can be written inline, pulled from a generated file, or both.
+`model_catalog_file:` names a second catalog (same `model_catalog:` shape),
+resolved relative to the config file's directory:
+
+```yaml
+model_catalog:                     # hand-managed; wins on conflict
+  - provider: "claude"
+    model: "claude-3-haiku-20250307"
+    input_cost_per_mtok: 0.30
+model_catalog_file: "catalog.yaml" # generated; supplies the defaults
+```
+
+Merging is **row-wise**: if both sources declare the same provider/model, the
+inline row replaces the file's row entirely — fields are never mixed between
+the two. That's deliberate because `0` is a meaningful cost (a free model), so
+a field-by-field override could not tell "unset" from "free". Duplicate rows
+*within* one source are a config error.
+
+The catalog file is inert on write: the config watcher tracks only the config
+file itself, so regenerating `catalog.yaml` does not reload anything until you
+ask for it.
+
+The file is meant to be produced by a converter that normalizes an external
+price list (e.g. LiteLLM's `model_prices_and_context_window.json`) into this
+shape — the runtime never parses a foreign schema. That converter is a
+separate follow-up.
 
 Classifier note: `axis` is optional on a `heuristic` classifier (defaults to
 `domain`, as before this field existed). The legacy `capability_detector` type

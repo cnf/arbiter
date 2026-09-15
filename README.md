@@ -33,6 +33,7 @@ shell`; secrets access requires a reason (`SECRETSPEC_REASON="..."` or
 | `POST /chat/completions` | OpenAI Chat Completions |
 | `GET /models`, `GET /v1/models` | model list        |
 | `GET /health`        | liveness                   |
+| `POST /admin/reload` | reload config + catalog    |
 
 Both chat endpoints accept `stream: true` and respond with SSE in the same
 wire format as the request (formats are never mixed). Every response —
@@ -238,6 +239,36 @@ The file is meant to be produced by a converter that normalizes an external
 price list (e.g. LiteLLM's `model_prices_and_context_window.json`) into this
 shape — the runtime never parses a foreign schema. That converter is a
 separate follow-up.
+
+### Admin surface and access
+
+`POST /admin/reload` re-reads the config and the `model_catalog_file` on
+demand. It calls exactly the same `reload()` the file watcher does, so a
+regenerated `catalog.yaml` — inert on write by design — is picked up by
+calling it. A rejected reload returns 500 and leaves the running config
+serving; the response body says so.
+
+Arbiter implements **no authentication**. Access control is Caddy's
+(`forward_auth`) and the network's. The only in-app affordance is a
+presence-only gate:
+
+```yaml
+admin:
+  forward_auth_header: "X-Forwarded-User"
+```
+
+When set, a request to `/admin/*` without that header gets **401**; when unset,
+`/admin/*` is ungated (a development convenience). Arbiter checks only that
+the header is *present* — it cannot verify the proxy set it — so this is sound
+only while Arbiter is unreachable except through that proxy.
+
+That is why Arbiter **binds loopback by default** (`--bind`, default
+`127.0.0.1`) and can bind a unix socket instead (`--socket /path`, overriding
+`--bind`/`--port`). Anything that can reach the listener directly can forge the
+gate header, so the binding — plus tailnet membership — is the actual control,
+exactly the "further control via `reverse_proxy` config" the deployment
+assumes. Set `--bind 0.0.0.0` only when something else (Caddy, a tailnet ACL)
+is enforcing reachability.
 
 Classifier note: `axis` is optional on a `heuristic` classifier (defaults to
 `domain`, as before this field existed). The legacy `capability_detector` type

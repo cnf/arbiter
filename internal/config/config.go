@@ -32,6 +32,8 @@ type Config struct {
 
 	SessionAffinity SessionAffinityConfig `yaml:"session_affinity,omitempty"`
 
+	Admin AdminConfig `yaml:"admin,omitempty"`
+
 	// ModelCatalog supplies static cost/latency figures for group-alias
 	// selection strategies (cheapest_input, cheapest_output, fastest). A
 	// provider/model with no entry is "unknown cost" and ranks last rather
@@ -72,6 +74,22 @@ type SessionAffinityConfig struct {
 	// timeout, refreshed on every hit), parsed as a Go duration. Defaults to
 	// 5m if unset.
 	DefaultTTL string `yaml:"default_ttl,omitempty"`
+}
+
+// AdminConfig governs Arbiter's /admin/* surface. Arbiter deliberately
+// implements no authentication of its own: access control is Caddy's job
+// (forward_auth) and the network's (a tailnet, or a loopback/unix-socket
+// bind), and this block only carries the one in-app affordance Arbiter
+// needs to cooperate with that — a header-presence gate.
+type AdminConfig struct {
+	// ForwardAuthHeader, when set, requires every /admin/* request to carry
+	// this header; a request without it is rejected 401. It is a *presence*
+	// check only — Arbiter cannot verify that Caddy actually set the header,
+	// so this is sound only while Arbiter is unreachable except through the
+	// proxy that sets it (see the --bind/--socket flags). Unset means
+	// /admin/* is ungated (a development convenience, not a safe default for
+	// a listener reachable from anywhere).
+	ForwardAuthHeader string `yaml:"forward_auth_header,omitempty"`
 }
 
 // RoutingConfig holds cross-cutting routing behavior that isn't the job of

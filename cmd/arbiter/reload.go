@@ -84,29 +84,32 @@ func watchConfig(ctx context.Context, path string, handler *arbiterhttp.Handler,
 
 		case <-timerC:
 			timerC = nil
-			reload(ctx, path, handler, logger)
+			_ = reload(ctx, path, handler, logger)
 		}
 	}
 }
 
 // reload loads, validates, and rebuilds the configuration, then publishes it.
-// On any failure the previous runtime is left untouched.
-func reload(ctx context.Context, path string, handler *arbiterhttp.Handler, logger logging.Logger) {
+// On any failure the previous runtime is left untouched and the error is
+// returned so the caller can report it — the file watcher only logs it,
+// while POST /admin/reload surfaces it to whoever asked.
+func reload(ctx context.Context, path string, handler *arbiterhttp.Handler, logger logging.Logger) error {
 	cfg, err := config.Load(path)
 	if err != nil {
 		logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "config_reload"})
 		slog.Warn("config reload rejected; keeping previous configuration", "config", path)
-		return
+		return err
 	}
 
 	p, err := buildPipeline(cfg, logger)
 	if err != nil {
 		logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "config_reload_build"})
 		slog.Warn("config reload rejected; keeping previous configuration", "config", path)
-		return
+		return err
 	}
 
 	models := configuredModels(cfg)
 	handler.Swap(arbiterhttp.NewRuntime(p, models, cfg.SessionAffinity.Header))
 	slog.Info("config reloaded", "config", path, "providers", len(cfg.Providers), "models", len(models))
+	return nil
 }

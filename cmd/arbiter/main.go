@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	stdhttp "net/http"
 	"os"
 	"os/signal"
@@ -29,7 +30,9 @@ import (
 
 func main() {
 	configPath := flag.String("config", "lanes.yaml", "Path to lanes.yaml config file")
-	port := flag.String("port", "8080", "Port to listen on")
+	port := flag.String("port", "8080", "Port to listen on (TCP)")
+	bind := flag.String("bind", "127.0.0.1", "Interface to bind for TCP (e.g. 0.0.0.0 to expose)")
+	socket := flag.String("socket", "", "Unix socket path to listen on instead of TCP; overrides --bind/--port")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -47,21 +50,13 @@ func main() {
 		os.Exit(1)
 	}
 	handler := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg), cfg.SessionAffinity.Header), logger)
+	admin := arbiterhttp.NewAdminHandler(func(ctx context.Context) error {
+		return reload(ctx, *configPath, handler, logger)
+	}, logger)
 
-	r := mux.NewRouter()
-	r.HandleFunc("/v1/messages", handler.MessagesHandler).Methods("POST")
-	r.HandleFunc("/chat/completions", handler.CompletionsHandler).Methods("POST")
-	r.HandleFunc("/models", handler.ModelsHandler).Methods("GET")
-	r.HandleFunc("/v1/models", handler.ModelsHandler).Methods("GET")
-	r.HandleFunc("/health", func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if _, err := fmt.Fprint(w, `{"status":"ok"}`); err != nil {
-			slog.Error("health response failed", "error", err)
-		}
-	}).Methods("GET")
+	r := newRouter(handler, admin, cfg.Admin.ForwardAuthHeader)
 
 	srv := &stdhttp.Server{
-		Addr:    ":" + *port,
 		Handler: r,
 		// Deliberately no WriteTimeout: it caps the entire response write,
 		// which on an SSE stream means severing a long generation mid-flight
@@ -73,9 +68,15 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
+	ln, err := listen(*socket, *bind, *port)
+	if err != nil {
+		slog.Error("failed to listen", "error", err)
+		os.Exit(1)
+	}
+
 	go func() {
-		slog.Info("listening", "addr", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && err != stdhttp.ErrServerClosed {
+		slog.Info("listening", "addr", ln.Addr().String(), "network", ln.Addr().Network())
+		if err := srv.Serve(ln); err != nil && err != stdhttp.ErrServerClosed {
 			slog.Error("server error", "error", err)
 		}
 	}()
@@ -106,6 +107,56 @@ func main() {
 	}
 
 	slog.Info("shutdown complete")
+}
+
+// newRouter registers every HTTP route. Routes are grouped here rather than
+// inline in main so the /admin/* gate is exercised by a real request in tests
+// rather than asserted by reading the wiring. forwardAuthHeader is the
+// configured admin gate header ("" = ungated).
+func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, forwardAuthHeader string) *mux.Router {
+	r := mux.NewRouter()
+	r.HandleFunc("/v1/messages", handler.MessagesHandler).Methods("POST")
+	r.HandleFunc("/chat/completions", handler.CompletionsHandler).Methods("POST")
+	r.HandleFunc("/models", handler.ModelsHandler).Methods("GET")
+	r.HandleFunc("/v1/models", handler.ModelsHandler).Methods("GET")
+	r.HandleFunc("/health", func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := fmt.Fprint(w, `{"status":"ok"}`); err != nil {
+			slog.Error("health response failed", "error", err)
+		}
+	}).Methods("GET")
+
+	// Admin surface. Path-and-verb registered (not just path) so a reverse
+	// proxy in front can match on either independently; Arbiter's own control
+	// is the presence-only forward-auth gate.
+	r.HandleFunc("/admin/reload", arbiterhttp.Gate(forwardAuthHeader, admin.ReloadHandler)).Methods("POST")
+	return r
+}
+
+// listen opens the server's listener: a unix socket when socketPath is set
+// (overriding the TCP bind/port), else TCP on bind:port. The default bind is
+// loopback — Arbiter is meant to sit behind Caddy/tailscale, and a listener
+// reachable from anywhere would let a peer forge the admin gate's
+// forward-auth header (and reach the chat endpoints) directly.
+func listen(socketPath, bind, port string) (net.Listener, error) {
+	if socketPath != "" {
+		// Remove a stale socket from a previous run; bind fails if the path
+		// exists even when nothing is listening on it.
+		if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("remove stale socket %s: %w", socketPath, err)
+		}
+		ln, err := net.Listen("unix", socketPath)
+		if err != nil {
+			return nil, fmt.Errorf("listen unix %s: %w", socketPath, err)
+		}
+		return ln, nil
+	}
+	addr := net.JoinHostPort(bind, port)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen tcp %s: %w", addr, err)
+	}
+	return ln, nil
 }
 
 // buildPipeline turns config into a fully wired Pipeline: provider table,

@@ -200,6 +200,21 @@ routers:
 # routing:
 #   fallback_providers: ["gpt4", "litellm"]
 
+# Admin surface (/admin/*). The only endpoint today is POST /admin/reload,
+# which re-reads this file AND the model_catalog_file on demand — the latter
+# is inert on write, so a regenerated catalog needs this call.
+#
+# Arbiter implements no auth: Caddy (forward_auth) and the network do that.
+# The one in-app affordance is `forward_auth_header`: when set, an /admin/*
+# request lacking that header is rejected 401. It is a PRESENCE check only —
+# Arbiter cannot verify Caddy set it, so it is sound only while Arbiter is
+# unreachable except through the proxy. That is why the default bind is
+# loopback (see --bind/--socket); a listener exposed on the tailnet lets any
+# peer forge the header. Unset => /admin/* ungated (dev only).
+#
+# admin:
+#   forward_auth_header: "X-Forwarded-User"
+
 guardrails:
   pre:
     - name: "system_prompt"

@@ -11,6 +11,7 @@ import (
 	"github.com/cnf/arbiter/internal/config"
 	arbiterhttp "github.com/cnf/arbiter/internal/http"
 	"github.com/cnf/arbiter/internal/logging"
+	"github.com/cnf/arbiter/internal/store"
 )
 
 // newTestRouter builds the real route table (newRouter) against a handler
@@ -23,13 +24,13 @@ func newTestRouter(t *testing.T, configPath, forwardAuthHeader string) (*arbiter
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	p, err := buildPipeline(cfg, logger)
+	p, err := buildPipeline(cfg, logger, store.NoopWriter{})
 	if err != nil {
 		t.Fatalf("build pipeline: %v", err)
 	}
 	h := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg), cfg.SessionAffinity.Header), logger)
 	admin := arbiterhttp.NewAdminHandler(func(ctx context.Context) error {
-		return reload(ctx, configPath, h, logger)
+		return reload(ctx, configPath, h, logger, store.NoopWriter{})
 	}, logger)
 	return h, newRouter(h, admin, forwardAuthHeader)
 }

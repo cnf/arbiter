@@ -23,6 +23,7 @@ import (
 	"github.com/cnf/arbiter/internal/logging"
 	"github.com/cnf/arbiter/internal/pipeline"
 	"github.com/cnf/arbiter/internal/router"
+	"github.com/cnf/arbiter/internal/store"
 	"github.com/cnf/arbiter/internal/translator"
 	"github.com/cnf/arbiter/internal/upstream"
 	"github.com/cnf/arbiter/pkg/types"
@@ -44,14 +45,30 @@ func main() {
 	logger := logging.NewStdoutLogger(cfg.Logging.Level)
 	slog.Info("Arbiter starting", "config", *configPath, "port", *port)
 
-	p, err := buildPipeline(cfg, logger)
+	// The event store is opened once, here, and shared across reloads: a
+	// reload rebuilds the pipeline but must not reopen (or leak) the database
+	// handle. storage.path is therefore fixed at startup — a reload that
+	// changes it is ignored for the store, though every other config change
+	// still applies.
+	writer, err := openStore(cfg, logger)
+	if err != nil {
+		slog.Error("failed to open event store", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := writer.Close(); err != nil {
+			slog.Error("failed to close event store", "error", err)
+		}
+	}()
+
+	p, err := buildPipeline(cfg, logger, writer)
 	if err != nil {
 		slog.Error("failed to build pipeline", "error", err)
 		os.Exit(1)
 	}
 	handler := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg), cfg.SessionAffinity.Header), logger)
 	admin := arbiterhttp.NewAdminHandler(func(ctx context.Context) error {
-		return reload(ctx, *configPath, handler, logger)
+		return reload(ctx, *configPath, handler, logger, writer)
 	}, logger)
 
 	r := newRouter(handler, admin, cfg.Admin.ForwardAuthHeader)
@@ -87,7 +104,7 @@ func main() {
 	watchCtx, stopWatch := context.WithCancel(context.Background())
 	defer stopWatch()
 	go func() {
-		if err := watchConfig(watchCtx, *configPath, handler, logger); err != nil {
+		if err := watchConfig(watchCtx, *configPath, handler, logger, writer); err != nil {
 			slog.Error("config watcher stopped", "error", err)
 		}
 	}()
@@ -159,13 +176,37 @@ func listen(socketPath, bind, port string) (net.Listener, error) {
 	return ln, nil
 }
 
+// storeHandle is a Writer that also owns resources main must release at
+// shutdown. Both concrete writers satisfy it, so main treats the enabled and
+// disabled cases identically.
+type storeHandle interface {
+	store.Writer
+	Close() error
+}
+
+// openStore returns the event-store writer named by config: a SQLiteWriter
+// when storage.path is set, else a NoopWriter so nothing is persisted and the
+// pipeline needs no nil checks.
+func openStore(cfg *config.Config, logger logging.Logger) (storeHandle, error) {
+	if cfg.Storage.Path == "" {
+		slog.Info("event store disabled (storage.path unset)")
+		return store.NoopWriter{}, nil
+	}
+	w, err := store.NewSQLiteWriter(cfg.Storage.Path, logger)
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("event store enabled", "path", cfg.Storage.Path)
+	return w, nil
+}
+
 // buildPipeline turns config into a fully wired Pipeline: provider table,
 // translator, classifiers, router, guardrails, upstream client. This is the
 // one place that knows how config type-names map to concrete constructors —
 // adding a new classifier/router/guardrail type means adding a case here
 // (or, once there's a reason to, registering it into router.Registry /
 // classifier.Registry / guardrail.Registry instead of switching on it).
-func buildPipeline(cfg *config.Config, logger logging.Logger) (*pipeline.Pipeline, error) {
+func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Writer) (*pipeline.Pipeline, error) {
 	providers := make(map[string]types.ProviderConfig, len(cfg.Providers))
 	for name, pc := range cfg.Providers {
 		timeout := 60 * time.Second
@@ -202,7 +243,16 @@ func buildPipeline(cfg *config.Config, logger logging.Logger) (*pipeline.Pipelin
 		classifiers = append(classifiers, c)
 	}
 
-	resolver := buildAliasResolver(cfg.Aliases, providers, modelCostEntries(cfg.ModelCatalog))
+	catalog := modelCostEntries(cfg.ModelCatalog)
+	resolver := buildAliasResolver(cfg.Aliases, providers, catalog)
+
+	// The catalog also answers the pipeline's cost computation: when an
+	// upstream reports no cost (plain Anthropic/OpenAI), the pipeline prices
+	// the request from these same rows. nil when no catalog is configured.
+	var costLookup router.CostLatencyLookup
+	if len(catalog) > 0 {
+		costLookup = router.NewStaticCatalog(catalog)
+	}
 
 	routers := make([]router.Router, 0, len(cfg.Routers))
 	for _, rc := range cfg.Routers {
@@ -244,7 +294,7 @@ func buildPipeline(cfg *config.Config, logger logging.Logger) (*pipeline.Pipelin
 		}
 	}
 
-	return pipeline.NewPipeline(t, t, t, classifiers, mainRouter, u, providers, cfg.Routing.FallbackProviders, preGuardrails, postGuardrails, logger, defaultCacheTTL, resolver), nil
+	return pipeline.NewPipeline(t, t, t, classifiers, mainRouter, u, providers, cfg.Routing.FallbackProviders, preGuardrails, postGuardrails, logger, defaultCacheTTL, resolver, writer, costLookup), nil
 }
 
 func combineRouters(routers []router.Router) router.Router {

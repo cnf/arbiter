@@ -13,6 +13,7 @@ import (
 	"github.com/cnf/arbiter/internal/config"
 	arbiterhttp "github.com/cnf/arbiter/internal/http"
 	"github.com/cnf/arbiter/internal/logging"
+	"github.com/cnf/arbiter/internal/store"
 )
 
 const validConfigA = `
@@ -76,7 +77,7 @@ func TestWatchConfigReloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load initial config: %v", err)
 	}
-	p, err := buildPipeline(cfg, logger)
+	p, err := buildPipeline(cfg, logger, store.NoopWriter{})
 	if err != nil {
 		t.Fatalf("build initial pipeline: %v", err)
 	}
@@ -89,7 +90,7 @@ func TestWatchConfigReloads(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		if err := watchConfig(ctx, path, h, logger); err != nil {
+		if err := watchConfig(ctx, path, h, logger, store.NoopWriter{}); err != nil {
 			t.Errorf("watchConfig: %v", err)
 		}
 	}()
@@ -116,7 +117,7 @@ func TestWatchConfigRejectsInvalidReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := buildPipeline(cfg, logger)
+	p, err := buildPipeline(cfg, logger, store.NoopWriter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +126,7 @@ func TestWatchConfigRejectsInvalidReload(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		_ = watchConfig(ctx, path, h, logger)
+		_ = watchConfig(ctx, path, h, logger, store.NoopWriter{})
 	}()
 	time.Sleep(100 * time.Millisecond)
 

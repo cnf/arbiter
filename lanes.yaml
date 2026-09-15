@@ -215,6 +215,18 @@ routers:
 # admin:
 #   forward_auth_header: "X-Forwarded-User"
 
+# Event store. Unset (the default) means no persistence: requests run exactly
+# as before, nothing is recorded. Set `path` to enable a sqlite store holding
+# one row per completed request — success, upstream failure, and streams alike,
+# with tokens, cost, latency, routing rationale and classification axes.
+#
+# The writer is opened once at startup and shared across reloads, so this path
+# is fixed for the process lifetime. Cost is computed from `model_catalog`
+# rates whenever the upstream reports none (see the catalog section above).
+#
+# storage:
+#   path: "arbiter.db"
+
 guardrails:
   pre:
     - name: "system_prompt"

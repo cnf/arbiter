@@ -21,7 +21,11 @@ import (
 // returns a NormalizedResponse (or a stream channel if streaming).
 type Client interface {
 	Send(ctx context.Context, route types.Route, req *types.NormalizedRequest) (*types.NormalizedResponse, error)
-	SendStream(ctx context.Context, route types.Route, req *types.NormalizedRequest) (<-chan *types.NormalizedStreamEvent, error)
+	// SendStream returns the event channel plus a one-shot error channel that
+	// receives the stream's terminal outcome (nil on a clean finish, non-nil
+	// if the SSE read failed mid-stream) once the event channel has been
+	// closed. Callers must drain the event channel before reading it.
+	SendStream(ctx context.Context, route types.Route, req *types.NormalizedRequest) (<-chan *types.NormalizedStreamEvent, <-chan error, error)
 }
 
 // StreamResponse carries a channel of normalized stream events from the upstream.
@@ -82,9 +86,11 @@ func (c *HTTPClient) Send(ctx context.Context, route types.Route, req *types.Nor
 }
 
 // SendStream sends a streaming request to the upstream provider and returns
-// a channel of normalized stream events. The caller is responsible for
-// closing the returned channel; SendStream closes it when done.
-func (c *HTTPClient) SendStream(ctx context.Context, route types.Route, req *types.NormalizedRequest) (<-chan *types.NormalizedStreamEvent, error) {
+// a channel of normalized stream events plus a one-shot channel carrying the
+// stream's terminal error (nil on success), sent once eventChan is closed.
+// The caller is responsible for closing the returned channel; SendStream
+// closes it when done.
+func (c *HTTPClient) SendStream(ctx context.Context, route types.Route, req *types.NormalizedRequest) (<-chan *types.NormalizedStreamEvent, <-chan error, error) {
 	// The stream is read by a background goroutine that outlives this call,
 	// so the cancel func must be released there (once the read is done)
 	// rather than deferred here — deferring here would cancel ctx, and with
@@ -103,27 +109,28 @@ func (c *HTTPClient) SendStream(ctx context.Context, route types.Route, req *typ
 	reqCopy.Model = route.Model
 
 	eventChan := make(chan *types.NormalizedStreamEvent, 10)
+	errChan := make(chan error, 1)
 
 	switch route.Config.Type {
 	case "anthropic":
-		if err := c.sendAnthropicStream(ctx, route, &reqCopy, eventChan, watchdog); err != nil {
+		if err := c.sendAnthropicStream(ctx, route, &reqCopy, eventChan, errChan, watchdog); err != nil {
 			watchdog.stop()
 			close(eventChan)
-			return nil, err
+			return nil, nil, err
 		}
 	case "openai", "ollama":
-		if err := c.sendOpenAIStream(ctx, route, &reqCopy, eventChan, watchdog); err != nil {
+		if err := c.sendOpenAIStream(ctx, route, &reqCopy, eventChan, errChan, watchdog); err != nil {
 			watchdog.stop()
 			close(eventChan)
-			return nil, err
+			return nil, nil, err
 		}
 	default:
 		watchdog.stop()
 		close(eventChan)
-		return nil, arbitererrors.NewUpstreamError(route.Provider, 0, fmt.Sprintf("unknown provider type %q", route.Config.Type), nil)
+		return nil, nil, arbitererrors.NewUpstreamError(route.Provider, 0, fmt.Sprintf("unknown provider type %q", route.Config.Type), nil)
 	}
 
-	return eventChan, nil
+	return eventChan, errChan, nil
 }
 
 // streamWatchdog bounds a stream by *silence* rather than total duration.

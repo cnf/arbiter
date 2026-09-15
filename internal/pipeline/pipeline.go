@@ -16,6 +16,7 @@ import (
 	"github.com/cnf/arbiter/internal/guardrail"
 	"github.com/cnf/arbiter/internal/logging"
 	"github.com/cnf/arbiter/internal/router"
+	"github.com/cnf/arbiter/internal/store"
 	"github.com/cnf/arbiter/internal/translator"
 	"github.com/cnf/arbiter/internal/upstream"
 	arbitererrors "github.com/cnf/arbiter/pkg/errors"
@@ -61,6 +62,15 @@ type Pipeline struct {
 	literalModels map[string]string
 
 	logger logging.Logger
+
+	// store records every completed request. NoopWriter when no store is
+	// configured, so tests and local dev without a DB file work unchanged.
+	store store.Writer
+
+	// costCatalog answers cost lookups for computing cost_usd when the
+	// upstream didn't report one. nil means no catalog configured — cost
+	// then stays 0 for those requests.
+	costCatalog router.CostLatencyLookup
 }
 
 // defaultAffinityTTL applies when config sets no session_affinity.default_ttl.
@@ -83,7 +93,12 @@ func NewPipeline(
 	l logging.Logger,
 	cacheTTL time.Duration,
 	aliasResolver *router.AliasResolver,
+	writer store.Writer,
+	costCatalog router.CostLatencyLookup,
 ) *Pipeline {
+	if writer == nil {
+		writer = store.NoopWriter{}
+	}
 	if cacheTTL <= 0 {
 		cacheTTL = defaultAffinityTTL
 	}
@@ -122,6 +137,8 @@ func NewPipeline(
 		aliasResolver:   aliasResolver,
 		literalModels:   literalModels,
 		logger:          l,
+		store:           writer,
+		costCatalog:     costCatalog,
 	}
 }
 
@@ -134,6 +151,7 @@ func NewPipeline(
 // provider/model actually serves it — see resolveRoute.
 func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, traceID string, sessionHint string) (interface{}, error) {
 	ctx = p.logger.WithTraceID(ctx, traceID)
+	start := time.Now()
 
 	req, err := p.normalizer.ToNormalized(payload, format)
 	if err != nil {
@@ -161,19 +179,39 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 	sessionKey, hasKey := SessionKey(sessionHint, req)
 	req.SessionKey = sessionKey
 
-	route, err := p.resolveRoute(ctx, req, hasKey)
+	route, sig, err := p.resolveRoute(ctx, req, hasKey)
 	if err != nil {
 		return nil, err
 	}
 
 	// Streaming vs. non-streaming: different code paths
 	if req.Stream {
-		return p.executeStream(ctx, traceID, route, req, sessionKey, hasKey)
+		return p.executeStream(ctx, traceID, route, req, sessionKey, hasKey, sig, start)
 	}
 
-	resp, _, served, err := p.tryUpstream(ctx, route, req)
+	resp, _, _, served, err := p.tryUpstream(ctx, route, req)
 	if err != nil {
 		p.logger.LogError(ctx, "error", err, map[string]interface{}{"provider": route.Provider})
+		status, provider := upstreamFailure(err)
+		if provider == "" {
+			provider = route.Provider
+		}
+		p.record(store.Event{
+			TraceID:          traceID,
+			SessionKey:       sessionKey,
+			Format:           format,
+			Provider:         provider,
+			Model:            req.Model,
+			AliasUsed:        p.aliasName(req.Model),
+			RoutingRationale: route.Rationale,
+			Domain:           sig.Domain,
+			Effort:           sig.Effort,
+			CostClass:        sig.CostClass,
+			Confidence:       sig.Confidence,
+			LatencyMs:        time.Since(start).Milliseconds(),
+			StatusCode:       status,
+			Error:            err.Error(),
+		})
 		return nil, err
 	}
 	if hasKey {
@@ -196,7 +234,83 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 	if err != nil {
 		return nil, arbitererrors.NewTranslationError("post_routing", "denormalize response", err)
 	}
+
+	usage := resp.Usage
+	usage.CostUSD = p.computeCost(served.Provider, served.Model, usage)
+	p.record(store.Event{
+		TraceID:          traceID,
+		SessionKey:       sessionKey,
+		Format:           format,
+		Provider:         served.Provider,
+		Model:            served.Model,
+		AliasUsed:        p.aliasName(req.Model),
+		RoutingRationale: served.Rationale,
+		Domain:           sig.Domain,
+		Effort:           sig.Effort,
+		CostClass:        sig.CostClass,
+		Confidence:       sig.Confidence,
+		Usage:            usage,
+		LatencyMs:        time.Since(start).Milliseconds(),
+		StatusCode:       http.StatusOK,
+		ToolCalls:        toolCallNames(resp.Content),
+	})
 	return out, nil
+}
+
+// record enqueues a completed request for the event store. It never blocks
+// the request path: a configured store owns the enqueue policy (drop with a
+// warning when saturated), and the default NoopWriter discards outright.
+func (p *Pipeline) record(ev store.Event) {
+	p.store.Record(ev)
+}
+
+// aliasName reports the alias the client named, if req.Model resolves to one.
+// Empty when the client named a literal model or nothing at all.
+func (p *Pipeline) aliasName(model string) string {
+	if p.aliasResolver != nil && p.aliasResolver.Has(model) {
+		return model
+	}
+	return ""
+}
+
+// toolCallNames lists the tool names a response invoked, preserving order.
+func toolCallNames(blocks []types.ContentBlock) []string {
+	var names []string
+	for _, b := range blocks {
+		if b.Type == "tool_use" && b.ToolName != "" {
+			names = append(names, b.ToolName)
+		}
+	}
+	return names
+}
+
+// computeCost fills in cost from the static catalog when the upstream reported
+// none (plain Anthropic/OpenAI report nothing; OpenRouter reports a real
+// figure). A provider-reported cost is authoritative and left untouched. Cache
+// tokens are not priced — the catalog carries no cache rates — so the result
+// is a lower bound for providers that bill cache reads separately.
+func (p *Pipeline) computeCost(provider, model string, usage types.Usage) float64 {
+	if usage.CostUSD > 0 || p.costCatalog == nil {
+		return usage.CostUSD
+	}
+	mc, ok := p.costCatalog.Lookup(provider, model)
+	if !ok {
+		return 0
+	}
+	const perMTok = 1_000_000.0
+	return (float64(usage.InputTokens)*mc.InputCostPerMTok +
+		float64(usage.OutputTokens)*mc.OutputCostPerMTok) / perMTok
+}
+
+// upstreamFailure extracts the status code and serving provider from a failed
+// attempt. A non-UpstreamError (Arbiter's own translation/routing failure)
+// has no upstream status, so it records 0.
+func upstreamFailure(err error) (status int, provider string) {
+	var ue *arbitererrors.UpstreamError
+	if errors.As(err, &ue) {
+		return ue.StatusCode, ue.Provider
+	}
+	return 0, ""
 }
 
 // resolveRoute decides which route to attempt, in precedence order:
@@ -222,10 +336,10 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 // req.Model == "" is not special-cased: it can never match a recorded
 // requested-model (pins are always recorded under a non-empty model), so an
 // empty model simply never hits a pin.
-func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedRequest, hasKey bool) (types.Route, error) {
+func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedRequest, hasKey bool) (types.Route, types.Signals, error) {
 	if route, ok := p.literalModelRoute(req.Model); ok {
 		p.logger.LogRouting(ctx, route, types.Signals{}, 0)
-		return route, nil
+		return route, types.Signals{}, nil
 	}
 
 	if hasKey {
@@ -239,7 +353,7 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 						Rationale: "session affinity pin",
 					}
 					p.logger.LogRouting(ctx, route, types.Signals{}, 0)
-					return route, nil
+					return route, types.Signals{}, nil
 				}
 			}
 		}
@@ -250,22 +364,22 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 	// they only shape axes — so they fall through to classify+rules below.
 	if route, ok := p.aliasRoute(req.Model); ok {
 		p.logger.LogRouting(ctx, route, types.Signals{}, 0)
-		return route, nil
+		return route, types.Signals{}, nil
 	}
 
 	sig, err := p.classify(ctx, req)
 	if err != nil {
-		return types.Route{}, arbitererrors.NewClassificationError("classify request", err)
+		return types.Route{}, types.Signals{}, arbitererrors.NewClassificationError("classify request", err)
 	}
 	sig = p.applyForceAlias(req, sig)
 
 	routeStart := time.Now()
 	route, _, err := p.router.Route(ctx, req, sig)
 	if err != nil {
-		return types.Route{}, arbitererrors.NewRoutingError("route request", err)
+		return types.Route{}, types.Signals{}, arbitererrors.NewRoutingError("route request", err)
 	}
 	p.logger.LogRouting(ctx, route, sig, time.Since(routeStart))
-	return route, nil
+	return route, sig, nil
 }
 
 // literalModelRoute returns a direct route when req.Model is a model actually
@@ -363,14 +477,35 @@ func (p *Pipeline) cacheTTLFor(provider string) time.Duration {
 
 // executeStream handles streaming requests. It returns a channel of normalized
 // stream events that the HTTP handler will translate and send to the client.
-func (p *Pipeline) executeStream(ctx context.Context, traceID string, route types.Route, req *types.NormalizedRequest, sessionKey string, hasKey bool) (interface{}, error) {
+func (p *Pipeline) executeStream(ctx context.Context, traceID string, route types.Route, req *types.NormalizedRequest, sessionKey string, hasKey bool, sig types.Signals, start time.Time) (interface{}, error) {
 	// Send the request upstream (with fallback/retry handling) and get the
 	// event channel. A 429/5xx fails SendStream synchronously — the HTTP
 	// status is known before any SSE bytes flow — so fallback works exactly
 	// as on the non-streaming path.
-	_, eventChan, served, err := p.tryUpstream(ctx, route, req)
+	_, eventChan, errChan, served, err := p.tryUpstream(ctx, route, req)
 	if err != nil {
 		p.logger.LogError(ctx, "error", err, map[string]interface{}{"provider": route.Provider})
+		status, provider := upstreamFailure(err)
+		if provider == "" {
+			provider = route.Provider
+		}
+		p.record(store.Event{
+			TraceID:          traceID,
+			SessionKey:       sessionKey,
+			Format:           req.OriginalFormat,
+			Provider:         provider,
+			Model:            req.Model,
+			AliasUsed:        p.aliasName(req.Model),
+			RoutingRationale: route.Rationale,
+			Domain:           sig.Domain,
+			Effort:           sig.Effort,
+			CostClass:        sig.CostClass,
+			Confidence:       sig.Confidence,
+			LatencyMs:        time.Since(start).Milliseconds(),
+			StatusCode:       status,
+			Error:            err.Error(),
+			Stream:           true,
+		})
 		return nil, err
 	}
 	if hasKey {
@@ -383,10 +518,16 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 	// so on message_start, the routed model otherwise). Also accumulates
 	// usage from stream events and logs the upstream call once (with latency)
 	// when the stream ends, mirroring the non-streaming path's LogUpstream.
+	//
+	// The stream's terminal status is not assumed to be 200: errChan carries
+	// the read goroutine's outcome, so a stream that dies mid-flight records
+	// the failure rather than an optimistic success. Recording happens after
+	// the event channel drains, where both usage and the terminal error are
+	// known.
 	out := make(chan *types.NormalizedStreamEvent)
 	go func() {
 		defer close(out)
-		start := time.Now()
+		streamStart := time.Now()
 		var usage types.Usage
 		for evt := range eventChan {
 			evt.TraceID = traceID
@@ -401,7 +542,38 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 			}
 			out <- evt
 		}
-		p.logger.LogUpstream(ctx, served.Provider, 200, time.Since(start), usage)
+
+		// Drain-then-read: the contract SendStream documents. A nil error is
+		// a clean finish; non-nil means the SSE read failed after the event
+		// channel closed.
+		streamErr := <-errChan
+		status := http.StatusOK
+		errMsg := ""
+		if streamErr != nil {
+			status = http.StatusBadGateway
+			errMsg = streamErr.Error()
+		}
+		p.logger.LogUpstream(ctx, served.Provider, status, time.Since(streamStart), usage)
+
+		usage.CostUSD = p.computeCost(served.Provider, served.Model, usage)
+		p.record(store.Event{
+			TraceID:          traceID,
+			SessionKey:       sessionKey,
+			Format:           req.OriginalFormat,
+			Provider:         served.Provider,
+			Model:            served.Model,
+			AliasUsed:        p.aliasName(req.Model),
+			RoutingRationale: served.Rationale,
+			Domain:           sig.Domain,
+			Effort:           sig.Effort,
+			CostClass:        sig.CostClass,
+			Confidence:       sig.Confidence,
+			Usage:            usage,
+			LatencyMs:        time.Since(start).Milliseconds(),
+			StatusCode:       status,
+			Error:            errMsg,
+			Stream:           true,
+		})
 	}()
 
 	// The HTTP handler consumes this and flushes events as SSE.
@@ -429,7 +601,12 @@ const (
 // actually served the request (== route on the common path, a fallback
 // candidate otherwise) — callers use it to record the session affinity pin
 // against the outcome that actually happened, not the one that was attempted.
-func (p *Pipeline) tryUpstream(ctx context.Context, route types.Route, req *types.NormalizedRequest) (*types.NormalizedResponse, <-chan *types.NormalizedStreamEvent, types.Route, error) {
+//
+// For a stream, the second return is the event channel and the third is the
+// terminal-outcome channel: nil once the event channel has been drained and
+// the read finished cleanly, non-nil if the SSE read failed mid-stream. The
+// non-streaming path returns nils for both channels.
+func (p *Pipeline) tryUpstream(ctx context.Context, route types.Route, req *types.NormalizedRequest) (*types.NormalizedResponse, <-chan *types.NormalizedStreamEvent, <-chan error, types.Route, error) {
 	// route.Fallbacks (a group alias's unselected members, if this route came
 	// from one) are tried before the global routing.fallback_providers list —
 	// they're a more specific, author-declared chain for this exact route.
@@ -452,9 +629,9 @@ candidates:
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			start := time.Now()
 			if req.Stream {
-				eventChan, err := p.upstream.SendStream(ctx, cand, req)
+				eventChan, errChan, err := p.upstream.SendStream(ctx, cand, req)
 				if err == nil {
-					return nil, eventChan, cand, nil
+					return nil, eventChan, errChan, cand, nil
 				}
 				lastErr = err
 				switch p.classifyUpstreamError(ctx, cand, err, time.Since(start)) {
@@ -463,14 +640,14 @@ candidates:
 				case actionNextCandidate:
 					continue candidates
 				case actionFailFast:
-					return nil, nil, types.Route{}, lastErr
+					return nil, nil, nil, types.Route{}, lastErr
 				}
 			}
 
 			resp, err := p.upstream.Send(ctx, cand, req)
 			if err == nil {
 				p.logger.LogUpstream(ctx, cand.Provider, http.StatusOK, time.Since(start), resp.Usage)
-				return resp, nil, cand, nil
+				return resp, nil, nil, cand, nil
 			}
 			lastErr = err
 			switch p.classifyUpstreamError(ctx, cand, err, time.Since(start)) {
@@ -479,7 +656,7 @@ candidates:
 			case actionNextCandidate:
 				continue candidates
 			case actionFailFast:
-				return nil, nil, types.Route{}, lastErr
+				return nil, nil, nil, types.Route{}, lastErr
 			}
 		}
 	}
@@ -488,7 +665,7 @@ candidates:
 		// Every candidate was skipped as cooling down; surface that as a 429.
 		lastErr = arbitererrors.NewUpstreamError(route.Provider, http.StatusTooManyRequests, "all candidate providers are in cooldown", nil)
 	}
-	return nil, nil, types.Route{}, lastErr
+	return nil, nil, nil, types.Route{}, lastErr
 }
 
 // classifyUpstreamError logs a failed upstream attempt and decides what to

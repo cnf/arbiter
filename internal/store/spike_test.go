@@ -3,18 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
-	"embed"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
-
-// schemaFS embeds the schema so applying it needs no filesystem path — the
-// same way the eventual writer will create the table on startup.
-//
-//go:embed schema.sql
-var schemaFS embed.FS
 
 // openMemory applies the schema to a fresh in-memory database and returns the
 // sqlc handle. This is the spike's whole point: prove that the pure-Go driver

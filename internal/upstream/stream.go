@@ -108,7 +108,7 @@ func (c *HTTPClient) parseOpenAISSEEvent(data string) (*types.NormalizedStreamEv
 // watchdog bounds upstream silence and releases the stream context once the
 // goroutine reading the SSE body has finished; the caller must not cancel
 // ctx before that on success.
-func (c *HTTPClient) sendAnthropicStream(ctx context.Context, route types.Route, req *types.NormalizedRequest, eventChan chan<- *types.NormalizedStreamEvent, watchdog *streamWatchdog) error {
+func (c *HTTPClient) sendAnthropicStream(ctx context.Context, route types.Route, req *types.NormalizedRequest, eventChan chan<- *types.NormalizedStreamEvent, errChan chan<- error, watchdog *streamWatchdog) error {
 	wireReq, err := c.translator.NormalizedToAnthropicRequest(req)
 	if err != nil {
 		return arbitererrors.NewTranslationError("post_routing", "normalized to anthropic request", err)
@@ -144,12 +144,15 @@ func (c *HTTPClient) sendAnthropicStream(ctx context.Context, route types.Route,
 		return upstreamErrorFrom(route.Provider, httpResp, respBody)
 	}
 
-	// Read the SSE stream in a goroutine and close the event channel when done
+	// Read the SSE stream in a goroutine and close the event channel when done.
+	// errChan gets the terminal outcome after eventChan is closed, so a
+	// consumer that drains events-then-error never races the signal.
 	go func() {
 		defer watchdog.stop()
 		defer func() { _ = httpResp.Body.Close() }()
 		defer close(eventChan)
-		_ = c.readSSEStream(ctx, httpResp.Body, "anthropic", eventChan, watchdog)
+		err := c.readSSEStream(ctx, httpResp.Body, "anthropic", eventChan, watchdog)
+		errChan <- err
 	}()
 
 	return nil
@@ -159,7 +162,7 @@ func (c *HTTPClient) sendAnthropicStream(ctx context.Context, route types.Route,
 // watchdog bounds upstream silence and releases the stream context once the
 // goroutine reading the SSE body has finished; the caller must not cancel
 // ctx before that on success.
-func (c *HTTPClient) sendOpenAIStream(ctx context.Context, route types.Route, req *types.NormalizedRequest, eventChan chan<- *types.NormalizedStreamEvent, watchdog *streamWatchdog) error {
+func (c *HTTPClient) sendOpenAIStream(ctx context.Context, route types.Route, req *types.NormalizedRequest, eventChan chan<- *types.NormalizedStreamEvent, errChan chan<- error, watchdog *streamWatchdog) error {
 	wireReq, err := c.translator.NormalizedToOpenAIRequest(req)
 	if err != nil {
 		return arbitererrors.NewTranslationError("post_routing", "normalized to openai request", err)
@@ -194,12 +197,14 @@ func (c *HTTPClient) sendOpenAIStream(ctx context.Context, route types.Route, re
 		return upstreamErrorFrom(route.Provider, httpResp, respBody)
 	}
 
-	// Read the SSE stream in a goroutine and close the event channel when done
+	// Read the SSE stream in a goroutine and close the event channel when
+	// done. errChan gets the terminal outcome after eventChan is closed.
 	go func() {
 		defer watchdog.stop()
 		defer func() { _ = httpResp.Body.Close() }()
 		defer close(eventChan)
-		_ = c.readSSEStream(ctx, httpResp.Body, route.Config.Type, eventChan, watchdog)
+		err := c.readSSEStream(ctx, httpResp.Body, route.Config.Type, eventChan, watchdog)
+		errChan <- err
 	}()
 
 	return nil

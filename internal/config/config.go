@@ -34,6 +34,8 @@ type Config struct {
 
 	Admin AdminConfig `yaml:"admin,omitempty"`
 
+	Storage StorageConfig `yaml:"storage,omitempty"`
+
 	// ModelCatalog supplies static cost/latency figures for group-alias
 	// selection strategies (cheapest_input, cheapest_output, fastest). A
 	// provider/model with no entry is "unknown cost" and ranks last rather
@@ -50,6 +52,15 @@ type Config struct {
 	// on the config file's basename, so a regenerated catalog is only picked
 	// up by an explicit reload.
 	ModelCatalogFile string `yaml:"model_catalog_file,omitempty"`
+}
+
+// StorageConfig controls the sqlite event store — a persisted, queryable
+// record of completed requests (Phase 3). An empty Path disables the store,
+// which is the default so local dev and tests need no database file.
+type StorageConfig struct {
+	// Path is the sqlite database file. Empty means "no event store": every
+	// request still runs, but nothing is persisted.
+	Path string `yaml:"path,omitempty"`
 }
 
 // ModelCatalogEntry is one row of the static cost/latency catalog. Costs are

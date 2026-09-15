@@ -57,7 +57,7 @@ func TestStreamOutlivesProviderTimeoutWhileProducing(t *testing.T) {
 	defer srv.Close()
 
 	c := NewHTTPClient(translator.NewDefaultTranslator())
-	ch, err := c.SendStream(context.Background(), streamRoute(srv.URL, 100*time.Millisecond), &types.NormalizedRequest{Stream: true})
+	ch, errCh, err := c.SendStream(context.Background(), streamRoute(srv.URL, 100*time.Millisecond), &types.NormalizedRequest{Stream: true})
 	if err != nil {
 		t.Fatalf("SendStream: %v", err)
 	}
@@ -68,6 +68,9 @@ func TestStreamOutlivesProviderTimeoutWhileProducing(t *testing.T) {
 	}
 	if got != 6 {
 		t.Fatalf("received %d events, want all 6 — stream was truncated by the provider timeout", got)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("stream ended with error: %v", err)
 	}
 }
 
@@ -85,7 +88,7 @@ func TestStreamCutWhenUpstreamGoesSilent(t *testing.T) {
 	defer srv.Close()
 
 	c := NewHTTPClient(translator.NewDefaultTranslator())
-	ch, err := c.SendStream(context.Background(), streamRoute(srv.URL, 100*time.Millisecond), &types.NormalizedRequest{Stream: true})
+	ch, errCh, err := c.SendStream(context.Background(), streamRoute(srv.URL, 100*time.Millisecond), &types.NormalizedRequest{Stream: true})
 	if err != nil {
 		t.Fatalf("SendStream: %v", err)
 	}
@@ -104,6 +107,9 @@ func TestStreamCutWhenUpstreamGoesSilent(t *testing.T) {
 		if n != 1 {
 			t.Fatalf("received %d events, want the 1 sent before the silence", n)
 		}
+		if err := <-errCh; err == nil {
+			t.Fatal("stream cut by the watchdog reported a clean finish, want a non-nil error")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("stream did not close after the upstream went silent — watchdog never fired")
 	}
@@ -116,7 +122,7 @@ func TestStreamWithoutTimeoutRunsToCompletion(t *testing.T) {
 	defer srv.Close()
 
 	c := NewHTTPClient(translator.NewDefaultTranslator())
-	ch, err := c.SendStream(context.Background(), streamRoute(srv.URL, 0), &types.NormalizedRequest{Stream: true})
+	ch, errCh, err := c.SendStream(context.Background(), streamRoute(srv.URL, 0), &types.NormalizedRequest{Stream: true})
 	if err != nil {
 		t.Fatalf("SendStream: %v", err)
 	}
@@ -124,6 +130,9 @@ func TestStreamWithoutTimeoutRunsToCompletion(t *testing.T) {
 	got := 0
 	for range ch {
 		got++
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("stream ended with error: %v", err)
 	}
 	if got != 3 {
 		t.Fatalf("received %d events, want 3", got)

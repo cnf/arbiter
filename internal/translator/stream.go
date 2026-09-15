@@ -10,51 +10,51 @@ import (
 
 // AnthropicStreamEvent is an event in an Anthropic SSE stream.
 type AnthropicStreamEvent struct {
-	Type           string                      `json:"type"`
-	Message        *AnthropicStreamMessage     `json:"message,omitempty"`
-	ContentBlock   *types.AnthropicContent     `json:"content_block,omitempty"`
-	Delta          *AnthropicStreamDelta       `json:"delta,omitempty"`
-	Index          int                         `json:"index,omitempty"`
-	Usage          *types.AnthropicUsage       `json:"usage,omitempty"`
+	Type         string                  `json:"type"`
+	Message      *AnthropicStreamMessage `json:"message,omitempty"`
+	ContentBlock *types.AnthropicContent `json:"content_block,omitempty"`
+	Delta        *AnthropicStreamDelta   `json:"delta,omitempty"`
+	Index        int                     `json:"index,omitempty"`
+	Usage        *types.AnthropicUsage   `json:"usage,omitempty"`
 }
 
 type AnthropicStreamMessage struct {
-	ID        string                `json:"id"`
-	Type      string                `json:"type"`
-	Role      string                `json:"role"`
-	Content   []types.AnthropicContent `json:"content"`
-	Model     string                `json:"model"`
-	StopReason string               `json:"stop_reason"`
-	Usage     types.AnthropicUsage  `json:"usage"`
+	ID         string                   `json:"id"`
+	Type       string                   `json:"type"`
+	Role       string                   `json:"role"`
+	Content    []types.AnthropicContent `json:"content"`
+	Model      string                   `json:"model"`
+	StopReason string                   `json:"stop_reason"`
+	Usage      types.AnthropicUsage     `json:"usage"`
 }
 
 type AnthropicStreamDelta struct {
-	Type      string `json:"type"` // "text_delta", "tool_use_delta"
-	Text      string `json:"text,omitempty"`
-	Input     string `json:"input,omitempty"` // for tool_use_delta
+	Type  string `json:"type"` // "text_delta", "tool_use_delta"
+	Text  string `json:"text,omitempty"`
+	Input string `json:"input,omitempty"` // for tool_use_delta
 }
 
 // --- OpenAI SSE event types ---
 
 // OpenAIStreamEvent is an event in an OpenAI SSE stream.
 type OpenAIStreamEvent struct {
-	ID      string                `json:"id"`
-	Object  string                `json:"object"`
-	Created int64                 `json:"created"`
-	Model   string                `json:"model"`
-	Choices []OpenAIStreamChoice  `json:"choices,omitempty"`
-	Usage   *types.OpenAIUsage    `json:"usage,omitempty"`
+	ID      string               `json:"id"`
+	Object  string               `json:"object"`
+	Created int64                `json:"created"`
+	Model   string               `json:"model"`
+	Choices []OpenAIStreamChoice `json:"choices,omitempty"`
+	Usage   *types.OpenAIUsage   `json:"usage,omitempty"`
 }
 
 type OpenAIStreamChoice struct {
-	Index        int                   `json:"index"`
-	Delta        OpenAIStreamDelta     `json:"delta"`
-	FinishReason *string               `json:"finish_reason"`
+	Index        int               `json:"index"`
+	Delta        OpenAIStreamDelta `json:"delta"`
+	FinishReason *string           `json:"finish_reason"`
 }
 
 type OpenAIStreamDelta struct {
-	Role      string                `json:"role,omitempty"`
-	Content   string                `json:"content,omitempty"`
+	Role      string                 `json:"role,omitempty"`
+	Content   string                 `json:"content,omitempty"`
 	ToolCalls []types.OpenAIToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -196,7 +196,7 @@ func NormalizedToAnthropicStreamEvent(evt *types.NormalizedStreamEvent) *Anthrop
 
 	case "message_stop":
 		anthropic.Message = &AnthropicStreamMessage{
-			ID:        evt.MessageID,
+			ID:         evt.MessageID,
 			StopReason: evt.MessageStopReason,
 		}
 	}

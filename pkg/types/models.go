@@ -28,4 +28,3 @@ type Signals struct {
 // canonical (current) names; the config layer also accepts the deprecated
 // spellings and maps them onto these.
 var KnownAxes = []string{"domain", "effort", "cost_class", "capabilities"}
-

@@ -198,8 +198,8 @@ func TestAliasResolverForceEmptyIsStillAForceAlias(t *testing.T) {
 func TestAliasResolverGroupSelectCheapest(t *testing.T) {
 	aliases := map[string]Alias{
 		"budget": {
-			Name: "budget",
-			Type: "group",
+			Name:   "budget",
+			Type:   "group",
 			Select: "cheapest_input",
 			Members: []AliasMember{
 				{Provider: "claude", Model: "claude-3-opus-20250219"},

@@ -98,6 +98,16 @@ Explicitly out of scope:
 
 # Divergence Report
 
+> **This is a dated snapshot, not a live status.** It was written at commit
+> `5598a2b` to record the gap between these requirements and the code as it
+> then stood. Each item below carries a status marker added 2026-09-15; the
+> original text is kept so the reasoning survives. For current status see the
+> project memory's changelog, which tracks each phase as it lands.
+>
+> Markers: **DONE** (gap closed, with the commit that closed it) ·
+> **PARTIAL** (partly closed — the remainder is named) · **OPEN** (still
+> accurate as written).
+
 ## Matches requirements as-is
 
 - **Hub-and-spoke translation** (Anthropic ⇄ Normalized ⇄ OpenAI, incl. SSE)
@@ -112,7 +122,8 @@ Explicitly out of scope:
   it's currently global/process-wide, not per-provider.
 - **Structured JSON logging with trace-ID correlation**
   (`internal/logging/logger.go`) — good foundation, but see gaps below
-  (stdout-only isn't "queryable").
+  (stdout-only isn't "queryable"). **PARTIAL** — stdout-only is still true;
+  the store's schema now exists but nothing writes to it yet.
 
 ## Diverges — needs changing
 
@@ -121,27 +132,41 @@ Explicitly out of scope:
   `Signals` or a static default — there's no concept of the client naming a
   virtual model via the `model` field and that name carrying routing
   policy. This is the core mechanism the requirements need and doesn't
-  exist yet.
+  exist yet. **DONE** (`e0f1ea8`) — `internal/router/alias.go` adds force /
+  pinned / group aliases, resolved recursively and usable wherever a
+  provider/model target is expected, including as a policy rule target.
 - **No provider-side data in routing decisions.** `Signals.CostSensitivity`
   (`pkg/types/models.go:23`) is a string label a classifier assigns from
   request text (e.g. "budget") — matched literally in `PolicyCondition`,
   not compared against real provider cost/latency numbers. There is no
   provider cost/latency table anywhere in config or types. "Pick the
-  cheapest/fastest provider" cannot be expressed today.
+  cheapest/fastest provider" cannot be expressed today. **DONE**
+  (`1fbf74b`, catalog loading `a00d6d8`, generator `acbdb91`) —
+  `internal/router/cost.go`'s `CostLatencyLookup` + `StaticCatalog`; group
+  aliases select by `cheapest_input`/`cheapest_output`/`fastest` off the
+  `model_catalog`. The empirical seam is the `CostLatencyLookup` interface
+  itself (only `StaticCatalog` implements it so far). Note: a *fetchable
+  URL* catalog still does not exist — only inline + a local file.
 - **`rate_limit` guardrail is a single global cap** (`internal/guardrail/guardrail.go:84`
   `RateLimitGuardrail`) — one counter pair (per-minute/per-day) for the
   whole pipeline, applied pre-routing, before the provider is even known.
   There's no per-provider limit and no concept of mirroring an upstream's
   published limits. Needs to become provider-scoped (checked/incremented
   post-routing, or with per-provider counters keyed by chosen provider).
+  **OPEN** — still one `minuteCount`/`dayCount` pair, still `ApplyPre`.
 - **`Usage.CostUSD`** (`pkg/types/response.go:39`) is populated only when
   an upstream reports it directly (e.g. OpenRouter) — no static cost-table
   fallback, so most providers (plain Anthropic/OpenAI) show $0 always.
+  **OPEN** — the catalog is used to *choose* a route, never to compute a
+  reported cost. Phase 3b is scoped to close this for the store's
+  `cost_usd` column (not for the response body).
 - **Observability is stdout-only.** `LogRouting`/`LogUpstream`/etc. write
   JSON lines and nothing else — no persistence, no session/trajectory
   concept, no tool-call attribution, no client-identity tagging. Fine as a
   transport, not sufficient as the queryable store the requirements call
-  for.
+  for. **PARTIAL** — the sqlite schema and sqlc-generated queries now exist
+  (`internal/store/`, Phase 3a `a9b3b1b`), but **no code writes to it**: the
+  write path is Phase 3b.
 
 ## Missing entirely — needs developing
 
@@ -152,20 +177,33 @@ Explicitly out of scope:
   first-class routing target — i.e. any router's output (or a
   `PolicyRule.Provider`-equivalent) can itself be an alias name, requiring
   an alias-resolution step after routing, before `tryUpstream`, that can
-  itself pick among a group.
+  itself pick among a group. **DONE** (`e0f1ea8`) — see the divergence entry
+  above; aliases resolve recursively (depth-limited, cycles rejected at
+  load) and a group's unselected members *are* its fallback chain.
 - **Cost/latency-aware router type**, fed by a declared provider
   cost/latency table (inline config now, fetchable JSON/URL as an option),
-  with a seam to later swap in measured data from captured traffic.
+  with a seam to later swap in measured data from captured traffic. **DONE
+  except the URL option** (`1fbf74b`/`a00d6d8`/`acbdb91`) — table is inline
+  `model_catalog` plus a local `model_catalog_file`; the seam is the
+  `CostLatencyLookup` interface. Fetching a catalog over HTTP is not built.
 - **Persistent event store** (e.g. sqlite) capturing per-request: routing
   decision/rationale/signals, tokens, cost, latency, client identity,
   session/trajectory linkage, tool calls. This is the foundation the
   dashboard/cost-tracking/alerting features would later read from — build
-  once, not per-feature.
+  once, not per-feature. **PARTIAL** (schema `a9b3b1b`) — schema and typed
+  queries exist with columns for all of the above; the write path, and with
+  it the required catalog-derived cost computation, is Phase 3b. Sub-agent /
+  child-request attribution is deliberately *not* in the schema.
 - **API key authentication middleware** — nothing currently reads
   `Authorization` or any Caddy forward-auth header; `internal/http/handler.go`
   has no auth check at all. Needs: per-key config, validate against either
   a Caddy-trusted header or an Arbiter-checked key, attach identity to
-  trace/log context for attribution.
+  trace/log context for attribution. **OPEN, and reframed (2026-09-15):
+  these are attribution + per-client shaping, explicitly NOT authentication
+  and not a gate** — a missing or unknown key must not be rejected, it
+  degrades to *unattributed*. See §4. (The admin surface's
+  `forward_auth_header` is a separate thing and *is* a presence-checked
+  gate; do not model client keys on it.)
 - **Budget-cap guardrail** — spend-based, distinct from the existing
   request-count `rate_limit` guardrail.
 - **Per-provider rate/budget limits that mirror upstream published limits**
@@ -180,12 +218,21 @@ Explicitly out of scope:
 
 ## Suggested build order (routing-first, per your priority)
 
-1. Model alias layer + wiring it into the router selection (the "auto /
-   auto-coding / pinned model / model group" mechanism).
-2. Static provider cost/latency table + a cost/latency-aware router mode.
+Status as of 2026-09-15: **1 and 2 are done; 3 is half done (schema only).**
+
+1. ~~Model alias layer + wiring it into the router selection (the "auto /
+   auto-coding / pinned model / model group" mechanism).~~ **DONE** —
+   `e0f1ea8`.
+2. ~~Static provider cost/latency table + a cost/latency-aware router mode.~~
+   **DONE** — `1fbf74b` + `a00d6d8` + `acbdb91` (URL-fetched catalog not
+   built; considered optional).
 3. Persistent event store capturing routing+usage+session data (schema
-   informed by #1–2 so routing decisions land in it from day one).
-4. API key auth + client identity threaded into the store.
-5. Budget-cap guardrail (consumes the same usage data as #3).
-6. Client-injected-prompt stripper guardrail.
-7. Dashboard/query tooling over the store from #3 (explicitly last).
+   informed by #1–2 so routing decisions land in it from day one). — **3a
+   DONE** (`a9b3b1b`, schema + generated queries); **3b (write path, incl.
+   catalog-derived cost) NOT STARTED.**
+4. API key auth + client identity threaded into the store. — not started;
+   reframed as attribution + per-client shaping, not auth (see §4).
+5. Budget-cap guardrail (consumes the same usage data as #3). — not started.
+6. Client-injected-prompt stripper guardrail. — not started.
+7. Dashboard/query tooling over the store from #3 (explicitly last). — not
+   started.

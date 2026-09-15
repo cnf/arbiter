@@ -13,6 +13,7 @@ import (
 	"time"
 
 	arbitererrors "github.com/cnf/arbiter/pkg/errors"
+	"github.com/cnf/arbiter/pkg/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -26,6 +27,7 @@ type Config struct {
 	Guardrails  GuardrailsConfig          `yaml:"guardrails"`
 	Routing     RoutingConfig             `yaml:"routing"`
 	Logging     LoggingConfig             `yaml:"logging"`
+	Aliases     map[string]AliasConfig    `yaml:"aliases,omitempty"`
 
 	SessionAffinity SessionAffinityConfig `yaml:"session_affinity,omitempty"`
 }
@@ -69,9 +71,37 @@ type ProviderConfig struct {
 
 // ClassifierConfig defines a classifier to load.
 type ClassifierConfig struct {
-	Name   string                 `yaml:"name"`
-	Type   string                 `yaml:"type"`
+	Name string `yaml:"name"`
+	Type string `yaml:"type"`
+	// Axis names the types.Signals field this classifier instance fills
+	// ("domain", "effort", "cost_class", "capabilities"). Empty defaults to
+	// "domain" for type "heuristic" and "capabilities" for the legacy type
+	// "capability_detector" — matching pre-axis behavior so existing configs
+	// need no change.
+	Axis   string                 `yaml:"axis,omitempty"`
 	Config map[string]interface{} `yaml:"config"`
+}
+
+// AliasConfig defines a client-facing virtual model. Exactly one of Force
+// (a force-alias) or Type (a pinned/group alias) should be set.
+type AliasConfig struct {
+	// Force overrides classification axes before rule matching, e.g.
+	// { domain: ["code_generation"] }. Mutually exclusive with Type.
+	Force map[string][]string `yaml:"force,omitempty"`
+
+	Type     string `yaml:"type,omitempty"` // "pinned" | "group"
+	Provider string `yaml:"provider,omitempty"`
+	Model    string `yaml:"model,omitempty"`
+
+	Members []AliasMemberConfig `yaml:"members,omitempty"`
+	Select  string              `yaml:"select,omitempty"` // "random" (P1)
+}
+
+// AliasMemberConfig is one candidate within a group alias. Provider may
+// itself name another alias, resolved recursively.
+type AliasMemberConfig struct {
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model,omitempty"`
 }
 
 // RouterConfig defines a router to load.
@@ -155,6 +185,9 @@ func (c *Config) Validate() error {
 	if err := validateUniqueNames("classifier", classifierNames(c.Classifiers)); err != nil {
 		return err
 	}
+	if err := validateClassifierAxes(c.Classifiers); err != nil {
+		return err
+	}
 	if err := validateUniqueNames("router", routerNames(c.Routers)); err != nil {
 		return err
 	}
@@ -178,6 +211,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateAliases(); err != nil {
+		return err
+	}
+
 	switch c.Logging.Level {
 	case "", "debug", "info", "warn", "error":
 	default:
@@ -185,6 +222,206 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// knownAxisSet mirrors types.KnownAxes, plus the deprecated spellings that
+// the config layer maps onto the canonical names — a force alias may use
+// either during the deprecation window.
+var knownAxisSet = func() map[string]bool {
+	set := make(map[string]bool, len(types.KnownAxes)+2)
+	for _, a := range types.KnownAxes {
+		set[a] = true
+	}
+	set["intent"] = true           // deprecated spelling of "domain"
+	set["cost_sensitivity"] = true // deprecated spelling of "cost_class"
+	return set
+}()
+
+// canonicalAxisSet is the subset of knownAxisSet that a classifier's `axis`
+// field may use. Deprecated spellings are accepted for force aliases and when
+// a policy rule's `when` clause (hand-parsed with its own dual-key handling)
+// but a classifier axis is new config, so it only accepts current names —
+// otherwise a typo'd axis would silently default to filling Domain.
+var canonicalAxisSet = func() map[string]bool {
+	set := make(map[string]bool, len(types.KnownAxes))
+	for _, a := range types.KnownAxes {
+		set[a] = true
+	}
+	return set
+}()
+
+// validateClassifierAxes checks each classifier's declared axis is a current
+// axis name. The legacy "capability_detector" type always fills capabilities,
+// so declaring an axis on it is rejected rather than silently ignored.
+func validateClassifierAxes(cs []ClassifierConfig) error {
+	for _, c := range cs {
+		if c.Axis == "" {
+			continue
+		}
+		if c.Type == "capability_detector" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"capability_detector\" always fills capabilities and must not set axis", c.Name), nil)
+		}
+		if !canonicalAxisSet[c.Axis] {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: unknown axis %q (want one of %v)", c.Name, c.Axis, types.KnownAxes), nil)
+		}
+	}
+	return nil
+}
+
+// validateAliases checks the aliases block: names unique and disjoint from
+// provider names (an unqualified lookup must be unambiguous), pinned/group
+// members reference a configured provider and one of its declared models
+// (unless the member instead names another alias, resolved recursively),
+// force keys are known axis names, and the alias graph has no cycles.
+func (c *Config) validateAliases() error {
+	if len(c.Aliases) == 0 {
+		return nil
+	}
+
+	// Since a declared model name takes routing precedence over an alias, an
+	// alias sharing a model's name would be silently unreachable — reject it.
+	declaredModels := make(map[string]string)
+	for provider, pc := range c.Providers {
+		for _, m := range pc.Models {
+			declaredModels[m] = provider
+		}
+	}
+
+	for name, a := range c.Aliases {
+		if name == "" {
+			return arbitererrors.NewConfigError("alias: entry missing name", nil)
+		}
+		if _, ok := c.Providers[name]; ok {
+			return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: name collides with a configured provider", name), nil)
+		}
+		if provider, ok := declaredModels[name]; ok {
+			return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: name collides with a model declared by provider %q (an explicit model name takes precedence, so this alias would be unreachable)", name, provider), nil)
+		}
+
+		switch {
+		case a.Force != nil:
+			// A declared force block, even an empty one (`force: {}`) — the
+			// latter is the "full auto" alias: force nothing, let every axis
+			// classify and the rules decide.
+			if a.Type != "" {
+				return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: force alias must not also set type", name), nil)
+			}
+			for axis := range a.Force {
+				if !knownAxisSet[axis] {
+					return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: force names unknown axis %q", name, axis), nil)
+				}
+			}
+
+		case a.Type == "pinned":
+			if err := c.validateAliasMember(name, AliasMemberConfig{Provider: a.Provider, Model: a.Model}); err != nil {
+				return err
+			}
+
+		case a.Type == "group":
+			if len(a.Members) == 0 {
+				return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: group has no members", name), nil)
+			}
+			if a.Select != "" && a.Select != "random" {
+				return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: unknown select %q (want \"random\"; other strategies arrive in a later phase)", name, a.Select), nil)
+			}
+			for _, m := range a.Members {
+				if err := c.validateAliasMember(name, m); err != nil {
+					return err
+				}
+			}
+
+		default:
+			return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: must set force, or type \"pinned\"/\"group\"", name), nil)
+		}
+	}
+
+	return c.detectAliasCycles()
+}
+
+// validateAliasMember checks one pinned/group member: its Provider must be
+// a configured provider, and Model must be one of that provider's declared
+// Models (the Member row may set Model to override the first declared model,
+ // which is useful when a single provider lists several models and only one
+ // is the alias's representative). Empty Model is accepted when the provider
+ // has no declared models.
+//
+// If the Member itself names another alias, the caller (detectAliasCycles)
+// resolves it elsewhere; here the Provider is another alias name and we skip
+// the Model check.
+func (c *Config) validateAliasMember(aliasName string, m AliasMemberConfig) error {
+	if m.Provider == "" {
+		return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: member missing provider", aliasName), nil)
+	}
+	if _, isAlias := c.Aliases[m.Provider]; isAlias {
+		return nil
+	}
+	pc, ok := c.Providers[m.Provider]
+	if !ok {
+		return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: member provider %q is not configured", aliasName, m.Provider), nil)
+	}
+	if m.Model != "" && len(pc.Models) > 0 && !slicesContain(pc.Models, m.Model) {
+		return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: member model %q is not declared for provider %q", aliasName, m.Model, m.Provider), nil)
+	}
+	return nil
+}
+
+// detectAliasCycles runs a DFS over the alias graph (edges: pinned/group
+// member -> alias it names) and errors on any cycle, rather than letting one
+// slip through to the runtime's maxAliasDepth backstop.
+func (c *Config) detectAliasCycles() error {
+	const (
+		unvisited = 0
+		visiting  = 1
+		done      = 2
+	)
+	state := make(map[string]int, len(c.Aliases))
+
+	var visit func(name string) error
+	visit = func(name string) error {
+		a, ok := c.Aliases[name]
+		if !ok {
+			return nil // not an alias (a real provider); nothing to follow
+		}
+		switch state[name] {
+		case visiting:
+			return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: cycle detected", name), nil)
+		case done:
+			return nil
+		}
+		state[name] = visiting
+
+		var members []AliasMemberConfig
+		switch a.Type {
+		case "pinned":
+			members = []AliasMemberConfig{{Provider: a.Provider, Model: a.Model}}
+		case "group":
+			members = a.Members
+		}
+		for _, m := range members {
+			if err := visit(m.Provider); err != nil {
+				return err
+			}
+		}
+
+		state[name] = done
+		return nil
+	}
+
+	for name := range c.Aliases {
+		if err := visit(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func slicesContain(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 func classifierNames(cs []ClassifierConfig) []string {

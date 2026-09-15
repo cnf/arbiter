@@ -14,6 +14,7 @@ import (
 
 type fakeUpstream struct {
 	calls     []string // provider names, in call order
+	models    []string // route.Model per call, parallel to calls
 	sendErr   map[string]error
 	streamErr map[string]error
 	resp      *types.NormalizedResponse
@@ -21,6 +22,7 @@ type fakeUpstream struct {
 
 func (f *fakeUpstream) Send(ctx context.Context, route types.Route, req *types.NormalizedRequest) (*types.NormalizedResponse, error) {
 	f.calls = append(f.calls, route.Provider)
+	f.models = append(f.models, route.Model)
 	if err, ok := f.sendErr[route.Provider]; ok {
 		return nil, err
 	}
@@ -29,6 +31,7 @@ func (f *fakeUpstream) Send(ctx context.Context, route types.Route, req *types.N
 
 func (f *fakeUpstream) SendStream(ctx context.Context, route types.Route, req *types.NormalizedRequest) (<-chan *types.NormalizedStreamEvent, error) {
 	f.calls = append(f.calls, route.Provider)
+	f.models = append(f.models, route.Model)
 	if err, ok := f.streamErr[route.Provider]; ok {
 		return nil, err
 	}
@@ -77,12 +80,42 @@ func upstream5xx(provider string) error {
 
 // --- tests ---
 
+// TestRouteFallbacksTriedBeforeGlobalFallbacks verifies the group-alias seam:
+// candidates carried on the route itself (a group's unselected members) are
+// tried before the global routing.fallback_providers list.
+func TestRouteFallbacksTriedBeforeGlobalFallbacks(t *testing.T) {
+	fu := &fakeUpstream{
+		sendErr: map[string]error{"primary": upstream429("primary", 30*time.Second)},
+		resp:    &types.NormalizedResponse{},
+	}
+	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, testProviders(), []string{"fallback2"}, nil, nil, fakeLogger{}, 0, nil)
+
+	providers := testProviders()
+	route := types.Route{
+		Provider: "primary",
+		Model:    "m-primary",
+		Config:   providers["primary"],
+		Fallbacks: []types.Route{
+			{Provider: "fallback1", Model: "m-fallback1", Config: providers["fallback1"]},
+		},
+	}
+
+	if _, _, _, err := p.tryUpstream(context.Background(), route, &types.NormalizedRequest{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// primary fails 429, then the route's own fallback1 serves it — fallback2
+	// (the global list) must never be reached.
+	if len(fu.calls) != 2 || fu.calls[0] != "primary" || fu.calls[1] != "fallback1" {
+		t.Fatalf("calls = %v, want [primary fallback1] (route fallbacks before global)", fu.calls)
+	}
+}
+
 func TestFallbackOn429RecordsCooldown(t *testing.T) {
 	fu := &fakeUpstream{
 		sendErr: map[string]error{"primary": upstream429("primary", 30*time.Second)},
 		resp:    &types.NormalizedResponse{},
 	}
-	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, testProviders(), []string{"fallback1", "primary"}, nil, nil, fakeLogger{}, 0)
+	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, testProviders(), []string{"fallback1", "primary"}, nil, nil, fakeLogger{}, 0, nil)
 	req := &types.NormalizedRequest{}
 	route := types.Route{Provider: "primary", Model: "m-primary", Config: testProviders()["primary"]}
 
@@ -114,7 +147,7 @@ func Test429WithoutRetryAfterUsesDefaultCooldown(t *testing.T) {
 		sendErr: map[string]error{"primary": upstream429("primary", 0)},
 		resp:    &types.NormalizedResponse{},
 	}
-	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, testProviders(), []string{"fallback1"}, nil, nil, fakeLogger{}, 0)
+	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, testProviders(), []string{"fallback1"}, nil, nil, fakeLogger{}, 0, nil)
 	route := types.Route{Provider: "primary", Config: testProviders()["primary"]}
 
 	if _, _, _, err := p.tryUpstream(context.Background(), route, &types.NormalizedRequest{}); err != nil {
@@ -136,7 +169,7 @@ func TestCooldownSkipsProviderOnNextRequest(t *testing.T) {
 		resp:    &types.NormalizedResponse{},
 	}
 	providers := testProviders()
-	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, providers, []string{"fallback1"}, nil, nil, fakeLogger{}, 0)
+	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, providers, []string{"fallback1"}, nil, nil, fakeLogger{}, 0, nil)
 	route := types.Route{Provider: "primary", Config: providers["primary"]}
 	req := &types.NormalizedRequest{}
 
@@ -167,7 +200,7 @@ func Test5xxRetriesPerRetryMaxThenFallback(t *testing.T) {
 	}
 	providers := testProviders()
 	providers["primary"] = types.ProviderConfig{Name: "primary", Type: "openai", Models: []string{"m-primary"}, RetryMax: 2}
-	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, providers, []string{"fallback1"}, nil, nil, fakeLogger{}, 0)
+	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, providers, []string{"fallback1"}, nil, nil, fakeLogger{}, 0, nil)
 	route := types.Route{Provider: "primary", Config: providers["primary"]}
 
 	resp, _, _, err := p.tryUpstream(context.Background(), route, &types.NormalizedRequest{})
@@ -192,7 +225,7 @@ func TestNonRetriable429FailsFast(t *testing.T) {
 	fu := &fakeUpstream{
 		sendErr: map[string]error{"primary": arbitererrors.NewUpstreamError("primary", 400, "bad request", nil)},
 	}
-	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, testProviders(), []string{"fallback1"}, nil, nil, fakeLogger{}, 0)
+	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, testProviders(), []string{"fallback1"}, nil, nil, fakeLogger{}, 0, nil)
 	route := types.Route{Provider: "primary", Config: testProviders()["primary"]}
 
 	_, _, _, err := p.tryUpstream(context.Background(), route, &types.NormalizedRequest{})
@@ -208,7 +241,7 @@ func Test429WithoutFallbackPropagates(t *testing.T) {
 	fu := &fakeUpstream{
 		sendErr: map[string]error{"primary": upstream429("primary", 0)},
 	}
-	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil, fakeLogger{}, 0)
+	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil, fakeLogger{}, 0, nil)
 	route := types.Route{Provider: "primary", Config: testProviders()["primary"]}
 
 	_, _, _, err := p.tryUpstream(context.Background(), route, &types.NormalizedRequest{})
@@ -223,7 +256,7 @@ func Test429WithoutFallbackPropagates(t *testing.T) {
 
 func TestAllCandidatesInCooldown(t *testing.T) {
 	fu := &fakeUpstream{}
-	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, testProviders(), []string{"fallback1"}, nil, nil, fakeLogger{}, 0)
+	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, testProviders(), []string{"fallback1"}, nil, nil, fakeLogger{}, 0, nil)
 	p.markCooldown("primary", time.Now().Add(time.Minute))
 	p.markCooldown("fallback1", time.Now().Add(time.Minute))
 	route := types.Route{Provider: "primary", Config: testProviders()["primary"]}
@@ -241,7 +274,7 @@ func TestStreamFallbackOn429(t *testing.T) {
 	fu := &fakeUpstream{
 		streamErr: map[string]error{"primary": upstream429("primary", 0)},
 	}
-	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, testProviders(), []string{"fallback1"}, nil, nil, fakeLogger{}, 0)
+	p := NewPipeline(nil, nil, nil, nil, &fakeRouter{}, fu, testProviders(), []string{"fallback1"}, nil, nil, fakeLogger{}, 0, nil)
 	route := types.Route{Provider: "primary", Config: testProviders()["primary"]}
 
 	_, evtChan, _, err := p.tryUpstream(context.Background(), route, &types.NormalizedRequest{Stream: true})

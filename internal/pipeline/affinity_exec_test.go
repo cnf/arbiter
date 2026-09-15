@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cnf/arbiter/internal/classifier"
+	"github.com/cnf/arbiter/internal/router"
 	"github.com/cnf/arbiter/pkg/types"
 )
 
@@ -46,7 +48,7 @@ func newAffinityPipeline(rr *recordingRouter, fu *fakeUpstream, n fakeNormalizer
 	return NewPipeline(
 		nil, n, fakeDenormalizer{},
 		nil, rr, fu,
-		testProviders(), fallbacks, nil, nil, fakeLogger{}, ttl,
+		testProviders(), fallbacks, nil, nil, fakeLogger{}, ttl, nil,
 	)
 }
 
@@ -185,12 +187,92 @@ func TestAffinityPinnedProviderInCooldownFallsThrough(t *testing.T) {
 func TestCacheTTLForUsesProviderOverride(t *testing.T) {
 	providers := testProviders()
 	providers["primary"] = types.ProviderConfig{Name: "primary", Models: []string{"m"}, CacheTTL: 30 * time.Second}
-	p := NewPipeline(nil, nil, nil, nil, nil, nil, providers, nil, nil, nil, fakeLogger{}, time.Minute)
+	p := NewPipeline(nil, nil, nil, nil, nil, nil, providers, nil, nil, nil, fakeLogger{}, time.Minute, nil)
 
 	if got := p.cacheTTLFor("primary"); got != 30*time.Second {
 		t.Fatalf("cacheTTLFor(primary) = %v, want the provider override 30s", got)
 	}
 	if got := p.cacheTTLFor("fallback1"); got != time.Minute {
 		t.Fatalf("cacheTTLFor(fallback1) = %v, want the default 1m", got)
+	}
+}
+
+// TestForceAliasOverridesOnlyNamedAxes verifies that a force-alias overrides
+// only the axes it declares, leaving other axes to come from normal
+// classification: 'coding' forces domain=code_generation but says nothing
+// about effort, so effort must still be classified from the request text.
+func TestForceAliasOverridesOnlyNamedAxes(t *testing.T) {
+	provs := map[string]types.ProviderConfig{
+		"fast":  {Name: "fast", Type: "openai", Models: []string{"fast-model"}},
+		"smart": {Name: "smart", Type: "openai", Models: []string{"smart-model"}},
+	}
+	resolver := router.NewAliasResolver(map[string]router.Alias{
+		"coding": {Name: "coding", Force: map[string][]string{"domain": {"code_generation"}}},
+	}, provs, nil)
+
+	effort := classifier.NewHeuristicClassifier("effort", classifier.AxisEffort, map[string][]string{
+		"easy":   {"quick", "simple"},
+		"medium": {"think", "consider"},
+		"hard":   {"complex", "architecture"},
+	})
+
+	// Only matches if BOTH the forced domain and the classified effort land.
+	rules := []router.PolicyRule{
+		{When: router.PolicyCondition{Domain: "code_generation", Effort: "medium"}, Provider: "smart"},
+		{When: router.PolicyCondition{}, Provider: "fast"},
+	}
+	policy := router.NewPolicyRouter("test", rules, provs, resolver)
+
+	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
+	n := fakeNormalizer{model: "coding"}
+	p := NewPipeline(nil, n, fakeDenormalizer{}, []classifier.Classifier{effort}, policy, fu, provs, nil, nil, nil, fakeLogger{}, time.Minute, resolver)
+
+	if _, err := p.Execute(context.Background(), []byte("please think about this problem"), "openai", "t1", ""); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(fu.calls) != 1 || fu.calls[0] != "smart" {
+		t.Fatalf("upstream calls = %v, want [smart]: domain is forced but effort must still classify to medium", fu.calls)
+	}
+}
+
+// TestExplicitModelPrecedenceOverAffinityPin verifies that an explicit
+// req.Model naming a configured model routes straight to that provider's
+// model, even when the conversation already has an affinity pin recorded
+// under a different requested model.
+func TestExplicitModelPrecedenceOverAffinityPin(t *testing.T) {
+	provs := map[string]types.ProviderConfig{
+		"claude": {Name: "claude", Type: "anthropic", Models: []string{"claude-3-opus"}},
+		"gpt4":   {Name: "gpt4", Type: "openai", Models: []string{"gpt-4o"}},
+	}
+	policy := router.NewPolicyRouter("test", []router.PolicyRule{
+		{When: router.PolicyCondition{}, Provider: "claude"},
+	}, provs, nil)
+
+	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
+	msg := []byte("explain how the custom parser handles nesting")
+
+	// Turn 1: model "auto" (not a literal configured model) routes via the
+	// policy router and pins the conversation to claude under "auto".
+	pAuto := NewPipeline(nil, fakeNormalizer{model: "auto"}, fakeDenormalizer{}, nil, policy, fu, provs, nil, nil, nil, fakeLogger{}, time.Minute, nil)
+	if _, err := pAuto.Execute(context.Background(), msg, "openai", "t1", ""); err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+	if len(fu.calls) != 1 || fu.calls[0] != "claude" {
+		t.Fatalf("turn 1 upstream calls = %v, want [claude]", fu.calls)
+	}
+
+	// Turn 2: same conversation, but req.Model explicitly names gpt-4o — a
+	// declared model of a different provider. That must win over the pin,
+	// sending the request to gpt4.
+	pGPT := NewPipeline(nil, fakeNormalizer{model: "gpt-4o"}, fakeDenormalizer{}, nil, policy, fu, provs, nil, nil, nil, fakeLogger{}, time.Minute, nil)
+	pGPT.affinity = pAuto.affinity
+	if _, err := pGPT.Execute(context.Background(), msg, "openai", "t2", ""); err != nil {
+		t.Fatalf("turn 2: %v", err)
+	}
+	if len(fu.calls) != 2 || fu.calls[1] != "gpt4" {
+		t.Fatalf("upstream calls = %v, want [claude gpt4]: explicit model must override the affinity pin", fu.calls)
+	}
+	if fu.models[1] != "gpt-4o" {
+		t.Fatalf("turn 2 model = %q, want gpt-4o", fu.models[1])
 	}
 }

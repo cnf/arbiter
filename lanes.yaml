@@ -37,9 +37,16 @@ providers:
     models:
       - "llama2"
 
+# Each classifier fills exactly one axis of the routing signals, declared via
+# `axis` (domain | effort | cost_class | capabilities). Several instances of
+# the same "heuristic" type run side by side and are merged per axis, so a
+# high-confidence domain match can't starve the effort axis. `axis` may be
+# omitted on a "heuristic" classifier (defaults to domain, matching older
+# configs); the legacy "capability_detector" type always fills capabilities.
 classifiers:
   - name: "domain"
     type: "heuristic"
+    axis: "domain"
     config:
       keywords:
         code_generation:
@@ -61,6 +68,24 @@ classifiers:
           - "how does"
           - "when did"
 
+  - name: "effort"
+    type: "heuristic"
+    axis: "effort"
+    config:
+      keywords:
+        easy:
+          - "quick"
+          - "simple"
+          - "one-liner"
+        medium:
+          - "implement"
+          - "write"
+        hard:
+          - "architecture"
+          - "design"
+          - "debug this"
+          - "complex"
+
   - name: "capability"
     type: "capability_detector"
     config:
@@ -74,6 +99,34 @@ classifiers:
           - "function"
           - "action"
 
+# Virtual model aliases. A client names one in the request's `model` field.
+# Three shapes:
+#   - force:      overrides only the axes it lists, then rules decide; an
+#                 empty `force: {}` is the "full auto" alias (classify +
+#                 rules, no axis locked in).
+#   - pinned:     names one concrete provider/model.
+#   - group:      an ordered candidate set; the selected member is the
+#                 primary and the rest are its fallback chain.
+aliases:
+  auto:
+    force: {}                      # full auto: no axis forced
+  coding:
+    force: { domain: ["code_generation"] }
+  coding-hard:
+    force: { domain: ["code_generation"], effort: ["hard"] }
+
+  cheap-claude:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku-20250307"
+
+  free-search:
+    type: "group"
+    select: "random"               # cheapest_input/fastest arrive in a later phase
+    members:
+      - { provider: "litellm", model: "openrouter/free" }
+      - { provider: "local", model: "llama2" }
+
 routers:
   - name: "primary"
     type: "simple"
@@ -85,20 +138,26 @@ routers:
 #      default_provider: "claude"
 #      fallback_provider: "gpt4"
 
-# A "policy" router matches classifier Signals against ordered rules — first
+# A "policy" router matches classifier signals against ordered rules — first
 # match wins — and errors if nothing matches. Chain it ahead of a "simple"
-# router so unmatched requests fall through to a default instead of failing:
+# router so unmatched requests fall through to a default instead of failing.
+# A rule's target is either `target:` (an alias name) or `provider:`/`model:`
+# (a literal provider/model) — not both. `when` keys are domain, effort,
+# cost_class, and capabilities; the deprecated spellings `intent` and
+# `cost_sensitivity` are still accepted (but not alongside their replacement
+# on the same rule).
 #
 #  - name: "policy"
 #    type: "policy"
 #    config:
 #      rules:
-#        - when: { intent: "code_generation" }
-#          provider: "claude"
-#          model: "claude-3-opus-20250219"
+#        - when: { domain: "code_generation", effort: "hard" }
+#          target: "cheap-claude"
+#        - when: { domain: "code_generation", effort: "easy" }
+#          target: "free-search"
 #        - when: { capabilities: ["vision"] }
 #          provider: "gpt4"
-#        - when: { cost_sensitivity: "budget" }
+#        - when: { cost_class: "budget" }
 #          provider: "local"
 #  - name: "primary"
 #    type: "simple"

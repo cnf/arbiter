@@ -48,9 +48,9 @@ arbiter/
 │   └── arbiter/          # main entry point; wires config -> pipeline
 ├── internal/
 │   ├── http/             # ingress: the two endpoints, SSE flushing, trace IDs
-│   ├── pipeline/         # request lifecycle: normalize -> guardrails -> classify -> route -> upstream
-│   ├── router/           # routing logic (simple default/fallback today)
-│   ├── classifier/       # intent/capability signals for routing
+│   ├── pipeline/         # request lifecycle: normalize -> guardrails -> classify -> force -> route -> upstream
+│   ├── router/           # routing: policy rules, simple default/fallback, alias resolution
+│   ├── classifier/       # per-axis routing signals (domain, effort, cost class, capabilities)
 │   ├── guardrail/        # composable pre/post hooks (system prompt, rate limit)
 │   ├── translator/       # Anthropic <-> OpenAI <-> Normalized conversions (incl. SSE events)
 │   ├── upstream/         # provider HTTP calls, SSE reading, response parsing
@@ -91,19 +91,59 @@ providers:
     type: "anthropic"                  # anthropic | openai | ollama
     endpoint: "https://api.anthropic.com"
     key: "${ANTHROPIC_API_KEY}"
-    models: ["claude-3-opus-20250219"]
+    models: ["claude-3-opus-20250219", "claude-3-haiku-20250307"]
+
+classifiers:
+  - name: "domain"
+    type: "heuristic"
+    axis: "domain"                     # domain | effort | cost_class | capabilities
+    config:
+      keywords: { code_generation: ["write", "refactor"] }
+  - name: "effort"
+    type: "heuristic"
+    axis: "effort"                     # a second instance, same type, own axis
+    config:
+      keywords: { easy: ["quick"], hard: ["architecture"] }
+
+aliases:
+  auto:                                # full auto: force nothing, classify + rules
+    force: {}
+  coding:
+    force: { domain: ["code_generation"] }
+  cheap-claude:                        # pinned: one concrete provider/model
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku-20250307"
+  free-search:                         # group: ordered candidates + fallback chain
+    type: "group"
+    select: "random"
+    members:
+      - { provider: "litellm", model: "openrouter/free" }
+      - { provider: "local", model: "llama2" }
 
 routers:
+  - name: "policy"
+    type: "policy"
+    config:
+      rules:
+        - when: { domain: "code_generation", effort: "hard" }
+          target: "cheap-claude"       # a rule target may name an alias
+        - when: { capabilities: ["vision"] }
+          provider: "gpt4"             # ...or a literal provider/model
+        - when: {}                     # catch-all
+          provider: "claude"
   - name: "primary"
-    type: "simple"                     # default -> fallback, no policy yet
+    type: "simple"                     # chained after policy: last-resort default
     config:
       default_provider: "claude"
       # fallback_provider: "gpt4"
 
-classifiers: []                        # heuristic keyword classifiers
 guardrails:
   pre: []                              # system_prompt, rate_limit
   post: []
+
+routing:
+  fallback_providers: ["gpt4"]         # tried in order on 429/5xx
 
 session_affinity:
   header: "X-Session-Id"               # inbound header carrying a session id
@@ -114,6 +154,39 @@ logging:
   format: "json"
   output: "stdout"
 ```
+
+### Routing
+
+The `model` field a client sends selects how a request is routed, in this
+precedence order:
+
+1. **A real model name.** If it exactly matches a configured provider's
+   declared `models`, the request goes straight to that provider/model.
+2. **A session-affinity pin**, if the conversation is already pinned and the
+   client is still requesting the same `model` value.
+3. **A pinned or group alias.** A client naming a `pinned` alias routes to it
+   directly; naming a `group` alias selects a member (its unselected members
+   become that route's fallback chain, tried before the global
+   `routing.fallback_providers`).
+4. **Classify + rules.** Signals are classified per axis (each `heuristic`
+   classifier fills the one axis it declares, merged per axis so a
+   high-confidence domain match can't starve effort), a **force alias** named
+   by the client overrides only the axes it declares (`coding` sets domain but
+   leaves effort to classify), then the first matching policy rule wins. A
+   policy router errors when nothing matches, so chain a `simple` router after
+   it (or write a catch-all rule) to degrade instead of failing.
+
+Aliases are client-facing and appear in `/models` alongside provider models
+(listed with provider `"alias"`). Any rule `target` may name an alias, and a
+group member may itself be another alias; resolution is depth-limited and a
+cycle is rejected at config load.
+
+Classifier note: `axis` is optional on a `heuristic` classifier (defaults to
+`domain`, as before this field existed). The legacy `capability_detector` type
+always fills `capabilities` and rejects an explicit `axis`. In a policy rule's
+`when` clause the older key spellings `intent` (for `domain`) and
+`cost_sensitivity` (for `cost_class`) are still accepted, but setting a key and
+its replacement on the same rule is an error rather than a silent pick.
 
 Provider notes:
 

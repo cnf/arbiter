@@ -13,17 +13,21 @@ import (
 // signals, which is useful as a catch-all rule ahead of a SimpleRouter
 // fallback in a ChainedRouter.
 type PolicyCondition struct {
-	Intent          string
-	Capabilities    []string // every entry must appear in signals.RequiredCapabilities
-	CostSensitivity string
+	Domain       string
+	Effort       string
+	Capabilities []string // every entry must appear in signals.RequiredCapabilities
+	CostClass    string
 }
 
 // Matches reports whether signals satisfy this condition.
 func (c PolicyCondition) Matches(sig types.Signals) bool {
-	if c.Intent != "" && c.Intent != sig.Intent {
+	if c.Domain != "" && c.Domain != sig.Domain {
 		return false
 	}
-	if c.CostSensitivity != "" && c.CostSensitivity != sig.CostSensitivity {
+	if c.Effort != "" && c.Effort != sig.Effort {
+		return false
+	}
+	if c.CostClass != "" && c.CostClass != sig.CostClass {
 		return false
 	}
 	for _, want := range c.Capabilities {
@@ -41,12 +45,20 @@ func (c PolicyCondition) Matches(sig types.Signals) bool {
 	return true
 }
 
-// PolicyRule maps a condition to a provider/model choice. Model is optional:
-// if unset, the request's own model (if any) is preserved, otherwise the
-// provider's first configured model is used — same fallback SimpleRouter
+// String renders the condition for log lines and error messages.
+func (c PolicyCondition) String() string {
+	return fmt.Sprintf("domain=%q effort=%q capabilities=%v cost_class=%q", c.Domain, c.Effort, c.Capabilities, c.CostClass)
+}
+
+// PolicyRule maps a condition to a routing target. Exactly one of Target
+// (an alias name, resolved via AliasResolver) or Provider/Model (a literal
+// provider reference) must be set. Model is optional within the literal
+// form: if unset, the request's own model (if any) is preserved, otherwise
+// the provider's first configured model is used — same fallback SimpleRouter
 // uses.
 type PolicyRule struct {
 	When     PolicyCondition
+	Target   string // alias name; mutually exclusive with Provider/Model
 	Provider string
 	Model    string
 }
@@ -60,43 +72,33 @@ type PolicyRouter struct {
 	name           string
 	rules          []PolicyRule
 	providerConfig map[string]types.ProviderConfig
+	resolver       *AliasResolver // nil when no aliases are configured
 }
 
-// NewPolicyRouter creates a signals-driven router.
-func NewPolicyRouter(name string, rules []PolicyRule, providerConfig map[string]types.ProviderConfig) *PolicyRouter {
+// NewPolicyRouter creates a signals-driven router. resolver may be nil when
+// the config declares no aliases, in which case rules must use the literal
+// provider/model form.
+func NewPolicyRouter(name string, rules []PolicyRule, providerConfig map[string]types.ProviderConfig, resolver *AliasResolver) *PolicyRouter {
 	return &PolicyRouter{
 		name:           name,
 		rules:          rules,
 		providerConfig: providerConfig,
+		resolver:       resolver,
 	}
 }
 
 // Route returns the provider/model from the first matching rule.
 func (pr *PolicyRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, types.Metadata, error) {
-	for _, rule := range pr.rules {
+	for i, rule := range pr.rules {
 		if !rule.When.Matches(signals) {
 			continue
 		}
 
-		cfg, ok := pr.providerConfig[rule.Provider]
-		if !ok {
-			return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: rule matched but provider %q is not configured", pr.name, rule.Provider)
+		route, err := pr.routeFor(rule, req, signals)
+		if err != nil {
+			return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: rule %d: %w", pr.name, i, err)
 		}
 
-		model := rule.Model
-		if model == "" {
-			model = req.Model
-		}
-		if model == "" && len(cfg.Models) > 0 {
-			model = cfg.Models[0]
-		}
-
-		route := types.Route{
-			Provider:  rule.Provider,
-			Model:     model,
-			Config:    cfg,
-			Rationale: fmt.Sprintf("policy router %q: intent=%q capabilities=%v cost_sensitivity=%q -> provider %q", pr.name, signals.Intent, signals.RequiredCapabilities, signals.CostSensitivity, rule.Provider),
-		}
 		meta := types.Metadata{
 			LatencyTarget: "normal",
 			TraceID:       req.TraceID,
@@ -105,5 +107,73 @@ func (pr *PolicyRouter) Route(ctx context.Context, req *types.NormalizedRequest,
 		return route, meta, nil
 	}
 
-	return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: no rule matched signals (intent=%q capabilities=%v cost_sensitivity=%q)", pr.name, signals.Intent, signals.RequiredCapabilities, signals.CostSensitivity)
+	return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: no rule matched signals (%s)", pr.name, signalsDescription(signals))
+}
+
+// routeFor turns a matched rule into a concrete Route, resolving a Target
+// alias when the rule names one and otherwise using the literal
+// provider/model.
+func (pr *PolicyRouter) routeFor(rule PolicyRule, req *types.NormalizedRequest, signals types.Signals) (types.Route, error) {
+	if rule.Target != "" {
+		return pr.routeViaAlias(rule, req, signals)
+	}
+
+	cfg, ok := pr.providerConfig[rule.Provider]
+	if !ok {
+		return types.Route{}, fmt.Errorf("rule matched but provider %q is not configured", rule.Provider)
+	}
+
+	model := rule.Model
+	if model == "" {
+		model = req.Model
+	}
+	if model == "" && len(cfg.Models) > 0 {
+		model = cfg.Models[0]
+	}
+
+	return types.Route{
+		Provider:  rule.Provider,
+		Model:     model,
+		Config:    cfg,
+		Rationale: fmt.Sprintf("policy router %q: %s -> provider %q", pr.name, rule.When, rule.Provider),
+	}, nil
+}
+
+// routeViaAlias resolves a rule's Target alias into provider+model, carrying
+// the alias's unselected group members as this route's fallback chain.
+func (pr *PolicyRouter) routeViaAlias(rule PolicyRule, req *types.NormalizedRequest, signals types.Signals) (types.Route, error) {
+	if pr.resolver == nil {
+		return types.Route{}, fmt.Errorf("target %q names an alias, but no aliases are configured", rule.Target)
+	}
+
+	provider, model, ok, err := pr.resolver.Resolve(rule.Target)
+	if err != nil {
+		return types.Route{}, err
+	}
+	if !ok {
+		return types.Route{}, fmt.Errorf("target %q is not a configured alias", rule.Target)
+	}
+
+	cfg, ok := pr.providerConfig[provider]
+	if !ok {
+		return types.Route{}, fmt.Errorf("alias %q resolved to provider %q, which is not configured", rule.Target, provider)
+	}
+	if model == "" && len(cfg.Models) > 0 {
+		model = cfg.Models[0]
+	}
+
+	route := types.Route{
+		Provider:  provider,
+		Model:     model,
+		Config:    cfg,
+		Rationale: fmt.Sprintf("policy router %q: %s -> alias %q -> %s/%s", pr.name, rule.When, rule.Target, provider, model),
+	}
+	route.Fallbacks = pr.resolver.GroupFallbacks(rule.Target, AliasMember{Provider: provider, Model: model})
+	return route, nil
+}
+
+// signalsDescription renders the signal axes routing matches on, for log
+// lines and error messages.
+func signalsDescription(sig types.Signals) string {
+	return fmt.Sprintf("domain=%q effort=%q capabilities=%v cost_class=%q", sig.Domain, sig.Effort, sig.RequiredCapabilities, sig.CostClass)
 }

@@ -23,21 +23,38 @@ func Register(typeName string, factory Factory) {
 	Registry[typeName] = factory
 }
 
+// Axis names a Signals field a classifier produces. Each heuristic instance
+// declares which axis it fills, so several instances can run side by side
+// (domain, effort, capabilities) without overwriting each other's axis —
+// the merger keys off this rather than off the classifier's name.
+const (
+	AxisDomain       = "domain"
+	AxisEffort       = "effort"
+	AxisCapabilities = "capabilities"
+	AxisCostClass    = "cost_class"
+)
+
 // HeuristicClassifier uses keyword matching against the last user message
-// to guess intent. It's deliberately dumb — a starting point, not a final
-// answer. The domain/capability split in lanes.yaml is handled by running
-// two instances of this same type with different keyword maps and merging
-// via MergedClassifier, rather than baking "domain" vs "capability" into
-// the type itself.
+// to guess one axis. It's deliberately dumb — a starting point, not a final
+// answer. The multi-axis split in lanes.yaml is handled by running several
+// instances of this same type with different keyword maps and axis settings,
+// merged via MergedClassifier, rather than baking each axis into the type.
 type HeuristicClassifier struct {
 	name     string
-	keywords map[string][]string // intent -> keywords
+	axis     string              // which Signals field this instance fills
+	keywords map[string][]string // axis value -> keywords
 }
 
-// NewHeuristicClassifier creates a heuristic classifier.
-func NewHeuristicClassifier(name string, keywords map[string][]string) *HeuristicClassifier {
+// NewHeuristicClassifier creates a heuristic classifier filling axis. An
+// empty axis means AxisDomain, which is what every pre-existing config
+// (written before axes were declared) means.
+func NewHeuristicClassifier(name, axis string, keywords map[string][]string) *HeuristicClassifier {
+	if axis == "" {
+		axis = AxisDomain
+	}
 	return &HeuristicClassifier{
 		name:     name,
+		axis:     axis,
 		keywords: keywords,
 	}
 }
@@ -50,11 +67,11 @@ func NewHeuristicClassifier(name string, keywords map[string][]string) *Heuristi
 func (hc *HeuristicClassifier) Classify(ctx context.Context, req *types.NormalizedRequest) (types.Signals, error) {
 	text := strings.ToLower(types.LastUserText(req))
 
-	var bestIntent string
+	var bestValue string
 	var bestHits int
-	var capabilities []string
+	var matched []string
 
-	for intent, kws := range hc.keywords {
+	for value, kws := range hc.keywords {
 		hits := 0
 		for _, kw := range kws {
 			if strings.Contains(text, strings.ToLower(kw)) {
@@ -64,12 +81,9 @@ func (hc *HeuristicClassifier) Classify(ctx context.Context, req *types.Normaliz
 		if hits == 0 {
 			continue
 		}
-		// Any keyword group can also double as a capability signal (e.g. a
-		// "capability" classifier instance configured with vision/tool_use
-		// groups) — surface every group that matched, not just the winner.
-		capabilities = append(capabilities, intent)
+		matched = append(matched, value)
 		if hits > bestHits {
-			bestIntent = intent
+			bestValue = value
 			bestHits = hits
 		}
 	}
@@ -79,12 +93,23 @@ func (hc *HeuristicClassifier) Classify(ctx context.Context, req *types.Normaliz
 		confidence = float64(bestHits) / float64(bestHits+1)
 	}
 
-	return types.Signals{
-		Intent:               bestIntent,
-		RequiredCapabilities: capabilities,
-		EstimatedTokens:      estimateTokens(req),
-		Confidence:           confidence,
-	}, nil
+	sig := types.Signals{
+		EstimatedTokens: estimateTokens(req),
+		Confidence:      confidence,
+	}
+	switch hc.axis {
+	case AxisEffort:
+		sig.Effort = bestValue
+	case AxisCostClass:
+		sig.CostClass = bestValue
+	case AxisCapabilities:
+		// Every matched group is a capability, not just the winner — a
+		// request can need vision and tool_use at once.
+		sig.RequiredCapabilities = matched
+	default:
+		sig.Domain = bestValue
+	}
+	return sig, nil
 }
 
 // estimateTokens is a rough char/4 heuristic over all message text, good
@@ -115,12 +140,16 @@ func NewMergedClassifier(name string, classifiers []Classifier) *MergedClassifie
 	}
 }
 
-// Classify merges signals from all classifiers. Intent/CostSensitivity come
-// from whichever sub-classifier reports the highest confidence (first one
-// wins ties); RequiredCapabilities and EstimatedTokens are unioned/maxed
-// since those are additive rather than exclusive facts about the request.
+// Classify merges signals from all classifiers. Each scalar axis (Domain,
+// Effort, CostClass) is filled by whichever sub-classifier reported the
+// highest confidence *for that axis* — keyed per-axis, not globally, so a
+// high-confidence domain classifier can't starve a lower-confidence effort
+// classifier out of populating Effort. RequiredCapabilities and
+// EstimatedTokens are unioned/maxed since those are additive rather than
+// exclusive facts about the request.
 func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedRequest) (types.Signals, error) {
 	var merged types.Signals
+	axisConfidence := make(map[string]float64)
 	capSeen := make(map[string]bool)
 
 	for _, c := range mc.classifiers {
@@ -129,14 +158,17 @@ func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedR
 			return types.Signals{}, err
 		}
 
-		if sig.Confidence > merged.Confidence {
-			merged.Confidence = sig.Confidence
-			if sig.Intent != "" {
-				merged.Intent = sig.Intent
-			}
-			if sig.CostSensitivity != "" {
-				merged.CostSensitivity = sig.CostSensitivity
-			}
+		if sig.Domain != "" && sig.Confidence > axisConfidence[AxisDomain] {
+			axisConfidence[AxisDomain] = sig.Confidence
+			merged.Domain = sig.Domain
+		}
+		if sig.Effort != "" && sig.Confidence > axisConfidence[AxisEffort] {
+			axisConfidence[AxisEffort] = sig.Confidence
+			merged.Effort = sig.Effort
+		}
+		if sig.CostClass != "" && sig.Confidence > axisConfidence[AxisCostClass] {
+			axisConfidence[AxisCostClass] = sig.Confidence
+			merged.CostClass = sig.CostClass
 		}
 		for _, capability := range sig.RequiredCapabilities {
 			if !capSeen[capability] {
@@ -146,6 +178,9 @@ func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedR
 		}
 		if sig.EstimatedTokens > merged.EstimatedTokens {
 			merged.EstimatedTokens = sig.EstimatedTokens
+		}
+		if sig.Confidence > merged.Confidence {
+			merged.Confidence = sig.Confidence
 		}
 	}
 

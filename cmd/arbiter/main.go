@@ -151,9 +151,11 @@ func buildPipeline(cfg *config.Config, logger logging.Logger) (*pipeline.Pipelin
 		classifiers = append(classifiers, c)
 	}
 
+	resolver := buildAliasResolver(cfg.Aliases, providers)
+
 	routers := make([]router.Router, 0, len(cfg.Routers))
 	for _, rc := range cfg.Routers {
-		r, err := buildRouter(rc, providers)
+		r, err := buildRouter(rc, providers, resolver)
 		if err != nil {
 			return nil, fmt.Errorf("router %q: %w", rc.Name, err)
 		}
@@ -191,7 +193,7 @@ func buildPipeline(cfg *config.Config, logger logging.Logger) (*pipeline.Pipelin
 		}
 	}
 
-	return pipeline.NewPipeline(t, t, t, classifiers, mainRouter, u, providers, cfg.Routing.FallbackProviders, preGuardrails, postGuardrails, logger, defaultCacheTTL), nil
+	return pipeline.NewPipeline(t, t, t, classifiers, mainRouter, u, providers, cfg.Routing.FallbackProviders, preGuardrails, postGuardrails, logger, defaultCacheTTL, resolver), nil
 }
 
 func combineRouters(routers []router.Router) router.Router {
@@ -201,12 +203,21 @@ func combineRouters(routers []router.Router) router.Router {
 	return router.NewChainedRouter("chained", routers)
 }
 
+// configuredModels lists every model a client can name in a request:
+// concrete provider models, plus every configured alias — force-aliases
+// included, since REQUIREMENTS.md §1 makes aliases client-facing regardless
+// of shape. An alias is advertised with Provider "alias" rather than a
+// resolved target, since group/force aliases don't resolve to one fixed
+// provider.
 func configuredModels(cfg *config.Config) []arbiterhttp.Model {
 	models := make([]arbiterhttp.Model, 0)
 	for provider, providerConfig := range cfg.Providers {
 		for _, model := range providerConfig.Models {
 			models = append(models, arbiterhttp.Model{ID: model, Provider: provider})
 		}
+	}
+	for name := range cfg.Aliases {
+		models = append(models, arbiterhttp.Model{ID: name, Provider: "alias"})
 	}
 	slices.SortFunc(models, func(a, b arbiterhttp.Model) int {
 		if a.ID != b.ID {
@@ -217,20 +228,55 @@ func configuredModels(cfg *config.Config) []arbiterhttp.Model {
 	return models
 }
 
+// buildClassifier's axis defaulting preserves pre-axis behavior: a plain
+// "heuristic" classifier with no declared axis fills Domain, and the legacy
+// "capability_detector" type always fills Capabilities regardless of what's
+// declared (it never meant anything else).
 func buildClassifier(cc config.ClassifierConfig) (classifier.Classifier, error) {
 	switch cc.Type {
-	case "heuristic", "capability_detector":
+	case "heuristic":
 		keywords, err := stringListMap(cc.Config, "keywords", "detectors")
 		if err != nil {
 			return nil, err
 		}
-		return classifier.NewHeuristicClassifier(cc.Name, keywords), nil
+		return classifier.NewHeuristicClassifier(cc.Name, cc.Axis, keywords), nil
+	case "capability_detector":
+		keywords, err := stringListMap(cc.Config, "keywords", "detectors")
+		if err != nil {
+			return nil, err
+		}
+		return classifier.NewHeuristicClassifier(cc.Name, classifier.AxisCapabilities, keywords), nil
 	default:
 		return nil, fmt.Errorf("unknown classifier type %q", cc.Type)
 	}
 }
 
-func buildRouter(rc config.RouterConfig, providers map[string]types.ProviderConfig) (router.Router, error) {
+// buildAliasResolver builds the resolver used by policy routers to resolve
+// rule targets. Aliases are optional — an empty/nil map still yields a
+// resolver (Has/Resolve simply report "not an alias" for everything), so
+// policy routers that only use literal provider/model targets don't need one
+// at all; the resolver is nonetheless always built and passed through so a
+// nil isn't threaded separately.
+func buildAliasResolver(aliasesCfg map[string]config.AliasConfig, providers map[string]types.ProviderConfig) *router.AliasResolver {
+	aliases := make(map[string]router.Alias, len(aliasesCfg))
+	for name, a := range aliasesCfg {
+		alias := router.Alias{
+			Name:     name,
+			Force:    a.Force,
+			Type:     a.Type,
+			Provider: a.Provider,
+			Model:    a.Model,
+			Select:   a.Select,
+		}
+		for _, m := range a.Members {
+			alias.Members = append(alias.Members, router.AliasMember{Provider: m.Provider, Model: m.Model})
+		}
+		aliases[name] = alias
+	}
+	return router.NewAliasResolver(aliases, providers, nil)
+}
+
+func buildRouter(rc config.RouterConfig, providers map[string]types.ProviderConfig, resolver *router.AliasResolver) (router.Router, error) {
 	switch rc.Type {
 	case "simple":
 		defaultProvider, _ := rc.Config["default_provider"].(string)
@@ -244,7 +290,7 @@ func buildRouter(rc config.RouterConfig, providers map[string]types.ProviderConf
 		if err != nil {
 			return nil, err
 		}
-		return router.NewPolicyRouter(rc.Name, rules, providers), nil
+		return router.NewPolicyRouter(rc.Name, rules, providers, resolver), nil
 	default:
 		return nil, fmt.Errorf("unknown router type %q", rc.Type)
 	}
@@ -252,7 +298,12 @@ func buildRouter(rc config.RouterConfig, providers map[string]types.ProviderConf
 
 // policyRules parses the "rules" list out of a policy router's config block.
 // Each rule's "when" clause is optional per-field (a missing field is a
-// wildcard); see router.PolicyCondition.
+// wildcard); see router.PolicyCondition. A rule's target is either a named
+// alias ("target") or a literal provider/model ("provider"/"model") — not
+// both. Both the current ("domain"/"cost_class") and deprecated
+// ("intent"/"cost_sensitivity") when-clause key spellings are accepted
+// during the deprecation window; setting both spellings of the same axis on
+// one rule is an error rather than silently picking one.
 func policyRules(cfg map[string]interface{}) ([]router.PolicyRule, error) {
 	raw, _ := cfg["rules"].([]interface{})
 	rules := make([]router.PolicyRule, 0, len(raw))
@@ -261,16 +312,32 @@ func policyRules(cfg map[string]interface{}) ([]router.PolicyRule, error) {
 		if !ok {
 			return nil, fmt.Errorf("rule %d: expected a map", i)
 		}
+
+		target, _ := m["target"].(string)
 		provider, _ := m["provider"].(string)
-		if provider == "" {
-			return nil, fmt.Errorf("rule %d: missing provider", i)
-		}
 		model, _ := m["model"].(string)
+		if target != "" && provider != "" {
+			return nil, fmt.Errorf("rule %d: sets both target and provider; use exactly one", i)
+		}
+		if target == "" && provider == "" {
+			return nil, fmt.Errorf("rule %d: missing target or provider", i)
+		}
 
 		var when router.PolicyCondition
 		if w, ok := m["when"].(map[string]interface{}); ok {
-			when.Intent, _ = w["intent"].(string)
-			when.CostSensitivity, _ = w["cost_sensitivity"].(string)
+			domain, err := stringOneOf(w, "domain", "intent")
+			if err != nil {
+				return nil, fmt.Errorf("rule %d: %w", i, err)
+			}
+			when.Domain = domain
+
+			costClass, err := stringOneOf(w, "cost_class", "cost_sensitivity")
+			if err != nil {
+				return nil, fmt.Errorf("rule %d: %w", i, err)
+			}
+			when.CostClass = costClass
+
+			when.Effort, _ = w["effort"].(string)
 			if caps, ok := w["capabilities"].([]interface{}); ok {
 				for _, c := range caps {
 					if s, ok := c.(string); ok {
@@ -280,9 +347,26 @@ func policyRules(cfg map[string]interface{}) ([]router.PolicyRule, error) {
 			}
 		}
 
-		rules = append(rules, router.PolicyRule{When: when, Provider: provider, Model: model})
+		rules = append(rules, router.PolicyRule{When: when, Target: target, Provider: provider, Model: model})
 	}
 	return rules, nil
+}
+
+// stringOneOf reads a string value from exactly one of the given keys,
+// erroring if more than one is set on the same map — used to accept a
+// deprecated YAML key spelling alongside its replacement without silently
+// preferring one when a config mistakenly sets both.
+func stringOneOf(m map[string]interface{}, keys ...string) (string, error) {
+	var value, foundKey string
+	for _, k := range keys {
+		if v, ok := m[k].(string); ok && v != "" {
+			if foundKey != "" {
+				return "", fmt.Errorf("both %q and %q are set; use only %q", foundKey, k, keys[0])
+			}
+			value, foundKey = v, k
+		}
+	}
+	return value, nil
 }
 
 func buildGuardrail(gc config.GuardrailConfig) (guardrail.Guardrail, error) {

@@ -119,6 +119,12 @@ type Route struct {
 	Model     string
 	Config    ProviderConfig
 	Rationale string // one-line explanation, always populated
+
+	// Fallbacks are extra candidate routes to try, in order, if this one
+	// fails retriably — populated when the route came from a group alias, so
+	// the group's unselected members form its fallback chain. The pipeline
+	// tries these before the global routing.fallback_providers list.
+	Fallbacks []Route
 }
 
 // Metadata augments a Route with runtime info captured at decision time.

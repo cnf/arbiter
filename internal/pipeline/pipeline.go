@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -48,6 +49,17 @@ type Pipeline struct {
 	affinity        *affinityStore
 	defaultCacheTTL time.Duration // used when a served provider sets no cache_ttl override
 
+	// aliasResolver resolves force-alias overrides named by req.Model. Nil
+	// when no aliases are configured — resolveRoute skips the force step
+	// entirely rather than calling into a nil resolver.
+	aliasResolver *router.AliasResolver
+
+	// literalModels maps a declared model name to the provider that declares
+	// it, so an explicit req.Model can skip classify+rules. Built once here
+	// (deterministically, providers in sorted order) rather than scanned per
+	// request.
+	literalModels map[string]string
+
 	logger logging.Logger
 }
 
@@ -70,10 +82,29 @@ func NewPipeline(
 	preG, postG []guardrail.Guardrail,
 	l logging.Logger,
 	cacheTTL time.Duration,
+	aliasResolver *router.AliasResolver,
 ) *Pipeline {
 	if cacheTTL <= 0 {
 		cacheTTL = defaultAffinityTTL
 	}
+
+	// A model declared by two providers resolves to the alphabetically first
+	// one, so the choice is stable across restarts rather than dependent on
+	// map iteration order.
+	literalModels := make(map[string]string)
+	names := make([]string, 0, len(providers))
+	for name := range providers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		for _, m := range providers[name].Models {
+			if _, seen := literalModels[m]; !seen {
+				literalModels[m] = name
+			}
+		}
+	}
+
 	return &Pipeline{
 		translator:      t,
 		normalizer:      n,
@@ -88,6 +119,8 @@ func NewPipeline(
 		defaultCacheTTL: cacheTTL,
 		preGuardrails:   preG,
 		postGuardrails:  postG,
+		aliasResolver:   aliasResolver,
+		literalModels:   literalModels,
 		logger:          l,
 	}
 }
@@ -166,14 +199,20 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 	return out, nil
 }
 
-// resolveRoute decides which route to attempt: an affinity pin when one
-// applies, otherwise a fresh classify+route.
+// resolveRoute decides which route to attempt, in precedence order:
 //
-// The pin overrides classification entirely for as long as the client keeps
-// requesting the same model. It applies when:
-//   - the request has a usable session key, and
-//   - req.Model equals the model the pin was recorded under, and
-//   - the pinned provider isn't currently cooling down.
+//  1. An explicit concrete model — req.Model exactly matching a configured
+//     provider's declared model — routes straight there. The client named a
+//     real model, so this wins even over an existing affinity pin.
+//  2. An affinity pin, for as long as the client keeps requesting the same
+//     model. It applies when the request has a usable session key, req.Model
+//     equals the model the pin was recorded under, and the pinned provider
+//     isn't cooling down.
+//  3. A client-named pinned/group alias, resolved directly (group members
+//     become the route's fallback chain).
+//  4. Otherwise a fresh classify+route: signals are classified, then a
+//     force-alias named by req.Model overrides the axes it declares, then
+//     the router matches.
 //
 // A client that explicitly requests a different model discards the pin and
 // routes fresh — it means what it says. A pinned provider in cooldown is
@@ -184,6 +223,11 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 // requested-model (pins are always recorded under a non-empty model), so an
 // empty model simply never hits a pin.
 func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedRequest, hasKey bool) (types.Route, error) {
+	if route, ok := p.literalModelRoute(req.Model); ok {
+		p.logger.LogRouting(ctx, route, types.Signals{}, 0)
+		return route, nil
+	}
+
 	if hasKey {
 		if provider, model, ok := p.affinity.get(req.SessionKey, req.Model); ok {
 			if _, cooling := p.onCooldown(provider); !cooling {
@@ -201,10 +245,19 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 		}
 	}
 
+	// A client-named pinned/group alias selects a target directly, the same
+	// way a rule target would. Force aliases resolve to nothing by design —
+	// they only shape axes — so they fall through to classify+rules below.
+	if route, ok := p.aliasRoute(req.Model); ok {
+		p.logger.LogRouting(ctx, route, types.Signals{}, 0)
+		return route, nil
+	}
+
 	sig, err := p.classify(ctx, req)
 	if err != nil {
 		return types.Route{}, arbitererrors.NewClassificationError("classify request", err)
 	}
+	sig = p.applyForceAlias(req, sig)
 
 	routeStart := time.Now()
 	route, _, err := p.router.Route(ctx, req, sig)
@@ -213,6 +266,89 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 	}
 	p.logger.LogRouting(ctx, route, sig, time.Since(routeStart))
 	return route, nil
+}
+
+// literalModelRoute returns a direct route when req.Model is a model actually
+// declared by a configured provider.
+func (p *Pipeline) literalModelRoute(model string) (types.Route, bool) {
+	if model == "" {
+		return types.Route{}, false
+	}
+	name, ok := p.literalModels[model]
+	if !ok {
+		return types.Route{}, false
+	}
+	return types.Route{
+		Provider:  name,
+		Model:     model,
+		Config:    p.providers[name],
+		Rationale: fmt.Sprintf("explicit model %q -> provider %q", model, name),
+	}, true
+}
+
+// aliasRoute resolves a client-named pinned/group alias into a concrete
+// route. Force aliases and non-alias names yield ok=false so the caller
+// proceeds to classification and rule matching.
+func (p *Pipeline) aliasRoute(name string) (types.Route, bool) {
+	if p.aliasResolver == nil || name == "" {
+		return types.Route{}, false
+	}
+	if _, isForce := p.aliasResolver.Force(name); isForce {
+		return types.Route{}, false
+	}
+	provider, model, ok, err := p.aliasResolver.Resolve(name)
+	if err != nil || !ok {
+		// A malformed alias is a config error surfaced at load time; treat a
+		// runtime resolution failure as "not an alias" rather than failing the
+		// request here.
+		return types.Route{}, false
+	}
+	cfg, ok := p.providers[provider]
+	if !ok {
+		return types.Route{}, false
+	}
+	if model == "" && len(cfg.Models) > 0 {
+		model = cfg.Models[0]
+	}
+	route := types.Route{
+		Provider:  provider,
+		Model:     model,
+		Config:    cfg,
+		Rationale: fmt.Sprintf("client requested alias %q -> %s/%s", name, provider, model),
+	}
+	route.Fallbacks = p.aliasResolver.GroupFallbacks(name, router.AliasMember{Provider: provider, Model: model})
+	return route, true
+}
+
+// applyForceAlias overrides the axes named by a force-alias, when req.Model
+// names one. Only the axes the alias declares are overridden — an unforced
+// axis keeps whatever the classifiers produced (e.g. "coding" forces domain
+// but leaves effort to be classified normally). ok=false (req.Model isn't a
+// force-alias, or no aliases are configured at all) returns sig unchanged.
+func (p *Pipeline) applyForceAlias(req *types.NormalizedRequest, sig types.Signals) types.Signals {
+	if p.aliasResolver == nil || req.Model == "" {
+		return sig
+	}
+	force, ok := p.aliasResolver.Force(req.Model)
+	if !ok {
+		return sig
+	}
+	for axis, values := range force {
+		if len(values) == 0 {
+			continue
+		}
+		switch axis {
+		case classifier.AxisDomain, "intent":
+			sig.Domain = values[0]
+		case classifier.AxisEffort:
+			sig.Effort = values[0]
+		case classifier.AxisCostClass, "cost_sensitivity":
+			sig.CostClass = values[0]
+		case classifier.AxisCapabilities:
+			sig.RequiredCapabilities = values
+		}
+	}
+	return sig
 }
 
 // cacheTTLFor returns the session affinity idle TTL to use for a pin served
@@ -294,7 +430,11 @@ const (
 // candidate otherwise) — callers use it to record the session affinity pin
 // against the outcome that actually happened, not the one that was attempted.
 func (p *Pipeline) tryUpstream(ctx context.Context, route types.Route, req *types.NormalizedRequest) (*types.NormalizedResponse, <-chan *types.NormalizedStreamEvent, types.Route, error) {
-	candidates := append([]types.Route{route}, p.fallbackRoutes(route, req)...)
+	// route.Fallbacks (a group alias's unselected members, if this route came
+	// from one) are tried before the global routing.fallback_providers list —
+	// they're a more specific, author-declared chain for this exact route.
+	candidates := append([]types.Route{route}, route.Fallbacks...)
+	candidates = append(candidates, p.fallbackRoutes(route, req)...)
 
 	var lastErr error
 candidates:

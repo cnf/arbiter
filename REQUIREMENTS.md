@@ -227,6 +227,27 @@ Status as of 2026-09-15: **1, 2 and 3 are done; 4 is reframed (attribution,
 not auth); 7 is partial (query surface exists, UI does not).** Nothing beyond
 step 3 + the 4a query surface is currently greenlit.
 
+> **REORDERED 2026-09-15 (user): #7 — the dashboard/query tooling — is now the
+> active work item, ahead of #4/#5/#6.** Rationale: the store now has real
+> traffic flowing through it and per-config-epoch cost data, so an interface
+> over it is what makes the captured data answer the §2 questions in practice
+> rather than in principle. Its write-side prerequisite (schema + write path +
+> read aggregates) is exactly the part already done, so this is a UI + read-API
+> task, not a data task. The numbering below is left as-is so the commit
+> references in this file stay meaningful; the note overrides the order.
+>
+> §2's "dashboard, cost aggregation, and alerting are downstream consumers of
+> the same data, not separate logging paths" is unchanged and still satisfied —
+> "downstream" meant *dependency* order, not scheduling priority.
+>
+> Expected split (proposal, not decided): **7a** read API completion — a
+> request **list** endpoint (filters: since, provider, status, session, alias)
+> and single-request detail, curl-usable on its own, which is a prerequisite
+> the UI cannot be built without; **7b** the page itself; optionally **7c** an
+> admin gate value check (`forward_auth_header` is presence-only today) if the
+> page is to be gated by a specific header value rather than by Caddy's
+> cookie session.
+
 1. ~~Model alias layer + wiring it into the router selection (the "auto /
    auto-coding / pinned model / model group" mechanism).~~ **DONE** —
    `e0f1ea8`.
@@ -248,6 +269,10 @@ step 3 + the 4a query surface is currently greenlit.
    **PARTIAL** (Phase 4a) — the HTTP query surface exists (`/admin/stats/*`:
    overall, provider/model, per-epoch, session trajectory, tools); a UI or
    dashboard over it does not.
+   **→ NOW FIRST (reordered 2026-09-15, see the note above).** The remaining
+   work is a request-list/detail read API plus the page; the aggregate
+   surface exists but a UI needs per-request rows in a way curl-shaped
+   aggregates don't provide.
 
 ### Known gaps, recorded so they aren't mistaken for done
 

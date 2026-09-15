@@ -88,7 +88,6 @@ func (NoopWriter) Close() error { return nil }
 // path uses. Record enqueues; the goroutine executes the inserts.
 type SQLiteWriter struct {
 	db     *sql.DB
-	q      *Queries
 	logger logging.Logger
 
 	events chan Event
@@ -139,7 +138,6 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 
 	w := &SQLiteWriter{
 		db:     db,
-		q:      New(db),
 		logger: logger,
 		events: make(chan Event, eventBuffer),
 		done:   make(chan struct{}),
@@ -233,42 +231,65 @@ func addColumnIfMissing(db *sql.DB, table, decl string) error {
 func (w *SQLiteWriter) run() {
 	defer close(w.done)
 	for ev := range w.events {
-		if _, err := w.q.InsertRequest(context.Background(), insertParams(ev)); err != nil {
+		if err := insertRequest(context.Background(), w.db, ev); err != nil {
 			w.logger.LogError(context.Background(), "error", err,
 				map[string]interface{}{"component": "event_store", "trace_id": ev.TraceID})
 		}
 	}
 }
 
-// insertParams maps an Event onto sqlc's insert parameters, converting empty
-// strings to NULL for the nullable columns.
-func insertParams(ev Event) InsertRequestParams {
-	return InsertRequestParams{
-		TraceID:          ev.TraceID,
-		SessionKey:       nullStr(ev.SessionKey),
-		ClientID:         nullStr(ev.ClientID),
-		Ts:               ev.Ts,
-		Format:           ev.Format,
-		Provider:         ev.Provider,
-		Model:            ev.Model,
-		AliasUsed:        nullStr(ev.AliasUsed),
-		RoutingRationale: ev.RoutingRationale,
-		Domain:           nullStr(ev.Domain),
-		Effort:           nullStr(ev.Effort),
-		CostClass:        nullStr(ev.CostClass),
-		Confidence:       &ev.Confidence,
-		InputTokens:      int64(ev.Usage.InputTokens),
-		OutputTokens:     int64(ev.Usage.OutputTokens),
-		CacheReadTokens:  int64(ev.Usage.CacheRead),
-		CacheWriteTokens: int64(ev.Usage.CacheWrite),
-		CostUsd:          ev.Usage.CostUSD,
-		LatencyMs:        ev.LatencyMs,
-		StatusCode:       int64(ev.StatusCode),
-		Error:            nullStr(ev.Error),
-		Stream:           ev.Stream,
-		ToolCallsJson:    toolCallsJSON(ev.ToolCalls),
-		ConfigEpoch:      nullStr(ev.ConfigEpoch),
+// insertRequest writes one event as a row. Hand-written rather than generated:
+// sqlc was retired (see README's "Event store" section) after the read side
+// turned out to need queries its sqlite parser cannot express, leaving one
+// generated function in use and two generator defects to work around.
+//
+// Empty strings in the nullable columns are written as NULL — an absent value
+// and an empty one mean the same thing here, and the nullable-column readers
+// flatten NULL back to "".
+func insertRequest(ctx context.Context, db *sql.DB, ev Event) error {
+	const q = `
+INSERT INTO requests (
+    trace_id, session_key, client_id, ts, format, provider, model,
+    alias_used, routing_rationale, domain, effort, cost_class, confidence,
+    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+    cost_usd, latency_ms, status_code, error, stream, tool_calls_json,
+    config_epoch
+) VALUES (
+    ?, ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?,
+    ?, ?, ?, ?, ?, ?, ?
+)`
+
+	_, err := db.ExecContext(ctx, q,
+		ev.TraceID,
+		nullStr(ev.SessionKey),
+		nullStr(ev.ClientID),
+		ev.Ts,
+		ev.Format,
+		ev.Provider,
+		ev.Model,
+		nullStr(ev.AliasUsed),
+		ev.RoutingRationale,
+		nullStr(ev.Domain),
+		nullStr(ev.Effort),
+		nullStr(ev.CostClass),
+		ev.Confidence,
+		int64(ev.Usage.InputTokens),
+		int64(ev.Usage.OutputTokens),
+		int64(ev.Usage.CacheRead),
+		int64(ev.Usage.CacheWrite),
+		ev.Usage.CostUSD,
+		ev.LatencyMs,
+		int64(ev.StatusCode),
+		nullStr(ev.Error),
+		ev.Stream,
+		toolCallsJSON(ev.ToolCalls),
+		nullStr(ev.ConfigEpoch))
+	if err != nil {
+		return fmt.Errorf("insert request: %w", err)
 	}
+	return nil
 }
 
 func nullStr(s string) *string {

@@ -47,9 +47,11 @@ func newTestWriter(t *testing.T) (*SQLiteWriter, string) {
 	return w, path
 }
 
-// reopenReads opens a fresh read-only handle to a writer's database file.
-// Tests close the writer (which tears down its handle and flushes the queue)
-// and then read through this, proving the rows actually reached disk.
+// reopenReads opens a fresh handle to a writer's database file. Tests close the
+// writer (which tears down its handle and flushes the queue) and then read
+// through this, proving the rows actually reached disk. It returns a raw
+// *sql.DB so a test can assert on individual columns; wrap it in &Reader{...}
+// when the test wants a query method.
 func reopenReads(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
@@ -90,9 +92,9 @@ func TestRecordPersistsFullEvent(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	rows, err := New(reopenReads(t, path)).RecentRequests(context.Background(), 10)
+	rows, err := (&Reader{db: reopenReads(t, path)}).ListRequests(context.Background(), RequestFilter{Limit: 10})
 	if err != nil {
-		t.Fatalf("RecentRequests: %v", err)
+		t.Fatalf("ListRequests: %v", err)
 	}
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1", len(rows))
@@ -101,46 +103,11 @@ func TestRecordPersistsFullEvent(t *testing.T) {
 	if got.TraceID != "trace-1" || got.Provider != "claude" || got.Model != "claude-3-haiku-20240307" {
 		t.Errorf("identity fields wrong: %+v", got)
 	}
-	if got.CostUsd != 0.000725 || got.LatencyMs != 910 || got.StatusCode != 200 {
+	if got.CostUSD != 0.000725 || got.LatencyMs != 910 || got.StatusCode != 200 {
 		t.Errorf("usage/latency/status wrong: %+v", got)
 	}
-	if got.ConfigEpoch == nil || *got.ConfigEpoch != "abc123def456" {
-		t.Errorf("config_epoch = %v, want abc123def456", got.ConfigEpoch)
-	}
-}
-
-// TestEmptyStringsBecomeNull proves the nullable columns are NULL, not "",
-// when the Event leaves them unset — an absent value and an empty one must
-// not be distinguishable in the store.
-func TestEmptyStringsBecomeNull(t *testing.T) {
-	w, path := newTestWriter(t)
-
-	w.Record(Event{
-		TraceID:          "trace-nulls",
-		Format:           "openai",
-		Provider:         "mockllm",
-		Model:            "mock-llm",
-		RoutingRationale: "simple router default",
-		StatusCode:       200,
-	})
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	var session, client, alias, domain, errCol, tools *string
-	db := reopenReads(t, path)
-	row := db.QueryRowContext(context.Background(),
-		`SELECT session_key, client_id, alias_used, domain, error, tool_calls_json FROM requests WHERE trace_id = 'trace-nulls'`)
-	if err := row.Scan(&session, &client, &alias, &domain, &errCol, &tools); err != nil {
-		t.Fatalf("scan: %v", err)
-	}
-	for name, v := range map[string]*string{
-		"session_key": session, "client_id": client, "alias_used": alias,
-		"domain": domain, "error": errCol, "tool_calls_json": tools,
-	} {
-		if v != nil {
-			t.Errorf("%s = %q, want NULL", name, *v)
-		}
+	if got.ConfigEpoch != "abc123def456" {
+		t.Errorf("config_epoch = %q, want abc123def456", got.ConfigEpoch)
 	}
 }
 

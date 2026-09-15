@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -11,36 +12,38 @@ import (
 // newTestReader applies the schema to a fresh in-memory database and wraps it
 // in a Reader, so read tests exercise the same SQL a real deployment runs
 // without going through the writer's queue/goroutine.
-func newTestReader(t *testing.T) (*Reader, *Queries) {
+func newTestReader(t *testing.T) (*Reader, *sql.DB) {
 	t.Helper()
-	db, q := openMemory(t)
-	return &Reader{db: db}, q
+	db := openMemory(t)
+	return &Reader{db: db}, db
 }
 
-func insertRow(t *testing.T, q *Queries, p InsertRequestParams) {
+// insertRow writes one row through the same hand-written insert the writer
+// uses, so read tests exercise the real SQL without the writer's queue.
+func insertRow(t *testing.T, db *sql.DB, ev Event) {
 	t.Helper()
-	if p.TraceID == "" {
-		p.TraceID = "trace"
+	if ev.TraceID == "" {
+		ev.TraceID = "trace"
 	}
-	if p.Format == "" {
-		p.Format = "openai"
+	if ev.Format == "" {
+		ev.Format = "openai"
 	}
-	if p.Provider == "" {
-		p.Provider = "mockllm"
+	if ev.Provider == "" {
+		ev.Provider = "mockllm"
 	}
-	if p.Model == "" {
-		p.Model = "mock-llm"
+	if ev.Model == "" {
+		ev.Model = "mock-llm"
 	}
-	if p.RoutingRationale == "" {
-		p.RoutingRationale = "r"
+	if ev.RoutingRationale == "" {
+		ev.RoutingRationale = "r"
 	}
-	if p.StatusCode == 0 {
-		p.StatusCode = 200
+	if ev.StatusCode == 0 {
+		ev.StatusCode = 200
 	}
-	if p.Ts.IsZero() {
-		p.Ts = time.Now().UTC()
+	if ev.Ts.IsZero() {
+		ev.Ts = time.Now().UTC()
 	}
-	if _, err := q.InsertRequest(context.Background(), p); err != nil {
+	if err := insertRequest(context.Background(), db, ev); err != nil {
 		t.Fatalf("insert row: %v", err)
 	}
 }
@@ -52,9 +55,9 @@ func TestOverallAggregatesWindow(t *testing.T) {
 	r, q := newTestReader(t)
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 
-	insertRow(t, q, InsertRequestParams{Ts: now.Add(-2 * time.Hour), InputTokens: 100, OutputTokens: 50, CostUsd: 1, StatusCode: 200})
-	insertRow(t, q, InsertRequestParams{Ts: now.Add(-30 * time.Minute), InputTokens: 200, OutputTokens: 80, CostUsd: 2, StatusCode: 500})
-	insertRow(t, q, InsertRequestParams{Ts: now.Add(-10 * time.Minute), InputTokens: 300, OutputTokens: 120, CostUsd: 3, StatusCode: 200})
+	insertRow(t, q, Event{Ts: now.Add(-2 * time.Hour), StatusCode: 200, Usage: types.Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 1}})
+	insertRow(t, q, Event{Ts: now.Add(-30 * time.Minute), StatusCode: 500, Usage: types.Usage{InputTokens: 200, OutputTokens: 80, CostUSD: 2}})
+	insertRow(t, q, Event{Ts: now.Add(-10 * time.Minute), StatusCode: 200, Usage: types.Usage{InputTokens: 300, OutputTokens: 120, CostUSD: 3}})
 
 	stats, err := r.Overall(context.Background(), Window{Since: now.Add(-1 * time.Hour)})
 	if err != nil {
@@ -92,10 +95,10 @@ func TestByProviderGroupsAndOrdersByCost(t *testing.T) {
 	r, q := newTestReader(t)
 	now := time.Now().UTC()
 
-	insertRow(t, q, InsertRequestParams{Ts: now, Provider: "cheap", Model: "small", CostUsd: 0.01})
-	insertRow(t, q, InsertRequestParams{Ts: now, Provider: "cheap", Model: "small", CostUsd: 0.01})
-	insertRow(t, q, InsertRequestParams{Ts: now, Provider: "pricey", Model: "big", CostUsd: 5.00})
-	insertRow(t, q, InsertRequestParams{Ts: now, Provider: "cheap", Model: "big", CostUsd: 0.02})
+	insertRow(t, q, Event{Ts: now, Provider: "cheap", Model: "small", Usage: types.Usage{CostUSD: 0.01}})
+	insertRow(t, q, Event{Ts: now, Provider: "cheap", Model: "small", Usage: types.Usage{CostUSD: 0.01}})
+	insertRow(t, q, Event{Ts: now, Provider: "pricey", Model: "big", Usage: types.Usage{CostUSD: 5.00}})
+	insertRow(t, q, Event{Ts: now, Provider: "cheap", Model: "big", Usage: types.Usage{CostUSD: 0.02}})
 
 	rows, err := r.ByProvider(context.Background(), WindowFrom(time.Hour))
 	if err != nil {
@@ -122,9 +125,9 @@ func TestByEpochGroupsNullAsEmptyString(t *testing.T) {
 	r, q := newTestReader(t)
 	now := time.Now().UTC()
 
-	insertRow(t, q, InsertRequestParams{Ts: now, ConfigEpoch: nil, CostUsd: 1})
-	insertRow(t, q, InsertRequestParams{Ts: now, ConfigEpoch: strptr("epoch-a"), CostUsd: 2})
-	insertRow(t, q, InsertRequestParams{Ts: now, ConfigEpoch: strptr("epoch-a"), CostUsd: 4})
+	insertRow(t, q, Event{Ts: now, ConfigEpoch: "", Usage: types.Usage{CostUSD: 1}})
+	insertRow(t, q, Event{Ts: now, ConfigEpoch: "epoch-a", Usage: types.Usage{CostUSD: 2}})
+	insertRow(t, q, Event{Ts: now, ConfigEpoch: "epoch-a", Usage: types.Usage{CostUSD: 4}})
 
 	rows, err := r.ByEpoch(context.Background(), WindowFrom(time.Hour))
 	if err != nil {
@@ -164,10 +167,10 @@ func TestSessionReturnsTrajectoryInOrder(t *testing.T) {
 	r, q := newTestReader(t)
 	base := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 
-	insertRow(t, q, InsertRequestParams{Ts: base.Add(2 * time.Minute), SessionKey: strptr("s1"), Model: "third"})
-	insertRow(t, q, InsertRequestParams{Ts: base, SessionKey: strptr("s1"), Model: "first"})
-	insertRow(t, q, InsertRequestParams{Ts: base.Add(1 * time.Minute), SessionKey: strptr("s1"), Model: "second"})
-	insertRow(t, q, InsertRequestParams{Ts: base, SessionKey: strptr("other-session"), Model: "unrelated"})
+	insertRow(t, q, Event{Ts: base.Add(2 * time.Minute), SessionKey: "s1", Model: "third"})
+	insertRow(t, q, Event{Ts: base, SessionKey: "s1", Model: "first"})
+	insertRow(t, q, Event{Ts: base.Add(1 * time.Minute), SessionKey: "s1", Model: "second"})
+	insertRow(t, q, Event{Ts: base, SessionKey: "other-session", Model: "unrelated"})
 
 	rows, err := r.Session(context.Background(), "s1", 10)
 	if err != nil {
@@ -196,7 +199,7 @@ func TestSessionRespectsLimit(t *testing.T) {
 	r, q := newTestReader(t)
 	base := time.Now().UTC()
 	for i := 0; i < 5; i++ {
-		insertRow(t, q, InsertRequestParams{Ts: base.Add(time.Duration(i) * time.Second), SessionKey: strptr("s1")})
+		insertRow(t, q, Event{Ts: base.Add(time.Duration(i) * time.Second), SessionKey: "s1"})
 	}
 	rows, err := r.Session(context.Background(), "s1", 2)
 	if err != nil {
@@ -214,9 +217,9 @@ func TestToolsCountsAcrossRowsAndExcludesToollessRows(t *testing.T) {
 	r, q := newTestReader(t)
 	now := time.Now().UTC()
 
-	insertRow(t, q, InsertRequestParams{Ts: now, ToolCallsJson: strptr(`["read_file","grep"]`)})
-	insertRow(t, q, InsertRequestParams{Ts: now, ToolCallsJson: strptr(`["read_file"]`)})
-	insertRow(t, q, InsertRequestParams{Ts: now, ToolCallsJson: nil}) // plain chat turn
+	insertRow(t, q, Event{Ts: now, ToolCalls: []string{"read_file", "grep"}})
+	insertRow(t, q, Event{Ts: now, ToolCalls: []string{"read_file"}})
+	insertRow(t, q, Event{Ts: now, ToolCalls: nil}) // plain chat turn
 
 	stats, err := r.Tools(context.Background(), WindowFrom(time.Hour))
 	if err != nil {
@@ -261,9 +264,9 @@ func TestListRequestsFiltersAndOrders(t *testing.T) {
 	r, q := newTestReader(t)
 	base := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 
-	insertRow(t, q, InsertRequestParams{Ts: base, Provider: "a", Model: "m1", SessionKey: strptr("s1"), AliasUsed: strptr("auto"), StatusCode: 200})
-	insertRow(t, q, InsertRequestParams{Ts: base.Add(time.Minute), Provider: "b", Model: "m2", SessionKey: strptr("s1"), AliasUsed: strptr("coding"), StatusCode: 500})
-	insertRow(t, q, InsertRequestParams{Ts: base.Add(2 * time.Minute), Provider: "a", Model: "m3", SessionKey: strptr("s2"), StatusCode: 200})
+	insertRow(t, q, Event{Ts: base, Provider: "a", Model: "m1", SessionKey: "s1", AliasUsed: "auto", StatusCode: 200})
+	insertRow(t, q, Event{Ts: base.Add(time.Minute), Provider: "b", Model: "m2", SessionKey: "s1", AliasUsed: "coding", StatusCode: 500})
+	insertRow(t, q, Event{Ts: base.Add(2 * time.Minute), Provider: "a", Model: "m3", SessionKey: "s2", StatusCode: 200})
 
 	// Newest first, with no filter.
 	all, err := r.ListRequests(context.Background(), RequestFilter{})
@@ -350,14 +353,10 @@ func TestGetRequestReturnsFullRowAndMissingIsNotAnError(t *testing.T) {
 	r, q := newTestReader(t)
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 
-	insertRow(t, q, InsertRequestParams{
-		Ts: now, Provider: "a", Model: "m1", SessionKey: strptr("s1"),
-		AliasUsed: strptr("auto"), Domain: strptr("code_generation"),
-		Effort: strptr("hard"), CostClass: strptr("budget"), ConfigEpoch: strptr("epoch-a"),
-		InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5, CacheWriteTokens: 7,
-		CostUsd: 1.5, LatencyMs: 250, StatusCode: 200,
-		ToolCallsJson: strptr(`["read","write"]`),
-	})
+	insertRow(t, q, Event{Ts: now, Provider: "a", Model: "m1", SessionKey: "s1",
+		AliasUsed: "auto", Domain: "code_generation",
+		Effort: "hard", CostClass: "budget", ConfigEpoch: "epoch-a", LatencyMs: 250, StatusCode: 200,
+		ToolCalls: []string{"read", "write"}, Usage: types.Usage{InputTokens: 10, OutputTokens: 20, CacheRead: 5, CacheWrite: 7, CostUSD: 1.5}})
 
 	rows, err := r.ListRequests(context.Background(), RequestFilter{})
 	if err != nil || len(rows) != 1 {

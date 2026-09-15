@@ -50,7 +50,6 @@
     pkgs.gopls
     pkgs.gotools
     pkgs.golangci-lint
-    pkgs.sqlc
     pkgs.logdy
   ];
 
@@ -90,13 +89,6 @@
     dev.exec = "air";
     test.exec = "devenv test";
     lint.exec = "golangci-lint run";
-    # Regenerate internal/store's typed queries from schema.sql + queries.sql
-    # after editing either. The generated files are committed.
-    #
-    # The binary is named by store path, not bare "sqlc": devenv puts this
-    # script's wrapper ahead of packages on PATH, so a bare "sqlc" here would
-    # resolve back to this script and fork until the process table is full.
-    sqlc.exec = "${lib.getExe pkgs.sqlc} generate";
     mock.exec = ''
       http --check-status -S POST :5665/chat/completions model="mock-llm" messages[0]["role"]="user" messages[0]["content"]="what color is the sky?" stream:=true
       http --check-status -S POST :8080/chat/completions model="mock-llm" messages[0]["role"]="user" messages[0]["content"]="what color is the sky?" stream:=true

@@ -13,10 +13,11 @@ import (
 // the same sqlite database the writer feeds, opening its own handle so a read
 // never contends with the writer's single drain goroutine.
 //
-// The queries live here rather than in queries.sql for two reasons: tool
-// usage needs json_each(), which sqlc's sqlite parser cannot resolve, and the
-// read aggregates are few enough that generated accessors add more friction
-// than they remove (see the note at the end of queries.sql).
+// The queries live here as plain Go rather than in a generated layer or a
+// separate .sql file. An earlier version generated them with sqlc; that was
+// retired after the read side turned out to need json_each(), a table-valued
+// function sqlc's sqlite parser cannot resolve (see README's "Event store").
+// Five queries do not warrant a codegen pipeline.
 type Reader struct {
 	db *sql.DB
 }

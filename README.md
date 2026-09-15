@@ -19,11 +19,21 @@ devenv shell
 dev  # runs air (hot reload)
 ```
 
+`devenv shell` offers these scripts: `dev` (air, hot reload), `test`
+(`devenv test`), `lint`, `docs` (`go doc -http`), `sqlc` (regenerate the
+event store's typed queries), and `mock` (fire the same streaming request at
+fakellm and at arbiter, to compare).
+
 Run everything through the devenv process manager (`devenv processes up/down`),
 which starts fakellm (port 5665) before arbiter (port 8080). Note: builds,
 tests, git commits, and anything touching secrets must run inside `devenv
 shell`; secrets access requires a reason (`SECRETSPEC_REASON="..."` or
 `--reason`).
+
+Two flags control where arbiter listens: `--bind` (default `127.0.0.1`) and
+`--port` (default `8080`), or `--socket <path>` for a unix socket, which
+overrides both. Loopback is the default on purpose — see
+[Admin surface and access](#admin-surface-and-access).
 
 ## Endpoints
 
@@ -31,7 +41,7 @@ shell`; secrets access requires a reason (`SECRETSPEC_REASON="..."` or
 |----------------------|--------------------------------------|
 | `POST /v1/messages`  | Anthropic Messages API               |
 | `POST /chat/completions` | OpenAI Chat Completions          |
-| `GET /models`, `GET /v1/models` | model list (OpenAI shape)  |
+| `GET /models`, `GET /v1/models` | model list (OpenAI shape), provider models and aliases |
 | `GET /health`        | liveness                             |
 | `POST /admin/reload` | reload config + catalog              |
 | `GET /admin/stats`   | overall requests/tokens/cost/errors  |

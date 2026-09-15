@@ -224,12 +224,13 @@ Explicitly out of scope:
 ## Suggested build order (routing-first, per your priority)
 
 Status as of 2026-09-15: **1, 2 and 3 are done; 4 is reframed (attribution,
-not auth); 7 is partial (query surface exists, UI does not).**
+not auth); 7 is partial (query surface exists, UI does not).** Nothing beyond
+step 3 + the 4a query surface is currently greenlit.
 
 1. ~~Model alias layer + wiring it into the router selection (the "auto /
    auto-coding / pinned model / model group" mechanism).~~ **DONE** —
    `e0f1ea8`.
-2. ~~Static provider cost/latency table + a cost/latency-aware router mode.~~
+2. ~~Static provider cost/latency table + a cost/latency-aware router mode.~~ —
    **DONE** — `1fbf74b` + `a00d6d8` + `acbdb91` (URL-fetched catalog not
    built; considered optional).
 3. Persistent event store capturing routing+usage+session data (schema
@@ -240,8 +241,30 @@ not auth); 7 is partial (query surface exists, UI does not).**
 4. API key auth + client identity threaded into the store. — not started;
    reframed as attribution + per-client shaping, not auth (see §4).
 5. Budget-cap guardrail (consumes the same usage data as #3). — not started.
+   **Next candidate, and the largest remaining requirement-shaped gap**: it
+   and item 6 are the only §3 "Add" items untouched.
 6. Client-injected-prompt stripper guardrail. — not started.
 7. Dashboard/query tooling over the store from #3 (explicitly last). —
    **PARTIAL** (Phase 4a) — the HTTP query surface exists (`/admin/stats/*`:
    overall, provider/model, per-epoch, session trajectory, tools); a UI or
    dashboard over it does not.
+
+### Known gaps, recorded so they aren't mistaken for done
+
+- **Sub-agent / child-request attribution** (§2, "where derivable") is not in
+  the schema. It needs a parent-request/trace linkage column whose shape isn't
+  known until a multi-agent client is instrumented. Deliberately deferred, not
+  silently dropped.
+- **A fetchable-URL catalog** (§1's "config-inline or a fetched JSON/URL") is
+  not built: the catalog is inline plus a local `model_catalog_file`, produced
+  by a standalone converter. `CostLatencyLookup` is the seam a fetcher would
+  implement, and that seam is already exercised by two implementations'
+  worth of call sites.
+- **Empirical (measured) cost/latency** (§1's "later become
+  measured/empirical") is not built. Provider-*reported* cost is captured
+  (OpenRouter; plain Anthropic/OpenAI report nothing) and latency is recorded
+  per request, so the data to back an empirical `CostLatencyLookup` is now
+  being collected — the interface is the seam, and swapping it needs no
+  caller changes.
+- **Cache-read/cache-write token pricing** is not modelled in the stored
+  cost, so a stored `cost_usd` is not exact for a prompt-cached call.

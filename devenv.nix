@@ -90,6 +90,9 @@
     dev.exec = "air";
     test.exec = "devenv test";
     lint.exec = "golangci-lint run";
+    # Regenerate internal/store's typed queries from schema.sql + queries.sql
+    # after editing either. The generated files are committed.
+    sqlc.exec = "sqlc generate";
     mock.exec = ''
       http --check-status -S POST :5665/chat/completions model="mock-llm" messages[0]["role"]="user" messages[0]["content"]="what color is the sky?" stream:=true
       http --check-status -S POST :8080/chat/completions model="mock-llm" messages[0]["role"]="user" messages[0]["content"]="what color is the sky?" stream:=true

@@ -200,9 +200,16 @@ routers:
 # routing:
 #   fallback_providers: ["gpt4", "litellm"]
 
-# Admin surface (/admin/*). The only endpoint today is POST /admin/reload,
+# Admin surface (/admin/*). All of it is read-only except POST /admin/reload,
 # which re-reads this file AND the model_catalog_file on demand — the latter
 # is inert on write, so a regenerated catalog needs this call.
+#   POST /admin/reload            reload config + catalog
+#   GET  /admin/stats*            aggregates: overall, providers, epochs,
+#                                 session, tools
+#   GET  /admin/requests[/{id}]   the request rows themselves, and one in full
+#                                 (with captured content, when enabled below)
+#   GET  /admin/content/repeated  blocks recurring across requests — how
+#                                 client-injected boilerplate is detected
 #
 # Arbiter implements no auth: Caddy (forward_auth) and the network do that.
 # The one in-app affordance is `forward_auth_header`: when set, an /admin/*

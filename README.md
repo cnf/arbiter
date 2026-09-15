@@ -74,7 +74,7 @@ arbiter/
 │   ├── translator/       # Anthropic <-> OpenAI <-> Normalized conversions (incl. SSE events)
 │   ├── upstream/         # provider HTTP calls, SSE reading, response parsing
 │   ├── logging/          # single structured logging path (JSON, trace-correlated)
-│   ├── store/            # sqlite event store: schema, async writer, Reader
+│   ├── store/            # sqlite event store: schema, async writer, content store, Reader
 │   └── config/           # lanes.yaml loading (strict: unknown fields rejected)
 ├── pkg/
 │   ├── types/            # Normalized* request/response/stream types (the hub)
@@ -123,10 +123,12 @@ hashing — rotating a secret must not split the data — but every other
 behavior-bearing field changes the hash.
 
 A `store.Reader` answers questions over the same file on its own handle, so a
-read never contends with the writer's drain goroutine. Five aggregate queries
-(overall stats, spend by provider/model, spend by config epoch, one session's
-trajectory, tool-name usage counts) plus the request list and detail that back
-`/admin/requests`.
+read never contends with the writer's drain goroutine. Seven queries: five
+aggregates (overall stats, spend by provider/model, spend by config epoch, one
+session's trajectory, tool-name usage counts), the request list, and one
+request in full — plus the content lookups behind `/admin/requests/{id}` and
+the recurring-block query behind `/admin/content/repeated` (see "Content
+store").
 
 Reader and writer are separate connections to one database file, so both open
 through the same DSN, which enables WAL journaling and a 5-second busy
@@ -155,11 +157,19 @@ The schema is deliberately denormalized (tool names go in a JSON column rather
 than a child table) until real query needs are known. `id` is the rowid, not
 `trace_id`: the inbound `X-Trace-Id` is trusted verbatim, so duplicate values
 are expected and must not collide. `session_key` is nullable — a request whose
-affinity derivation declines to produce a key is still recorded. `client_id`
+affinity derivation declines to produce a key is still recorded (that happens
+when a conversation opens with too little text to be distinctive; see "Session
+affinity"). `client_id`
 stays NULL until per-client API keys land (attribution, not authentication).
 `config_epoch` is nullable too — rows written before the column existed (or by
 a build with no epoch set) group under the empty string rather than
 disappearing.
+
+The content tables sit in the same file and the same write transaction as the
+request row, so a request can never be half-stored: its row and its bodies
+commit together or not at all. `content_refs.owner_kind` distinguishes
+`'request'` from `'rejected'`, which is what lets content for a refused
+request exist without a `requests` row to point at.
 
 ## Architecture
 
@@ -183,6 +193,9 @@ swaps it in atomically; requests already in flight finish on the old config,
 and a reload that fails to load, validate, or build is rejected with a logged
 error while the previous config keeps serving.
 
+The example below is a complete, loadable config (a test asserts exactly that,
+so it cannot rot): every provider it references is defined here.
+
 ```yaml
 providers:
   claude:
@@ -190,6 +203,20 @@ providers:
     endpoint: "https://api.anthropic.com"
     key: "${ANTHROPIC_API_KEY}"
     models: ["claude-3-opus-20250219", "claude-3-haiku-20250307"]
+  gpt4:
+    type: "openai"
+    endpoint: "https://api.openai.com/v1"
+    key: "${OPENAI_API_KEY}"
+    models: ["gpt-4o"]
+  litellm:
+    type: "openai"
+    endpoint: "${LITELLM_URL}"
+    key: "${LITELLM_API_KEY}"
+    models: ["openrouter/free"]
+  local:
+    type: "ollama"                     # OpenAI-compatible transport, own identity
+    endpoint: "http://localhost:11434/v1"
+    models: ["llama2"]
 
 classifiers:
   - name: "domain"
@@ -258,6 +285,11 @@ routing:
 session_affinity:
   header: "X-Session-Id"               # inbound header carrying a session id
   default_ttl: "5m"                    # idle TTL for a pinned conversation
+
+storage:                               # omit the whole block for no persistence
+  path: "arbiter.db"
+  capture_content: true                # store prompt/response bodies (see below)
+  content_ttl: "72h"                   # empty means never expire
 
 logging:
   level: "info"
@@ -499,9 +531,19 @@ routing entirely and stay on the same upstream — preserving prompt-cache
 reuse and avoiding cost churn from turn-to-turn re-routing. The session key
 is the `X-Session-Id` header (configurable via `session_affinity.header`)
 when present; otherwise it's a hash of the system prompt plus the first
-text-bearing user message. A conversation whose opening carries too little
-text to be distinctive (say, a bare "hi") is deliberately *not* pinned:
-pinning two unrelated chats together is worse than not pinning at all.
+text-bearing user message.
+
+**A conversation that opens with too little text is never pinned** — not on its
+opening turn, and not later either: the key is derived from that *first*
+message every time, so a chat that opens "hi" has the same too-short prefix on
+turn 40 as on turn 1. Such a conversation routes fresh on every turn and
+records a NULL `session_key` for its whole life. The gate exists because
+pinning two unrelated chats together (both opening "hi") is worse than not
+pinning at all — but note that is a multi-tenant instinct in a single-user
+tool, and the fix, if it is wanted, belongs in the derivation (hash a stable
+prefix of the whole conversation once it is long enough, rather than only the
+first user turn) not here. Sending `X-Session-Id` sidesteps the issue entirely
+and is the supported path for a client that cares.
 
 The pin overrides classification for as long as the client keeps requesting
 the **same `model` value**. A client that explicitly switches models means

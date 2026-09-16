@@ -31,6 +31,7 @@ Bodies are untrusted text and are never marked safe. */}}
     <span class="num" title="cost">{{usd .Request.CostUSD}}</span>
     <span class="num" title="latency">{{dur .Request.LatencyMs}}</span>
     {{if .Request.Stream}}<span class="tag">stream</span>{{end}}
+    {{if .ReplayChars}}<span class="muted replaynote" title="context this turn re-sent in full; shown once, at the turn that introduced it">{{chars .ReplayChars}} replayed</span>{{end}}
     <a class="openreq" href="/admin/ui/requests/{{.Request.ID}}">open request {{.Request.ID}}</a>
   </header>
 
@@ -59,17 +60,6 @@ Bodies are untrusted text and are never marked safe. */}}
     <div class="newcontent">
       {{range .New}}{{template "turnblock" .}}{{end}}
     </div>
-    {{else if not .Preamble}}
-      <p class="muted turnempty">This turn introduced no new content — it re-sent
-        the conversation and nothing else.</p>
-    {{end}}
-
-    {{/* What it re-sent, as pointers. */}}
-    {{range .Replay}}
-    <p class="replayref">
-      replayed {{if .System}}system preamble{{else}}{{.Blocks}} block{{if ne .Blocks 1}}s{{end}} of conversation history{{end}}
-      ({{chars .Chars}}) — <a href="#turn-{{.Turn}}">see turn #{{.Turn}}</a>
-    </p>
     {{end}}
   {{end}}
 </section>

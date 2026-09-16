@@ -364,3 +364,8 @@ details.preamble[open] > summary { margin-bottom: 0.4rem; }
    accent so a turn reads as question-then-answer at a glance. */
 .block:has(> .blockmeta > .dir) { }
 .turnmeta .openreq { margin-left: auto; font-size: 11px; }
+
+/* How much of a turn was context it re-sent rather than new. Kept in the header
+   because it is the answer to "why is this turn 8k input tokens", but it is not
+   repeated content: the text itself lives once, at the turn that introduced it. */
+.replaynote { font-size: 11px; }

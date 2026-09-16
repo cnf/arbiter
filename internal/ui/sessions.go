@@ -133,29 +133,6 @@ type transcriptBlock struct {
 	turnIndex int
 }
 
-// replayRef points at where a turn's re-sent content already lives, instead of
-// repeating it.
-//
-// A client re-sends its whole conversation every turn, so a transcript that
-// renders each turn's payload shows the same text once per turn — the page
-// becomes a multiple of the conversation rather than a record of it. The fix is
-// not to hide the repeats: a <details> element still ships its contents to the
-// browser, so collapsing in CSS leaves the page just as large. The repeats are
-// therefore not rendered at all, and each one becomes a line naming the turn
-// that first showed it, which is exact — same content hash, same bytes.
-type replayRef struct {
-	// Turn is the number of the turn that introduced this text, so the line can
-	// link to it.
-	Turn int
-
-	// System distinguishes the client's standing preamble from conversation
-	// history: one is what the client always says, the other is what was said.
-	System bool
-
-	Blocks int
-	Chars  int
-}
-
 // transcriptTurn is one request/response exchange in a conversation.
 //
 // It distinguishes what the turn *introduced* from what it merely re-sent. A
@@ -178,10 +155,6 @@ type transcriptTurn struct {
 	// worth having separately from the conversation and are usually the largest
 	// single thing in a turn.
 	Preamble []transcriptBlock
-
-	// Replay names where this turn's re-sent text was first shown, one entry per
-	// run of content that shares an origin turn. No bodies: see replayRef.
-	Replay []replayRef
 
 	// CaptureOff is true when there are no blocks at all. It is rendered as its
 	// own message because "nothing was captured" and "this turn had no content
@@ -276,46 +249,19 @@ func (h *Handler) SessionHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			turn.CaptureOff = len(blocks) == 0
 
-			// replayed is keyed by the turn that first showed a body, so a run
-			// of re-sent blocks from the same origin collapses into one line
-			// rather than one line per block.
-			// Keyed by (origin turn, preamble-or-not), not by origin turn alone:
-			// one turn can contribute both its preamble and some history to a
-			// later turn's replay, and collapsing those into one line would
-			// mislabel the history as preamble.
-			type runKey struct {
-				origin int
-				system bool
-			}
-			type replayRun struct {
-				ref   replayRef
-				order int
-			}
-			runs := map[runKey]*replayRun{}
-			var runOrder []runKey
-
 			for _, b := range blocks {
 				tb := transcriptBlock{ContentBlock: b, RequestID: t.ID}
-				origin, previouslySeen := seen[b.Hash]
+				_, previouslySeen := seen[b.Hash]
 				if b.Direction == "request" && previouslySeen {
 					// Request-side and already shown: this turn is re-sending
-					// context, not saying anything new. Its body is not
-					// rendered — the line below points at the turn that has it.
-					key := runKey{origin: origin, system: b.Role == "system"}
-					run, ok := runs[key]
-					if !ok {
-						run = &replayRun{
-							ref: replayRef{
-								Turn:   origin,
-								System: key.system,
-							},
-							order: len(runOrder),
-						}
-						runs[key] = run
-						runOrder = append(runOrder, key)
-					}
-					run.ref.Blocks++
-					run.ref.Chars += len(b.Body)
+					// context, not saying anything new. Its body is neither
+					// rendered nor announced — the text is already on the page
+					// at the turn that introduced it, so a pointer at every turn
+					// is noise a reader has to skip past.
+					//
+					// It is still counted: the header reports how much the turn
+					// replayed, which is useful without a block-by-block account
+					// of it.
 					turn.ReplayChars += len(b.Body)
 					continue
 				}
@@ -333,9 +279,6 @@ func (h *Handler) SessionHandler(w http.ResponseWriter, r *http.Request) {
 				}
 				turn.New = append(turn.New, tb)
 				turn.NewChars += len(b.Body)
-			}
-			for _, key := range runOrder {
-				turn.Replay = append(turn.Replay, runs[key].ref)
 			}
 			view.Turns = append(view.Turns, turn)
 		}

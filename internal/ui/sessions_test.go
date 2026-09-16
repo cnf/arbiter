@@ -204,13 +204,17 @@ func TestTranscriptSeparatesNewContentFromReplay(t *testing.T) {
 		}
 	}
 
-	// What was replayed is still *visible* — as a pointer to the turn that has
-	// it, so the reader knows context was sent without re-reading it.
-	if !strings.Contains(body, `class="replayref"`) {
-		t.Error("no replay pointer is rendered; the repeated context vanished silently")
+	// Replay is NOT announced per turn: the text is already on the page at the
+	// turn that introduced it, so a pointer at every turn is noise.
+	if strings.Contains(body, "see turn #") {
+		t.Error("replay pointers are rendered; they are redundant noise")
 	}
-	if !strings.Contains(body, "see turn #") {
-		t.Error("a replay pointer does not name the turn that holds the text")
+	if strings.Contains(body, `class="replayref"`) {
+		t.Error("the replay pointer markup is still rendered")
+	}
+	// But the turn header still reports how much it replayed.
+	if !strings.Contains(body, "replayed") {
+		t.Error("no turn header reports how much it replayed")
 	}
 	// The preamble is its own collapsible field.
 	if !strings.Contains(body, `class="preamble"`) {
@@ -221,10 +225,10 @@ func TestTranscriptSeparatesNewContentFromReplay(t *testing.T) {
 		t.Error("no turn reports how much it replayed")
 	}
 
-	// Turn 1 introduces everything it sends, so it has nothing replayed.
+	// Turn 1 introduces everything it sends, so its header reports no replay.
 	firstTurn := body[strings.Index(body, `id="turn-1"`):strings.Index(body, `id="turn-2"`)]
-	if strings.Contains(firstTurn, `class="replayref"`) {
-		t.Error("the opening turn claims to have replayed content, but it introduced all of it")
+	if strings.Contains(firstTurn, "replayed") {
+		t.Error("the opening turn reports replay, but it introduced everything it sent")
 	}
 	if !strings.Contains(firstTurn, `class="preamble"`) {
 		t.Error("the opening turn does not show the system preamble it introduced")
@@ -257,22 +261,27 @@ func TestReplayKeepsPreambleAndHistoryApart(t *testing.T) {
 	body := serve(t, h, "GET", "/admin/ui/session?key="+key, false).Body.String()
 	turn2 := body[strings.Index(body, `id="turn-2"`):]
 
-	// Two separate pointers to turn 1, not one merged line.
-	refs := regexp.MustCompile(`class="replayref"`).FindAllString(turn2, -1)
-	if len(refs) != 2 {
-		t.Errorf("turn 2 has %d replay pointers; want 2 (the preamble and the history, separately)", len(refs))
+	// The preamble belongs to the turn that introduced it, so the second turn
+	// does not re-show it...
+	if strings.Contains(turn2, `class="preamble"`) {
+		t.Error("turn 2 re-shows the system preamble; it belongs to the turn that introduced it")
 	}
-	if !strings.Contains(turn2, "system preamble") {
-		t.Error("the replayed preamble is not labelled as such")
+	// ...but it *did* re-send it, so the count includes it: preamble + question
+	// one + answer one. The count is a statement about what went over the wire,
+	// which is why it covers everything re-sent and not only the history.
+	want := len("THE PREAMBLE TEXT") + len("question one") + len("answer one")
+	if !strings.Contains(turn2, charsText(want)+" replayed") {
+		t.Errorf("turn 2's replay count is not %s; got %s", charsText(want), firstLine(turn2))
 	}
-	if !strings.Contains(turn2, "conversation history") {
-		t.Error("replayed conversation is not labelled as history; it is being called preamble")
-	}
-	// The history entry must count the two history blocks, not the preamble.
-	if !strings.Contains(turn2, "2 blocks of conversation history") {
-		t.Errorf("the history pointer does not count both history blocks; turn2 = %s", firstLine(turn2))
+	// The content this turn *introduced* must not be counted as replayed.
+	if strings.Contains(turn2, charsText(want+len("question two"))+" replayed") {
+		t.Error("turn 2's replay count includes the question it introduced")
 	}
 }
+
+// charsText renders a character count the way the template does, so a test can
+// assert on what a reader sees rather than on a number it computed itself.
+func charsText(n int) string { return fmtChars(n) }
 
 // A turn introducing a block that an *earlier* turn also had must not be
 // mistaken for introducing it: only the first appearance counts as new.
@@ -294,12 +303,13 @@ func TestReplaySplitGoesByFirstAppearance(t *testing.T) {
 	// Turn 1 shows it; turn 2 collapses it.
 	turn1 := body[strings.Index(body, `id="turn-1"`):strings.Index(body, `id="turn-2"`)]
 	turn2 := body[strings.Index(body, `id="turn-2"`):]
-	if strings.Contains(turn1, `class="replayref"`) {
-		t.Error("the first appearance was treated as replay")
+	if strings.Contains(turn1, "replayed") {
+		t.Error("the first appearance was counted as replay")
 	}
-	if !strings.Contains(turn2, `class="replayref"`) {
-		t.Error("the second appearance was treated as new; the split ignores history")
+	if !strings.Contains(turn2, "replayed") {
+		t.Error("the second appearance was not counted as replay; the split ignores history")
 	}
+	// The text itself renders once, at its origin, and is not repeated.
 	if strings.Count(body, "the shared question") != 1 {
 		t.Errorf("the shared block appears %d times; want once, at its origin turn",
 			strings.Count(body, "the shared question"))

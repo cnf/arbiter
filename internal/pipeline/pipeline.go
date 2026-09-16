@@ -250,7 +250,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 	resp, _, _, served, err := p.tryUpstream(ctx, route, req)
 	if err != nil {
 		p.logger.LogError(ctx, "error", err, map[string]interface{}{"provider": route.Provider})
-		status, provider := upstreamFailure(err)
+		status, provider := upstreamFailureStatus(err), upstreamFailureProvider(err)
 		if provider == "" {
 			provider = route.Provider
 		}
@@ -432,6 +432,42 @@ func (p *Pipeline) computeCost(provider, model string, usage types.Usage) float6
 	const perMTok = 1_000_000.0
 	return (float64(usage.InputTokens)*mc.InputCostPerMTok +
 		float64(usage.OutputTokens)*mc.OutputCostPerMTok) / perMTok
+}
+
+// upstreamFailureStatus is what a failed upstream attempt is *reported* as: the
+// upstream's own code when it gave one, else 502.
+//
+// The distinction matters because upstreamFailure returns 0 for a transport
+// failure — no response was ever received, so there is no upstream status to
+// record. That is the right value for "the upstream never answered", but it is
+// not the status the client was given: writeArbiterError maps the same 0 to 502
+// (internal/http/handler.go:257). Recording the raw 0 made every such request
+// indistinguishable in the event store from one that has not finished, and left
+// error queries (status_code >= 400) blind to the most common failure mode —
+// nothing counted them as errors. Rows already written with 0 stay as they are;
+// this is a go-forward fix, not a migration.
+func upstreamFailureStatus(err error) int {
+	status, _ := upstreamFailure(err)
+	if status < 400 || status > 599 {
+		return badGatewayStatus
+	}
+	return status
+}
+
+// badGatewayStatus is the status a transport failure is reported as. It is a
+// literal rather than http.StatusBadGateway so the pipeline does not depend on
+// net/http for one constant; internal/http/handler.go's writeArbiterError
+// applies the same rule to the same case, and each side has a test asserting
+// its half (TestUpstreamTransportFailureRecordsBadGateway here,
+// TestWriteArbiterErrorMapsTransportFailureToBadGateway there) so the two
+// cannot drift apart silently.
+const badGatewayStatus = 502
+
+// upstreamFailureProvider names the provider a failed attempt reached, when the
+// error knows one; "" means the caller's own route provider is the answer.
+func upstreamFailureProvider(err error) string {
+	_, provider := upstreamFailure(err)
+	return provider
 }
 
 // upstreamFailure extracts the status code and serving provider from a failed
@@ -617,7 +653,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 	_, eventChan, errChan, served, err := p.tryUpstream(ctx, route, req)
 	if err != nil {
 		p.logger.LogError(ctx, "error", err, map[string]interface{}{"provider": route.Provider})
-		status, provider := upstreamFailure(err)
+		status, provider := upstreamFailureStatus(err), upstreamFailureProvider(err)
 		if provider == "" {
 			provider = route.Provider
 		}

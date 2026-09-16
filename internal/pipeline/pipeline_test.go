@@ -3,12 +3,34 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	arbitererrors "github.com/cnf/arbiter/pkg/errors"
 	"github.com/cnf/arbiter/pkg/types"
 )
+
+// A transport failure (no response at all) must be recorded as 502, not 0: the
+// store's error queries are `status_code >= 400`, so a 0 made the most common
+// failure mode invisible and indistinguishable from an unfinished request.
+// internal/http maps the same case to 502 for the client; this is the
+// store-side half of that pair.
+func TestUpstreamTransportFailureRecordsBadGateway(t *testing.T) {
+	transportErr := fmt.Errorf("Post \"http://localhost:5665/v1/chat/completions\": dial tcp: connection refused")
+
+	if got := upstreamFailureStatus(transportErr); got != 502 {
+		t.Errorf("transport failure status = %d, want 502", got)
+	}
+	// An upstream that answered with its own code keeps that code.
+	if got := upstreamFailureStatus(arbitererrors.NewUpstreamError("p", 429, "rate limited", nil)); got != 429 {
+		t.Errorf("429 passthrough = %d, want 429", got)
+	}
+	// And a nonsense code is not passed through raw.
+	if got := upstreamFailureStatus(arbitererrors.NewUpstreamError("p", 0, "no status", nil)); got != 502 {
+		t.Errorf("zero upstream status = %d, want 502", got)
+	}
+}
 
 // --- fakes ---
 

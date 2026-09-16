@@ -503,6 +503,13 @@ arbitrary order. `/admin/requests/{id}` takes the `id` the list returns and
 adds the fields a list row omits (confidence, cache token counts, tool calls);
 `404` for an unknown id, `400` for a malformed one.
 
+`status_code` records what the *client* was told, so a request whose upstream
+could not be reached at all — no response, no status — is stored as **502**, not
+0. That matters for `?errors` and for the error counts in `/admin/stats`: both
+test `status_code >= 400`, so a 0 was invisible to them and indistinguishable
+from an unfinished request. Rows written before this rule keep their 0; it is a
+go-forward fix, not a migration.
+
 Request and response *bodies* are not stored by default. Set
 `storage.capture_content: true` to store them — content-addressed and
 deduplicated (below) — and `/admin/requests/{id}` then carries a `content`

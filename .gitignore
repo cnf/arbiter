@@ -45,3 +45,14 @@ vendor/
 dist/
 build/
 /arbiter
+
+# Scratch git worktrees (a second checkout for parallel work; carries its own
+# .devenv cache and its own sqlite store, neither of which belongs in git).
+.worktrees/
+
+# The event store and sqlite's journal/WAL sidecars. These are runtime state,
+# not source — an errant `git add -A` from a worktree would otherwise commit
+# a live database.
+*.db
+*.db-shm
+*.db-wal

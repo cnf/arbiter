@@ -57,6 +57,7 @@ overrides both. Loopback is the default on purpose — see
 | `GET /admin/ui/sessions` | conversations, one row each          |
 | `GET /admin/ui/session?key=` | one conversation, turn by turn  |
 | `GET /admin/ui/overview` | pivot: group by a dimension, rank by a metric |
+| `GET /admin/ui/overview/series.json` | the chart's data (UI-internal, unstable) |
 
 Both chat endpoints accept `stream: true` and respond with SSE in the same
 wire format as the request (formats are never mixed). Every response —
@@ -615,6 +616,32 @@ The pivot's dimension and metric are map *keys* in `internal/store/pivot.go`; th
 map *values* are the only strings ever concatenated into SQL, and an unknown axis
 is a 400 that lists the valid ones — never a silent fallback, since grouping by
 something other than what was asked answers a question nobody put.
+
+**The overview also draws a chart**, over the same window and grouping as the
+table, so the two always describe one selection. `chart.js` fetches
+`/admin/ui/overview/series.json` and draws it with vendored uPlot; the page itself
+carries only a *URL* in a data attribute. That is deliberate: putting
+store-derived strings (model names, alias names, epoch hashes) into an inline
+`<script>` would mean either escaping them into a JS context — which the server
+cannot verify, since it does not parse what it emits — or marking them safe. A
+URL is something `html/template`'s contextual escaper already handles, and JSON
+parsed in the browser is data rather than code.
+
+Three details of the chart are worth knowing:
+
+- **Time buckets are sliced, not parsed.** The `ts` column is TEXT in Go's
+  `time.Time.String()` layout, which SQLite's date functions cannot parse, so a
+  bucket is `substr(ts, 1, 15) || '0:00'` rather than a `strftime` call. The
+  granularity follows the window: 10-minute up to 6h, hourly up to 4 days, daily
+  beyond.
+- **The axis is UTC, like everything else.** uPlot renders its time axis in the
+  browser's zone by default, which would make the chart the one thing on the page
+  disagreeing with every timestamp beside it. The tick labels are formatted
+  explicitly instead, with the day in the axis title rather than repeated on each
+  tick.
+- **A gap is null, not zero.** A bucket a group had no traffic in is a break in
+  the line, not a claim that the group was idle by design — which matters for a
+  cost or latency metric.
 
 ### Content store
 

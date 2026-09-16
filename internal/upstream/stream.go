@@ -26,6 +26,10 @@ func (c *HTTPClient) readSSEStream(ctx context.Context, body io.ReadCloser, prov
 	}()
 
 	scanner := bufio.NewScanner(body)
+	// finished records that a terminal event has been emitted. It is threaded
+	// into the OpenAI parser so the trailing usage/role chunk cannot be
+	// mistaken for a second message_start after the stop.
+	finished := false
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -60,7 +64,7 @@ func (c *HTTPClient) readSSEStream(ctx context.Context, body io.ReadCloser, prov
 		case "anthropic":
 			normalized, err = c.parseAnthropicSSEEvent(data)
 		case "openai", "ollama":
-			normalized, err = c.parseOpenAISSEEvent(data)
+			normalized, err = c.parseOpenAISSEEvent(data, finished)
 		default:
 			return fmt.Errorf("unknown provider type %q", providerType)
 		}
@@ -71,6 +75,9 @@ func (c *HTTPClient) readSSEStream(ctx context.Context, body io.ReadCloser, prov
 		}
 
 		if normalized != nil {
+			if normalized.Type == "message_stop" {
+				finished = true
+			}
 			select {
 			case eventChan <- normalized:
 			case <-ctx.Done():
@@ -95,13 +102,16 @@ func (c *HTTPClient) parseAnthropicSSEEvent(data string) (*types.NormalizedStrea
 	return translator.AnthropicStreamEventToNormalized(&evt), nil
 }
 
-// parseOpenAISSEEvent parses a single OpenAI SSE event line.
-func (c *HTTPClient) parseOpenAISSEEvent(data string) (*types.NormalizedStreamEvent, error) {
+// parseOpenAISSEEvent parses a single OpenAI SSE event line. finished reports
+// whether a terminal event has already been emitted on this stream; it gates
+// the message_start derivation so the trailing usage/role chunk cannot produce
+// a start after the stop.
+func (c *HTTPClient) parseOpenAISSEEvent(data string, finished bool) (*types.NormalizedStreamEvent, error) {
 	var evt translator.OpenAIStreamEvent
 	if err := json.Unmarshal([]byte(data), &evt); err != nil {
 		return nil, fmt.Errorf("unmarshal openai SSE event: %w", err)
 	}
-	return translator.OpenAIStreamEventToNormalized(&evt), nil
+	return translator.OpenAIStreamEventToNormalized(&evt, finished), nil
 }
 
 // sendAnthropicStream sends a streaming request to Anthropic and reads the SSE response.

@@ -28,6 +28,33 @@ type NormalizedStreamEvent struct {
 	TextDelta         string // for text_delta
 	InputTokens       int    // for message_start (accumulated through message)
 	OutputTokens      int    // for message_delta (cumulative at this point)
+
+	// Tool-call fragments, for DeltaType == "tool_use_delta". Upstreams stream
+	// a tool call as one fragment per chunk: the first carries the id and
+	// function name, every later one carries a slice of the JSON arguments
+	// string. They are relayed fragment-for-fragment rather than reassembled —
+	// the client concatenates arguments by ToolCallIndex, which is the contract
+	// OpenAI clients already implement. Reassembling here would mean buffering
+	// the whole call before emitting anything, changing latency for no gain.
+	ToolCallIndex int    // position of this call within the message's tool_calls
+	ToolCallID    string // set on the first fragment only
+	ToolCallName  string // set on the first fragment only
+	ToolCallArgs  string // a slice of the arguments JSON, per fragment
+
+	// Reasoning is vendor reasoning text (OpenRouter et al stream it as
+	// `reasoning` / `reasoning_content`). It is not part of the OpenAI spec, so
+	// it is relayed verbatim under the field the upstream used; a client that
+	// does not know the field ignores it, and one that does (agent CLIs showing
+	// a thinking trace) keeps working.
+	Reasoning string
+	// CacheReadTokens/CacheWriteTokens are carried on whichever event the
+	// upstream reported them on, so the streaming path can account for prompt
+	// cache usage the same way the non-streaming path does.
+	CacheReadTokens  int
+	CacheWriteTokens int
+	// CostUSD is a provider-reported cost when the upstream sends one
+	// (OpenRouter does, on the usage chunk).
+	CostUSD float64
 }
 
 // Usage tracks token consumption and (if the upstream reports it) cost.

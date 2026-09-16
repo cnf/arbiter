@@ -284,7 +284,7 @@ func normalizedToOpenAIRequest(req *types.NormalizedRequest) *types.OpenAIReques
 		}
 	}
 
-	return &types.OpenAIRequest{
+	out := &types.OpenAIRequest{
 		Model:       req.Model,
 		Messages:    messages,
 		MaxTokens:   req.MaxTokens,
@@ -292,6 +292,16 @@ func normalizedToOpenAIRequest(req *types.NormalizedRequest) *types.OpenAIReques
 		Tools:       tools,
 		Stream:      req.Stream,
 	}
+	// Ask for the terminal usage chunk on every stream. Arbiter needs it
+	// regardless of whether the client asked: token counts, cost and cache-read
+	// figures are what the event store records, and without this flag a stream
+	// reports none of them. The outbound body is rebuilt from the normalized
+	// request, so a client's own stream_options would otherwise be dropped here
+	// and the upstream would never be asked.
+	if req.Stream {
+		out.StreamOptions = &types.OpenAIStreamOptions{IncludeUsage: true}
+	}
+	return out
 }
 
 // --- response conversion ---

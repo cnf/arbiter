@@ -667,6 +667,18 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 			if evt.OutputTokens > 0 {
 				usage.OutputTokens = evt.OutputTokens
 			}
+			// Cache counters and provider-reported cost arrive on the usage
+			// event; copying them here is what makes a streamed row show real
+			// token counts and let a cache-affinity check be read off the store.
+			if evt.CacheReadTokens > 0 {
+				usage.CacheRead = evt.CacheReadTokens
+			}
+			if evt.CacheWriteTokens > 0 {
+				usage.CacheWrite = evt.CacheWriteTokens
+			}
+			if evt.CostUSD > 0 {
+				usage.CostUSD = evt.CostUSD
+			}
 			if evt.TextDelta != "" {
 				if evt.BlockIndex >= len(orderedText) {
 					// Grow to the index; a gap (a block that produced no text,

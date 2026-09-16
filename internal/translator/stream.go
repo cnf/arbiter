@@ -404,9 +404,13 @@ func NormalizedToOpenAIStreamEvent(evt *types.NormalizedStreamEvent, messageID s
 
 	case "usage":
 		// The upstream's own terminal usage chunk, relayed with its counts and
-		// cost. Emitted with no choices, matching the shape OpenAI clients
-		// parse for the final accounting.
-		openai.Choices = nil
+		// cost. Its shape matters: OpenAI and OpenRouter both send this as a
+		// chunk whose choice carries an EMPTY delta alongside the usage block
+		// ("choices":[{"index":0,"delta":{}}],"usage":{...}), and strict clients
+		// validate against a union that requires `choices` to be present. A
+		// choice-less chunk fails that validation and aborts the whole stream,
+		// so the empty-delta form is reproduced here rather than omitted.
+		openai.Choices = []OpenAIStreamChoice{{Index: evt.BlockIndex}}
 		openai.Usage = &types.OpenAIUsage{
 			PromptTokens:     evt.InputTokens,
 			CompletionTokens: evt.OutputTokens,

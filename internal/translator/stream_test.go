@@ -321,13 +321,56 @@ func TestOpenAIStreamCarriesUsageOnEmptyDeltaChunk(t *testing.T) {
 		t.Errorf("CostUSD = %v, want 0.0012", norm.CostUSD)
 	}
 
-	// Relayed to an OpenAI client as a choice-less chunk carrying usage.
+	// Relayed to an OpenAI client in the shape the upstream uses: the choice is
+	// PRESENT with an empty delta. Omitting `choices` entirely fails a strict
+	// client's schema validation and aborts the whole stream.
 	out := NormalizedToOpenAIStreamEvent(norm, "trace-1", 123)
 	if out.Usage == nil || out.Usage.PromptTokens != 9223 {
 		t.Errorf("outbound usage not relayed: %+v", out.Usage)
 	}
-	if len(out.Choices) != 0 {
-		t.Errorf("outbound usage chunk should carry no choices, got %d", len(out.Choices))
+	if len(out.Choices) != 1 {
+		t.Fatalf("outbound usage chunk must carry one choice (empty delta), got %d", len(out.Choices))
+	}
+	if out.Choices[0].Delta.Content != "" || out.Choices[0].Delta.Role != "" {
+		t.Errorf("the relayed choice must carry an empty delta, got %+v", out.Choices[0].Delta)
+	}
+}
+
+// The relayed usage chunk must be schema-valid for a strict client: `choices`
+// present with an empty delta, exactly as the upstream sends it. An earlier
+// version emitted the chunk with no `choices` key at all, which opencode's
+// zod union rejects ("expected array, received undefined") — aborting the
+// stream and discarding the reply the user had already been shown.
+func TestOpenAIUsageChunkKeepsChoicesPresent(t *testing.T) {
+	norm := &types.NormalizedStreamEvent{
+		Type: "usage", InputTokens: 9252, OutputTokens: 43, CostUSD: 0.001,
+	}
+	out := NormalizedToOpenAIStreamEvent(norm, "trace-1", 123)
+
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(b, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := wire["choices"]; !ok {
+		t.Fatalf("usage chunk omits `choices` entirely: %s", b)
+	}
+	if _, ok := wire["usage"]; !ok {
+		t.Fatalf("usage chunk omits `usage`: %s", b)
+	}
+
+	var choices []map[string]interface{}
+	if err := json.Unmarshal(wire["choices"], &choices); err != nil {
+		t.Fatalf("choices is not an array: %v", err)
+	}
+	if len(choices) != 1 {
+		t.Fatalf("choices length = %d, want 1", len(choices))
+	}
+	if _, ok := choices[0]["delta"]; !ok {
+		t.Errorf("choice has no delta key: %+v", choices[0])
 	}
 }
 

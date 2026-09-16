@@ -56,6 +56,7 @@ overrides both. Loopback is the default on purpose — see
 | `GET /admin/ui/requests/{id}` | request detail, as a page        |
 | `GET /admin/ui/sessions` | conversations, one row each          |
 | `GET /admin/ui/session?key=` | one conversation, turn by turn  |
+| `GET /admin/ui/overview` | pivot: group by a dimension, rank by a metric |
 
 Both chat endpoints accept `stream: true` and respond with SSE in the same
 wire format as the request (formats are never mixed). Every response —
@@ -588,6 +589,32 @@ Session keys are opaque and can be 64 hex characters, so both screens show them
 truncated to 10 with the full value in the tooltip and in every link. The
 truncation is display-only — a shortened key in an href would fetch the wrong
 conversation.
+
+**`/admin/ui/overview`** is the adjustable pivot: pick a window, a dimension to
+group by and a metric to rank by, and it renders one ranked table with the
+headline numbers above it. `?dim=` takes `provider`, `model`, `alias`, `epoch`,
+`domain`, `effort`, `status` or `format`; `?metric=` takes `requests`, `cost`,
+`tokens`, `latency` or `error_rate`.
+
+Two things about its shape are deliberate:
+
+- **Every row carries every metric; the metric only decides the ordering.** So a
+  table shows cost, cost-per-request, tokens, latency, errors and error rate
+  together and still answers "who is slowest". The trade is that the row *set* is
+  limited by the ranking metric — top-N by a different metric is a different
+  request, not a client-side re-sort. For a single local user that is the right
+  way round; the alternative is an unbounded result.
+- **A dimension with one value in the window is explained, not presented as a
+  finding.** On this deployment `domain`, `effort` and `alias` are empty for
+  everything, because a request naming a concrete model is routed directly and
+  the classifiers never run. A pivot over one of those is one row reading
+  `(unclassified)`, which is correct and looks broken. The page names the
+  single-valued axes and says why, rather than leaving it to be diagnosed.
+
+The pivot's dimension and metric are map *keys* in `internal/store/pivot.go`; the
+map *values* are the only strings ever concatenated into SQL, and an unknown axis
+is a 400 that lists the valid ones — never a silent fallback, since grouping by
+something other than what was asked answers a question nobody put.
 
 ### Content store
 

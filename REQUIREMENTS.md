@@ -301,9 +301,24 @@ step 3 + the 4a query surface is currently greenlit.
 > Session keys are shown truncated on both screens, full value in the tooltip and
 > in every link.
 >
-> **Next: 7b-3a (pivot queries + ranked table)**. Subagent grouping in the
-> transcript is blocked on the parent/child linkage gap above — Arbiter does not
-> capture that relationship at all.
+> **7b-3a BUILT, COMMITTED** — `/admin/ui/overview`, an adjustable pivot:
+> window × group-by dimension × rank-by metric, driving one ranked table with
+> headline numbers above it. Every row carries every metric (requests, cost, cost
+> per request, tokens, avg latency, errors, error rate); the metric picks the
+> ordering. Dimension and metric are map keys, never user text in SQL, and an
+> unknown axis is a 400 that lists the valid ones.
+>
+> A dimension whose window has only one value is *explained* rather than
+> presented as a finding — on this deployment domain/effort/alias are all empty
+> because the traffic names a concrete model, which routes before classification
+> runs.
+>
+> **Next: 7b-3b (chart + uPlot)** — deliberately conditional. The test is whether
+> the table proves insufficient in use; if it does not, 7b-3b should be dropped
+> rather than built for completeness. Then **7b-4** (discovery) and **7b-5**
+> (live tail). Subagent and title-generation grouping in the transcript are
+> blocked on the parent/child linkage gap above — Arbiter does not capture that
+> relationship at all.
 
 1. ~~Model alias layer + wiring it into the router selection (the "auto /
    auto-coding / pinned model / model group" mechanism).~~ **DONE** —

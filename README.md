@@ -58,6 +58,8 @@ overrides both. Loopback is the default on purpose — see
 | `GET /admin/ui/session?key=` | one conversation, turn by turn  |
 | `GET /admin/ui/overview` | pivot: group by a dimension, rank by a metric |
 | `GET /admin/ui/overview/series.json` | the chart's data (UI-internal, unstable) |
+| `GET /admin/ui/content/repeated` | blocks of content that recur across requests |
+| `GET /admin/ui/content/block?hash=…` | the requests containing one block |
 
 Both chat endpoints accept `stream: true` and respond with SSE in the same
 wire format as the request (formats are never mixed). Every response —
@@ -642,6 +644,44 @@ Three details of the chart are worth knowing:
 - **A gap is null, not zero.** A bucket a group had no traffic in is a break in
   the line, not a claim that the group was idle by design — which matters for a
   cost or latency metric.
+
+## Discovery: the blocks that recur
+
+The content-addressed design exists so that "find the text that appears in every
+query" is a query rather than a guess: the same block is stored once and
+referenced everywhere it appears, so recurrence is a `GROUP BY` on
+`content_refs` with no need to know the text in advance. The discovery page is
+that query with its parameters exposed.
+
+**`min_sessions` is the control that makes it useful**, and it defaults to 2
+rather than the JSON endpoint's 0. A block repeated within one conversation is the
+ordinary shape of a multi-turn chat — every turn re-sends the system prompt — so
+at 0 the list is topped by something that is not a finding. The number that
+answers "is some client injecting this?" is how many *distinct sessions* carry
+the block. 0 is still accepted, and is the right setting for "what is being
+re-sent most".
+
+**The page states two numbers the thresholds can hide.** `COUNT(DISTINCT
+session_key)` ignores NULL, so requests with no session key contribute nothing to
+`min_sessions` — on a store where most traffic is unpinned, a genuinely
+widespread block can still fail the threshold, and the result reads as an absence
+of boilerplate rather than as a consequence of the filter. The sessionless count
+and the window's total distinct blocks are both shown for that reason: an empty
+list should say "the thresholds removed them", not "there are none".
+
+Two details of the query are worth knowing:
+
+- **A content hash is a 32-byte blob in `content_refs.hash` and a 64-character
+  hex string in a URL.** These are different values. Binding the hex form
+  directly compares text against a blob — it matches nothing, and the result is
+  indistinguishable from a block that is simply absent, which is the same class
+  of silent failure as `strftime` over the `ts` column. `decodeHash` refuses
+  anything that is not a valid 32-byte hex form rather than allowing it.
+- **The drill-down cannot join `content_refs`.** A join multiplies a request once
+  per matching *reference*, so a block re-sent in three messages of one
+  conversation would be listed three times. It uses `id IN (subquery)`, which
+  also lets it share `requestRowColumns` and `scanRequestRow` with the request
+  list so the two cannot drift.
 
 ### Content store
 

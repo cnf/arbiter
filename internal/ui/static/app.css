@@ -154,6 +154,30 @@ button:hover { border-color: var(--accent); color: var(--accent); }
 
 .htmx-indicator { opacity: 0; transition: opacity 120ms; }
 .htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; }
+#rows > [data-tail-indicator] { opacity: 0; transition: opacity 120ms; }
+
+/* The live tail control. It sits above the table inside #rows so an htmx filter
+change swaps it along with the rows it follows. */
+.tail {
+  display: flex; align-items: center; gap: 0.6rem;
+  margin: 0 0 0.6rem; font-size: 12px; color: var(--muted);
+}
+.tail button {
+  font-family: inherit; font-size: 12px; cursor: pointer;
+  padding: 3px 10px; border-radius: 4px;
+  border: 1px solid var(--line); background: var(--card); color: var(--fg);
+}
+.tail button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--ok) 55%, var(--line));
+  color: var(--ok);
+}
+.tail .tailstatus { font-family: var(--mono); }
+.tail .tailstatus:not(.new):not(.warn):not(.bad) { color: var(--muted); }
+/* The status carries the state: a quiet store and a stopped tail look the same
+   without it, which is why the timestamp is part of every message. */
+.tail .tailstatus.new { color: var(--ok); }
+.tail .tailstatus.warn { color: var(--warn); }
+.tail .tailstatus.bad { color: var(--err); }
 
 /* ---------------------------------------------------------------- tables -- */
 

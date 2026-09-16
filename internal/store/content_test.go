@@ -13,13 +13,22 @@ import (
 // uses rather than a hand-rolled insert.
 func captureFixture(t *testing.T) (*SQLiteWriter, *Reader) {
 	t.Helper()
+	w, r, _ := captureFixtureAt(t)
+	return w, r
+}
+
+// captureFixtureAt is captureFixture plus the database path, for tests that need
+// to reopen the file — a live tail has to observe rows written *after* it
+// started reading, which means a second writer over the same file.
+func captureFixtureAt(t *testing.T) (*SQLiteWriter, *Reader, string) {
+	t.Helper()
 	w, path := newTestWriter(t)
 	r, err := OpenReader(path)
 	if err != nil {
 		t.Fatalf("OpenReader: %v", err)
 	}
 	t.Cleanup(func() { _ = r.Close() })
-	return w, r
+	return w, r, path
 }
 
 func textBlock(role string, msgIndex, position int, text string) Block {

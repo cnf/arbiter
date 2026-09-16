@@ -1,7 +1,14 @@
 {{/* reqrow.html is the request table: one fragment, used by the full page and by
 every htmx swap, so the two can never render a row differently. */}}
 {{define "req-rows"}}
-<div id="rows">
+{{/* The tail's configuration rides on #rows itself: it is the element the rows
+are appended to, and the control below is inside it, so a single node carries
+both and the client cannot look for one inside the other. data-* attributes are
+only emitted when the tail is available; an absent attribute is how the client
+knows not to set up. */}}
+<div id="rows"{{if .Tail.Enabled}} data-tail-src="{{.Tail.Src}}"
+     data-tail-cursor="{{.Tail.Cursor}}"{{if .Tail.FilterQuery}} data-tail-filter="{{.Tail.FilterQuery}}"{{end}}{{end}}>
+{{template "tail" .}}
 {{if .Rows}}
 <table class="grid">
   <thead>
@@ -11,9 +18,24 @@ every htmx swap, so the two can never render a row differently. */}}
       <th>axes</th><th>session</th><th>rationale</th>
     </tr>
   </thead>
-  <tbody>
+  <tbody>{{template "req-rows-body" .}}</tbody>
+</table>
+{{else}}
+  <p class="empty">No requests match. {{if .F.Any}}Widen the filters, or {{end}}<a href="/admin/ui/requests">clear them</a>.</p>
+{{end}}
+{{template "pagination" .}}
+</div>
+{{end}}
+
+{{/* req-rows-body is the bare <tr> sequence, with no <table> or <tbody> around
+it. It exists so the live tail can append rows into the table the list already
+rendered: if the tail had its own copy of this markup the two would drift, and a
+tail that renders a row differently from the list it is appended to is the kind of
+inconsistency that is only noticed months later. data-id is what lets the client
+skip a row it already has. */}}
+{{define "req-rows-body"}}
   {{range .Rows}}
-    <tr>
+    <tr data-id="{{.ID}}">
       <td class="when"><a href="/admin/ui/requests/{{.ID}}">{{clock .Ts}}</a>
         <span class="sub">{{ago .Ts}}</span></td>
       <td><span class="status {{statusClass .StatusCode}}">{{.StatusCode}}</span>
@@ -34,11 +56,10 @@ every htmx swap, so the two can never render a row differently. */}}
     </tr>
     {{if .Error}}<tr class="errrow"><td colspan="10">{{.Error}}</td></tr>{{end}}
   {{end}}
-  </tbody>
-</table>
-{{else}}
-  <p class="empty">No requests match. {{if .F.Any}}Widen the filters, or {{end}}<a href="/admin/ui/requests">clear them</a>.</p>
 {{end}}
-{{template "pagination" .}}
-</div>
-{{end}}
+
+{{/* req-rows-tail is what the live tail appends: the same rows, nothing else. It
+is a separate name rather than reusing req-rows-body so the tail's response is
+self-describing in a log, and so the fragment the client asks for is the fragment
+the server documents. */}}
+{{define "req-rows-tail"}}{{template "req-rows-body" .}}{{end}}

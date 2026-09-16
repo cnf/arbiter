@@ -1,0 +1,16 @@
+{{/* tail.html is the live-view control above the request table.
+It renders nothing when the tail is not available (a later page of results, or a
+disabled store) rather than showing a button that does nothing. */}}
+{{define "tail"}}
+{{if .Tail.Enabled}}
+<div class="tail">
+  {{/* The button is the control; the label is part of it, so the words are a hit
+  target too rather than a caption that does nothing when clicked. */}}
+  <button type="button" data-tail-toggle aria-pressed="false"
+          title="follow requests as they arrive, without reloading">live</button>
+  <label class="muted taillabel" data-tail-label>follow new requests as they arrive</label>
+  <span data-tail-indicator class="htmx-indicator">…</span>
+  <span data-tail-status class="tailstatus" role="status" aria-live="polite"></span>
+</div>
+{{end}}
+{{end}}

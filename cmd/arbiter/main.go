@@ -212,6 +212,15 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 		stdhttp.Redirect(w, req, "/admin/ui/requests", stdhttp.StatusFound)
 	})).Methods("GET")
 	r.HandleFunc("/admin/ui/requests", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestsHandler)).Methods("GET")
+	// The live tail's poll endpoint. Polled by live.js rather than by htmx, for
+	// the reasons in that file; it returns JSON carrying a rendered row fragment,
+	// so the cursor stays an opaque token and the row markup has one definition.
+	//
+	// It is registered *before* /requests/{id} because gorilla/mux matches in
+	// registration order, and {id} happily matches the literal "tail" — so the
+	// other order routes every poll into the detail handler, which then refuses
+	// "tail" as a request id and answers 400.
+	r.HandleFunc("/admin/ui/requests/tail", arbiterhttp.Gate(forwardAuthHeader, adminUI.TailHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}/content", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestContentHandler)).Methods("GET")
 

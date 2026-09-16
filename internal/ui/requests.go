@@ -56,6 +56,36 @@ type rowsView struct {
 	More    bool
 	MoreURL string
 	F       requestFilterView
+
+	// Tail is the live view's state. It rides on rowsView rather than
+	// requestsView because the tail is about these rows — it appends to the table
+	// the fragment renders — and keeping it here is what lets the same struct
+	// serve both the page and the fragment.
+	Tail tailView
+}
+
+// tailView is the live tail's initial state, rendered into data attributes.
+//
+// The cursor is the *newest* row already on screen, so starting the tail shows
+// what arrives next rather than replaying what is already there — and because it
+// comes from the rows themselves it is the stored `ts` text, which is the only
+// form that compares correctly against the column.
+type tailView struct {
+	// Enabled is false when the store is disabled or the list is not the newest
+	// page, in which case there is nothing sensible to follow.
+	Enabled bool
+
+	// Src is the tail endpoint, with the current window as a parameter. The rest
+	// of the filters are passed separately so the fragment's own query string is
+	// built in one place (see tailFilterQuery).
+	Src string
+
+	// Cursor is the opaque token for "everything after what you are showing".
+	Cursor string
+
+	// FilterQuery is the current filter set as a query string. It is kept opaque
+	// and appended verbatim so the tail follows exactly the list it sits under.
+	FilterQuery string
 }
 
 // requestsView is the full page: the table view plus the chrome.
@@ -157,9 +187,49 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 		// not the view rows.
 		view.MoreURL = moreURL(q, rows, f.Limit)
 		view.More = view.MoreURL != ""
+		view.Tail = tailFor(q, rows)
 	}
 
 	h.render(w, r, "requests", "req-rows", view)
+}
+
+// tailFor builds the live tail's initial state from the rows on the page.
+//
+// It returns a disabled state when the page is not the newest one. A tail only
+// makes sense on the first page: on a later page the newest row is not on screen,
+// so "everything after what you are showing" would mean starting the view from
+// the middle of history — the tail would then show traffic newer than a page the
+// reader scrolled to, which is not what a live view means. Refusing it is the
+// honest answer; the query-string cursor is what makes the page a later one, and
+// it is not part of the filter form.
+func tailFor(q url.Values, rows []store.RequestRow) tailView {
+	src := "/admin/ui/requests/tail"
+	if q.Get("after") != "" || len(rows) == 0 {
+		return tailView{Src: src, FilterQuery: tailFilterQuery(q)}
+	}
+	ts, id, ok := store.NewestCursor(rows)
+	if !ok {
+		return tailView{Src: src, FilterQuery: tailFilterQuery(q)}
+	}
+	return tailView{
+		Enabled:     true,
+		Src:         src,
+		Cursor:      encodeCursor(ts, id),
+		FilterQuery: tailFilterQuery(q),
+	}
+}
+
+// tailFilterQuery renders the filter set the tail should follow, excluding the
+// paging cursor — the tail is watching the list, not a page of it — and including
+// the window so the tail's `since` does not drift away from the list's.
+func tailFilterQuery(q url.Values) string {
+	out := url.Values{}
+	for _, k := range []string{"since", "provider", "alias", "status", "session", "no_session", "errors"} {
+		if v := q.Get(k); v != "" || (k == "errors" || k == "no_session") && q.Has(k) {
+			out.Set(k, v)
+		}
+	}
+	return out.Encode()
 }
 
 // moreURL builds the keyset continuation link: the current filter set plus the

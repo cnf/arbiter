@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -52,12 +53,59 @@ func newSeededHandler(t *testing.T, events ...store.Event) (*Handler, *store.SQL
 	return New(r, logger), nil
 }
 
+// newSeededHandlerLive is newSeededHandler with a writer still open over the same
+// file, so a test can record a request *after* the handler has started reading —
+// which is the only way to test a live view. The store's writer is not closed
+// here; the reader is opened separately, so the two see the same database.
+func newSeededHandlerLive(t *testing.T, events ...store.Event) (*Handler, *store.SQLiteWriter) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "live.db")
+	logger := logging.NewStdoutLogger("error")
+	w, err := store.NewSQLiteWriter(path, logger)
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	for _, ev := range events {
+		w.Record(ev)
+	}
+	r, err := store.OpenReader(path)
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+
+	// Wait for the seeded events to be *visible*, not merely recorded. The store
+	// writes through a queue, so rows appear a moment after Record returns; a
+	// test that read immediately would race the writer and see a partial table —
+	// which is exactly what made a tail test report one row where three were
+	// seeded. Bounded, so a genuine write failure fails rather than hangs.
+	if len(events) > 0 {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			rows, err := r.ListRequestsAfter(context.Background(), store.RequestFilter{}, "", 0, 500)
+			if err == nil && len(rows) >= len(events) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("only %d of %d seeded events became visible", len(rows), len(events))
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	return New(r, logger), w
+}
+
 // serve drives a handler method through the router, so the route pattern (and
 // therefore mux.Vars) is exercised rather than faked.
 func serve(t *testing.T, h *Handler, method, target string, hx bool) *httptest.ResponseRecorder {
 	t.Helper()
 	r := mux.NewRouter()
 	r.HandleFunc("/admin/ui/requests", h.RequestsHandler).Methods("GET")
+	// Same registration order as the real router: mux matches in order, and
+	// {id} would otherwise swallow the literal "tail" and answer 400.
+	r.HandleFunc("/admin/ui/requests/tail", h.TailHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}", h.RequestHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}/content", h.RequestContentHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/sessions", h.SessionsHandler).Methods("GET")

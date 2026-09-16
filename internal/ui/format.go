@@ -36,6 +36,7 @@ var funcs = stdhtml.FuncMap{
 	// already in the view model, in two different templates.
 	"requestsForSession": requestsForSession,
 	"pivotLimit":         pivotLimitNote,
+	"seriesURL":          seriesURL,
 	"singleValuedHint":   func() string { return singleValuedHint },
 }
 

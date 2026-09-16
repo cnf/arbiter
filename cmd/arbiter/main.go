@@ -224,6 +224,11 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	// The pivot explorer. No /series.json yet: 7b-3a is the table, and the chart
 	// endpoint arrives with the chart (and with a query that does not exist).
 	r.HandleFunc("/admin/ui/overview", arbiterhttp.Gate(forwardAuthHeader, adminUI.OverviewHandler)).Methods("GET")
+
+	// The chart's data. UI-internal and explicitly unstable: the shape can change
+	// with the chart, which is why it is not under /admin/stats/* with the
+	// documented read surface. Under the same gate as everything else.
+	r.HandleFunc("/admin/ui/overview/series.json", arbiterhttp.Gate(forwardAuthHeader, adminUI.SeriesHandler)).Methods("GET")
 	// PathPrefix, not HandleFunc: gorilla/mux's HandleFunc matches the exact
 	// path, so a static route registered that way serves only "/static/" and
 	// 404s every asset under it — which is exactly what a first version did.

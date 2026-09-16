@@ -12,6 +12,10 @@ misread, when it is cheap only because it is rare. */}}
   <div><dt>errors</dt><dd>{{if .Overall.Errors}}<span class="status s-err">{{.Overall.Errors}}</span>{{else}}0{{end}}</dd></div>
 </dl>
 
+{{/* The chart node carries only a URL. Store-derived strings never reach a
+script context: chart.js fetches this and parses JSON. See chart.js. */}}
+<div id="chart" data-src="{{seriesURL .Dimension .Metric .SinceRaw}}"
+     aria-label="chart of {{.Metric}} by {{.Dimension}} over time"></div>
 {{if .Rows}}
 <table class="grid pivot">
   <thead>

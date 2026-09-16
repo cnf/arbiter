@@ -60,6 +60,7 @@ func TestAdminUIRoutesAreGated(t *testing.T) {
 		"/admin/ui/sessions",
 		"/admin/ui/session?key=abc",
 		"/admin/ui/overview",
+		"/admin/ui/overview/series.json",
 		"/admin/ui/static/htmx.min.js",
 		"/admin/ui/static/app.css",
 	} {

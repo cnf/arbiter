@@ -64,6 +64,7 @@ func serve(t *testing.T, h *Handler, method, target string, hx bool) *httptest.R
 	r.HandleFunc("/admin/ui/sessions", h.SessionsHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/session", h.SessionHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/overview", h.OverviewHandler).Methods("GET")
+	r.HandleFunc("/admin/ui/overview/series.json", h.SeriesHandler).Methods("GET")
 	r.PathPrefix("/admin/ui/static/").HandlerFunc(h.StaticHandler).Methods("GET")
 
 	req := httptest.NewRequest(method, target, nil)
@@ -73,6 +74,17 @@ func serve(t *testing.T, h *Handler, method, target string, hx bool) *httptest.R
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	return rec
+}
+
+// serveJSON drives a handler through the router and returns the status and body,
+// for the endpoint that answers JSON rather than HTML.
+func serveJSON(t *testing.T, h *Handler, target string) (int, string) {
+	t.Helper()
+	r := mux.NewRouter()
+	r.HandleFunc("/admin/ui/overview/series.json", h.SeriesHandler).Methods("GET")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
+	return rec.Code, rec.Body.String()
 }
 
 // Every page must render against a zero-value view model. template.Must catches

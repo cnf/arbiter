@@ -49,7 +49,8 @@ overrides both. Loopback is the default on purpose — see
 | `GET /admin/stats/session?key=` | one session's trajectory      |
 | `GET /admin/stats/tools` | tool-name usage counts            |
 | `GET /admin/requests` | request list, newest first           |
-| `GET /admin/requests/{id}` | one request in full, incl. captured content |
+| `GET /admin/ui/requests/{id}/content` | one request's captured content |
+| `GET /admin/ui/requests/tail` | the live tail's poll endpoint (UI-internal, unstable) |
 | `GET /admin/content/repeated` | blocks recurring across requests |
 | `GET /admin/ui/` | the admin web UI (302 to `/requests`)   |
 | `GET /admin/ui/requests` | request list + filters, as a page    |
@@ -644,6 +645,39 @@ Three details of the chart are worth knowing:
 - **A gap is null, not zero.** A bucket a group had no traffic in is a break in
   the line, not a claim that the group was idle by design — which matters for a
   cost or latency metric.
+
+## The live tail
+
+`/admin/ui/requests` has a **live** control above the table: while it is on and
+the tab is visible, the page polls `/admin/ui/requests/tail` and prepends new
+requests as they arrive. It reports how many arrived and the time of the last
+poll, which is the point of watching one — a tail that has silently stopped looks
+exactly like a store with no traffic.
+
+Three things about it are deliberate and each was wrong in a first version:
+
+- **A poll returns rows newest-first**, and the client prepends them. The list is
+  `ts DESC`, so a new row belongs at the top; returning batches oldest-first and
+  appending them put a request from one second ago below rows hours older than it.
+  "Rows after a cursor" reads like a forward walk, and that reading is wrong here.
+- **The cursor is an opaque base64 token inside a JSON response**, not a data
+  attribute. It is the stored `ts` text, which contains `+0000 UTC`; putting that
+  in an attribute and reading it back with `getAttribute` round-trips it through
+  HTML escaping, so the value that returns is not byte-for-byte the value sent —
+  and a cursor that differs by one character compares wrongly against the column.
+  This is the same class of silent failure as `strftime` over `ts`.
+- **It is hand-written JavaScript, not `hx-trigger="every 5s"`.** A declarative
+  trigger cannot skip a hidden tab, cannot append instead of swapping the table
+  under the reader, cannot stop after repeated failures, and cannot say how many
+  rows arrived. The last of those is the main reason to look at a tail at all.
+
+A poll is capped (50 rows) and returns the newest rows that fit, so a burst larger
+than that in one interval is truncated — reported as such rather than shown as a
+quiet period. The cap is bounded on purpose: an unbounded query is not a tail.
+
+The tail is only offered on the newest page. On a later page the newest row is not
+on screen, so "everything after what you are showing" would mean starting the view
+from the middle of history; the control is simply absent there.
 
 ## Discovery: the blocks that recur
 

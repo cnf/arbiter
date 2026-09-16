@@ -229,6 +229,13 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	// with the chart, which is why it is not under /admin/stats/* with the
 	// documented read surface. Under the same gate as everything else.
 	r.HandleFunc("/admin/ui/overview/series.json", arbiterhttp.Gate(forwardAuthHeader, adminUI.SeriesHandler)).Methods("GET")
+
+	// Discovery: the blocks that recur across requests, and the drill-down from
+	// one block to the requests containing it. The block page takes ?hash= rather
+	// than a path segment because a content hash is hex and long, and a segment
+	// would need its own escaping rules for a value that is already opaque.
+	r.HandleFunc("/admin/ui/content/repeated", arbiterhttp.Gate(forwardAuthHeader, adminUI.DiscoveryHandler)).Methods("GET")
+	r.HandleFunc("/admin/ui/content/block", arbiterhttp.Gate(forwardAuthHeader, adminUI.BlockRequestsHandler)).Methods("GET")
 	// PathPrefix, not HandleFunc: gorilla/mux's HandleFunc matches the exact
 	// path, so a static route registered that way serves only "/static/" and
 	// 404s every asset under it — which is exactly what a first version did.

@@ -2,7 +2,6 @@ package ui
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -65,6 +64,8 @@ func serve(t *testing.T, h *Handler, method, target string, hx bool) *httptest.R
 	r.HandleFunc("/admin/ui/session", h.SessionHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/overview", h.OverviewHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/overview/series.json", h.SeriesHandler).Methods("GET")
+	r.HandleFunc("/admin/ui/content/repeated", h.DiscoveryHandler).Methods("GET")
+	r.HandleFunc("/admin/ui/content/block", h.BlockRequestsHandler).Methods("GET")
 	r.PathPrefix("/admin/ui/static/").HandlerFunc(h.StaticHandler).Methods("GET")
 
 	req := httptest.NewRequest(method, target, nil)
@@ -74,6 +75,21 @@ func serve(t *testing.T, h *Handler, method, target string, hx bool) *httptest.R
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	return rec
+}
+
+// getPage fetches a full page through the router and returns its body and status.
+func getPage(t *testing.T, h *Handler, target string) (string, int) {
+	t.Helper()
+	rec := serve(t, h, "GET", target, false)
+	return rec.Body.String(), rec.Code
+}
+
+// getFragment fetches a route as htmx would, so the fragment response shape is
+// exercised rather than only the full page.
+func getFragment(t *testing.T, h *Handler, target string) (string, int) {
+	t.Helper()
+	rec := serve(t, h, "GET", target, true)
+	return rec.Body.String(), rec.Code
 }
 
 // serveJSON drives a handler through the router and returns the status and body,
@@ -87,33 +103,124 @@ func serveJSON(t *testing.T, h *Handler, target string) (int, string) {
 	return rec.Code, rec.Body.String()
 }
 
-// Every page must render against a zero-value view model. template.Must catches
-// a template that does not *parse* at construction, but html/template resolves
-// field names only at execution, so a renamed struct field would otherwise
-// first fail in a browser.
+// Every page and fragment must render against a zero-value view model.
+// template.Must catches a template that does not *parse* at construction, but
+// html/template resolves field names only at execution, so a renamed struct
+// field would otherwise first fail in a browser.
+//
+// Two things about this test are load-bearing and were both wrong at first:
+//
+//   - It executes "layout", not the page name. Each page's own {{define "content"}}
+//     means the set's root template — the one named after the page — is empty, so
+//     executing *that* renders nothing and passes while the real page is broken.
+//     It did exactly that until the discovery page joined, rendering 28 bytes and
+//     reporting success.
+//   - Each page gets the view type its handler actually passes, listed in
+//     pageViews, rather than one composite struct. A composite both invites
+//     field-name collisions between views (two embeds could each claim .Rows) and
+//     hides which fields a page really reads.
 func TestEveryPageRendersWithZeroData(t *testing.T) {
 	h := newTestHandler()
 	for _, page := range pageFiles {
-		view := struct {
-			viewBase
-			requestsView
-			detailView
-		}{viewBase: h.base(page)}
+		entry, ok := pageViews[page]
+		if !ok {
+			// A new page with no view registered here is a gap in the test, not
+			// a pass: say so rather than silently skipping it.
+			t.Errorf("page %q has no view type registered in pageViews, so it is not covered here", page)
+			continue
+		}
 		var buf strings.Builder
-		_ = io.Discard
-		if err := h.pages[page].ExecuteTemplate(&buf, page, view); err != nil {
+		if err := h.pages[page].ExecuteTemplate(&buf, "layout", entry.view(h, page)); err != nil {
 			t.Errorf("page %q does not render empty: %v", page, err)
 		}
+		// A page that renders nothing is the vacuous pass this test exists to
+		// avoid, so require the layout to have actually produced a document.
+		if buf.Len() == 0 {
+			t.Errorf("page %q rendered zero bytes", page)
+		}
 	}
-	for _, frag := range []string{"req-rows", "request-content", "pagination", "filters"} {
+	for _, frag := range fragmentNames(t, h) {
+		entry, ok := fragmentViews[frag]
+		if !ok {
+			// Not every partial is a top-level fragment: "block" and "turnblock"
+			// are only ever invoked by another partial, and several fragments
+			// take the same view shape. Where a fragment has no entry, it is
+			// exercised through its page instead.
+			continue
+		}
 		var buf strings.Builder
-		if err := h.fragments["fragments"].ExecuteTemplate(&buf, frag, struct {
-			requestsView
-			detailView
-		}{}); err != nil {
+		if err := h.fragments["fragments"].ExecuteTemplate(&buf, frag, entry.view(h, frag)); err != nil {
 			t.Errorf("fragment %q does not render empty: %v", frag, err)
 		}
 	}
+}
+
+// viewEntry builds a zero-value view model of one page's own type. The function
+// is what keeps the view types unexported and their field names checked by the
+// compiler: adding a field to a view and not to the template is caught here.
+type viewEntry struct {
+	view func(h *Handler, name string) interface{}
+}
+
+// pageViews maps each page to the view its handler passes. The pairing is the
+// point: it is what a page's template can actually reference.
+var pageViews = map[string]viewEntry{
+	"requests":  {view: func(h *Handler, n string) interface{} { return requestsView{viewBase: h.base(n)} }},
+	"request":   {view: func(h *Handler, n string) interface{} { return detailView{viewBase: h.base(n)} }},
+	"sessions":  {view: func(h *Handler, n string) interface{} { return sessionsView{viewBase: h.base(n)} }},
+	"session":   {view: func(h *Handler, n string) interface{} { return sessionView{viewBase: h.base(n)} }},
+	"overview":  {view: func(h *Handler, n string) interface{} { return overviewView{viewBase: h.base(n)} }},
+	"discovery": {view: func(h *Handler, n string) interface{} { return discoveryView{viewBase: h.base(n)} }},
+	"block":     {view: func(h *Handler, n string) interface{} { return blockRequestsView{viewBase: h.base(n)} }},
+
+	// error.html is parsed but rendered by nothing: Handler.fail builds its HTML
+	// inline, on purpose — a renderer failure must not be reported by the
+	// renderer. So there is no handler view to hand it, and it is listed here as
+	// its own shape so the page is still known to the test rather than being
+	// quietly absent from pageFiles. It is dead code with a live parser entry.
+	"error": {view: func(h *Handler, n string) interface{} {
+		return struct {
+			viewBase
+			Code    int
+			Message string
+		}{viewBase: h.base(n)}
+	}},
+}
+
+// fragmentViews maps a fragment name to its own view shape. Fragments with no
+// entry are the nested ones exercised through their page.
+var fragmentViews = map[string]viewEntry{
+	"req-rows":        {view: func(h *Handler, n string) interface{} { return rowsView{} }},
+	"request-content": {view: func(h *Handler, n string) interface{} { return detailView{} }},
+	"pagination":      {view: func(h *Handler, n string) interface{} { return rowsView{} }},
+	"filters":         {view: func(h *Handler, n string) interface{} { return rowsView{} }},
+	"pivot-table":     {view: func(h *Handler, n string) interface{} { return overviewView{} }},
+	"session-rows":    {view: func(h *Handler, n string) interface{} { return sessionsView{} }},
+	"session-turns":   {view: func(h *Handler, n string) interface{} { return sessionView{} }},
+	"repeated-rows":   {view: func(h *Handler, n string) interface{} { return discoveryView{} }},
+	"block-requests":  {view: func(h *Handler, n string) interface{} { return blockRequestsView{} }},
+	"empty":           {view: func(h *Handler, n string) interface{} { return struct{ Message string }{} }},
+}
+
+// fragmentNames lists the defined templates in the partials set, skipping the
+// set's own root name. Deriving it from the parsed set rather than a hand-kept
+// list means a new partial is covered by the zero-data render without anyone
+// remembering to add it — which is the failure mode a hand-kept list has.
+func fragmentNames(t *testing.T, h *Handler) []string {
+	t.Helper()
+	set, ok := h.fragments["fragments"]
+	if !ok {
+		t.Fatal("no fragments set")
+	}
+	out := []string{}
+	for _, tpl := range set.Templates() {
+		name := tpl.Name()
+		if name == "fragments" || strings.HasPrefix(name, "_") {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
 }
 
 // No stored body may ever be marked safe in any context. The grep is for the

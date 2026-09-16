@@ -38,6 +38,15 @@ var funcs = stdhtml.FuncMap{
 	"pivotLimit":         pivotLimitNote,
 	"seriesURL":          seriesURL,
 	"singleValuedHint":   func() string { return singleValuedHint },
+	// requestsForBlock builds the drill-down link from a repeated block to the
+	// requests containing it. A func rather than an inline expression because a
+	// template must not be assembling a query string by hand.
+	"requestsForBlock": requestsForBlockURL,
+	// blockPreviewBytes is the truncation cap as a number, so the block page can
+	// say what it cut at instead of naming a constant in prose that could drift.
+	"blockPreviewBytes": func() int { return blockPreviewBytes },
+	"preview":           previewText,
+	"whitespaceOnly":    isWhitespaceOnly,
 }
 
 // fmtChars renders a character count compactly ("9.2k chars"). Transcript
@@ -233,3 +242,27 @@ func truncBody(s string) string {
 // wasCut reports whether a body was truncated, so the template can offer the
 // full text only when there is more of it.
 func wasCut(s string) bool { return len(s) > blockPreviewBytes }
+
+// whitespaceOnlyNote stands in for a body that carries no printable text.
+//
+// It is not cosmetic. A block whose body is "\n\n" — a real case in ordinary
+// traffic, where a client separates messages with blank lines — renders as an
+// empty cell, which is exactly what a broken render looks like. The page's
+// previews exist so a block is recognisable at a glance, and a blank one is not
+// recognisable as anything: it reads as a bug rather than as two newlines.
+const whitespaceOnlyNote = "(whitespace only)"
+
+// previewText renders a block preview, naming the whitespace-only case rather
+// than showing an empty cell. It returns the stored text unchanged otherwise —
+// this is a display fallback, not a parser, and the value still goes through the
+// template's contextual escaper as an ordinary string.
+func previewText(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return whitespaceOnlyNote
+	}
+	return s
+}
+
+// isWhitespaceOnly reports the same case for a body rendered in full, so the
+// block page can say why its <pre> is blank.
+func isWhitespaceOnly(s string) bool { return strings.TrimSpace(s) == "" }

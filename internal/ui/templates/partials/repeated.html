@@ -1,0 +1,58 @@
+{{/* repeated.html is the repeated-block table. The preview is stored body text:
+it goes through the contextual escaper as a plain string, and nothing here marks
+anything safe. The hash is shown truncated and carried in full in the link, the
+same rule the session key follows. */}}
+{{define "repeated-rows"}}
+<div id="repeated-rows">
+
+{{if .Rows}}
+<table class="grid repeated">
+  <thead>
+    <tr>
+      <th title="the block's content hash, which is also its identity — two requests containing this text share this value">hash</th>
+      <th>type</th>
+      <th>preview</th>
+      <th class="num" title="how many distinct requests contain this block">requests</th>
+      <th class="num" title="how many distinct session keys those requests span. A block in every request of one conversation is unremarkable; the same block across many sessions is a client's own preamble.">sessions</th>
+      <th title="first and last time this block was seen in the window">seen</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Rows}}
+    <tr>
+      <td class="mono"><a href="{{requestsForBlock .Hash}}" title="{{.Hash}}">{{.ShortHash}}</a></td>
+      <td><span class="tag">{{.BlockType}}</span>{{if .Role}} <span class="role">{{.Role}}</span>{{end}}</td>
+      <td class="preview">{{if whitespaceOnly .Preview}}<span class="muted">{{preview .Preview}}</span>{{else}}{{preview .Preview}}{{end}}</td>
+      <td class="num">{{.Requests}}</td>
+      <td class="num">{{if .Sessions}}{{.Sessions}}{{else}}<span class="muted">0</span>{{end}}</td>
+      <td class="when"><span class="sub">{{clock .FirstSeen}}</span><span class="sub">→ {{clock .LastSeen}}</span></td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+
+<p class="pager muted">
+  showing {{.Shown}} of {{.Matching}} matching{{if .Total}} ({{.Total}} distinct blocks in this window){{end}}{{if .Capped}}, capped at the limit{{end}}.
+</p>
+{{else}}
+  <p class="empty">No block in this window appears in
+    {{.MinRequests}}+ requests and {{.MinSessions}}+ sessions.
+    {{if .Total}}<strong>{{.Total}} distinct blocks exist in the window</strong> — the
+    thresholds are what removed them, so lower min sessions or min requests.{{end}}</p>
+{{end}}
+
+{{if and .Rows (not .Total)}}
+  <p class="muted hint">No content is captured in this window. Set
+    <code>capture_content: true</code> under <code>storage</code> to record block
+    bodies; without it only metadata is written.</p>
+{{end}}
+
+{{if and .Sessionless (gt .MinSessions 0)}}
+  <p class="muted hint">{{.Sessionless}} of the requests in this window have no
+    session key, and min sessions counts distinct session keys — those requests
+    contribute none. A block can therefore be widespread and still fail the
+    threshold; lower it to 0 to rank by request count alone.</p>
+{{end}}
+
+</div>
+{{end}}

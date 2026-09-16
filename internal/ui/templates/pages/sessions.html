@@ -1,0 +1,19 @@
+{{define "content"}}
+<h1>Sessions</h1>
+<p class="lede">One row per conversation, most recently active first. Turns and
+cost are counted over the window below, not over each conversation's whole life —
+a session that straddles the window edge reads short here, while its transcript is
+the unbounded view.</p>
+
+<form class="filters" hx-get="/admin/ui/sessions" hx-target="#session-rows"
+      hx-swap="outerHTML" hx-push-url="true" hx-indicator="#busy">
+  <label>window
+    <input type="text" name="since" value="{{.SinceRaw}}" size="6" placeholder="168h">
+  </label>
+  <button type="submit">apply</button>
+  <a class="reset" href="/admin/ui/sessions">reset</a>
+  <span id="busy" class="htmx-indicator">…</span>
+</form>
+
+{{template "session-rows" .}}
+{{end}}

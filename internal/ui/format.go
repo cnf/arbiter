@@ -3,6 +3,8 @@ package ui
 import (
 	"fmt"
 	stdhtml "html/template"
+	"net/url"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -23,6 +25,52 @@ var funcs = stdhtml.FuncMap{
 	"wasCut":      wasCut,
 	"pct":         fmtPct,
 	"inc":         func(i int) int { return i + 1 },
+	"avgCost":     fmtAvgCost,
+	"splitList":   splitList,
+	"sessionsNav": func(raw string) string { return sessionsNavHref(raw) },
+	"sinceLabel":  sinceLabel,
+	// requestsForSession builds a link to the flat request list filtered to one
+	// session — the request-level view of the same conversation. It is a func
+	// rather than a precomputed field because it is used with a key that is
+	// already in the view model, in two different templates.
+	"requestsForSession": requestsForSession,
+}
+
+// fmtAvgCost is cost-per-turn, the figure that makes two conversations of
+// different length comparable at a glance — the same reason /admin/stats/epochs
+// reports avg_cost_usd.
+func fmtAvgCost(cost float64, turns int64) string {
+	if turns <= 0 {
+		return ""
+	}
+	return fmtUSD(cost / float64(turns))
+}
+
+// splitList splits a comma-joined column (group_concat's output) for rendering.
+// It is a display helper for values the store joined, not a parser for
+// structured data.
+func splitList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
+}
+
+// sinceLabel names a window for a link: the configured default when unset,
+// else the raw duration the operator typed.
+func sinceLabel(raw string) string {
+	if raw == "" {
+		return "last 168h (default)"
+	}
+	return "last " + raw
+}
+
+// sessionsNavHref preserves the window across a link back to the index.
+func sessionsNavHref(raw string) string {
+	if raw == "" {
+		return "/admin/ui/sessions"
+	}
+	return "/admin/ui/sessions?since=" + url.QueryEscape(raw)
 }
 
 // fmtUSD renders a cost. Per-request costs are fractions of a cent, so two

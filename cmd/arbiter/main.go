@@ -214,6 +214,12 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	r.HandleFunc("/admin/ui/requests", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestsHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}/content", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestContentHandler)).Methods("GET")
+
+	// Conversations. The key is a query parameter, not a path segment: session
+	// keys are opaque and may be arbitrary client-supplied header values, so a
+	// `/` or a `:` in one would break the route. This mirrors /admin/stats/session.
+	r.HandleFunc("/admin/ui/sessions", arbiterhttp.Gate(forwardAuthHeader, adminUI.SessionsHandler)).Methods("GET")
+	r.HandleFunc("/admin/ui/session", arbiterhttp.Gate(forwardAuthHeader, adminUI.SessionHandler)).Methods("GET")
 	// PathPrefix, not HandleFunc: gorilla/mux's HandleFunc matches the exact
 	// path, so a static route registered that way serves only "/static/" and
 	// 404s every asset under it — which is exactly what a first version did.

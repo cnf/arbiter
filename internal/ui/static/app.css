@@ -270,3 +270,59 @@ tr.errrow td { color: var(--err); font-size: 12px; font-family: var(--mono); }
   padding: 6px 8px;
 }
 .block .binary { color: var(--muted); font-size: 12px; margin: 0; }
+
+/* ------------------------------------------------------------ sessions -- */
+
+/* A session key is an opaque handle (64 hex chars when content-derived), so it
+   is monospace, never wrapped, and shown truncated with the full value in the
+   tooltip. Wrapping it would make every row two lines tall for no reader. */
+td.key { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+
+/* ---------------------------------------------------------- transcript -- */
+
+.turn {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--card);
+  margin-bottom: 0.6rem;
+  padding: 0.5rem 0.75rem 0.6rem;
+}
+
+.turnmeta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 12px;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 0.5rem;
+}
+
+.turnmeta .turnno a { font-family: var(--mono); font-weight: 600; }
+.turnmeta .openreq { margin-left: auto; }
+
+.turnerror {
+  margin: 0 0 0.5rem;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--err);
+  border-left: 2px solid var(--err);
+  padding-left: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.turnempty { margin: 0; font-size: 12px; }
+
+/* Inside a turn the direction is the label that matters: it is what turns two
+   parallel streams of blocks into a dialogue. */
+.blockmeta .dir {
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0 4px;
+}

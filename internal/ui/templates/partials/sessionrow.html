@@ -1,0 +1,49 @@
+{{/* sessionrow.html is the sessions index table. Session keys are opaque and
+long (a content-derived one is 64 hex characters), so they are shown truncated
+with the full value in the tooltip and in the link — a column of 64-character
+hashes would push everything readable off the page. */}}
+{{define "session-rows"}}
+<div id="session-rows">
+{{if .Rows}}
+<table class="grid">
+  <thead>
+    <tr>
+      <th>session</th><th class="num">turns</th><th>span</th>
+      <th class="num">tokens in / out</th><th class="num">cost</th>
+      <th>providers</th><th class="num">models</th><th class="num">errors</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Rows}}
+    <tr>
+      <td class="key"><a href="/admin/ui/session?key={{.Key}}" title="{{.Key}}">{{.ShortKey}}</a></td>
+      <td class="num">{{.Turns}}</td>
+      <td class="when">{{clock .FirstSeen}}<span class="sub">→ {{clock .LastSeen}} · {{ago .LastSeen}}</span></td>
+      <td class="num">{{tokens .InputTokens}} <span class="muted">/</span> {{tokens .OutputTokens}}</td>
+      <td class="num">{{usd .CostUSD}}{{if .Turns}}<span class="sub">{{avgCost .CostUSD .Turns}}/turn</span>{{end}}</td>
+      <td>{{range $i, $p := splitList .Providers}}{{if $i}}<span class="muted">, </span>{{end}}<span class="prov">{{$p}}</span>{{end}}</td>
+      <td class="num">{{.Models}}</td>
+      <td class="num">{{if .Errors}}<span class="status s-err">{{.Errors}}</span>{{else}}<span class="muted">0</span>{{end}}</td>
+      <td><a href="{{requestsForSession .Key}}">requests</a></td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+  <p class="empty">No conversations in this window.</p>
+{{end}}
+
+{{if .SessionlessCount}}
+  <p class="pager">
+    <a href="/admin/ui/requests?no_session=1">{{.SessionlessCount}} request{{if ne .SessionlessCount 1}}s{{end}} with no session key</a>
+    <span class="muted">not one conversation — a conversation opening with too little text
+      to be recognised is never pinned, on any of its turns</span>
+  </p>
+{{end}}
+
+{{if .Capped}}<p class="pager"><span class="muted">showing the {{.Limit}} most recently
+  active; narrow the window to see the rest</span></p>{{end}}
+
+<p class="pager"><a href="{{sessionsNav .SinceRaw}}">window: {{sinceLabel .SinceRaw}}</a></p>
+</div>
+{{end}}

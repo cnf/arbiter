@@ -100,6 +100,7 @@ type SessionRequest struct {
 	CostUSD          float64 `json:"cost_usd"`
 	LatencyMs        int64   `json:"latency_ms"`
 	StatusCode       int64   `json:"status_code"`
+	Error            string  `json:"error,omitempty"`
 	Stream           bool    `json:"stream"`
 	ToolCalls        string  `json:"tool_calls,omitempty"` // raw JSON array
 	ConfigEpoch      string  `json:"config_epoch,omitempty"`
@@ -322,7 +323,7 @@ func (r *Reader) Session(ctx context.Context, key string, limit int) ([]SessionR
 	const q = `
 SELECT
     id, trace_id, ts, provider, model, alias_used, routing_rationale,
-    input_tokens, output_tokens, cost_usd, latency_ms, status_code, stream,
+    input_tokens, output_tokens, cost_usd, latency_ms, status_code, error, stream,
     tool_calls_json, config_epoch
 FROM requests
 WHERE session_key = ?
@@ -343,14 +344,16 @@ LIMIT ?`
 			alias sql.NullString
 			tools sql.NullString
 			epoch sql.NullString
+			errTx sql.NullString
 		)
 		if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &s.Provider, &s.Model, &alias,
 			&s.RoutingRationale, &s.InputTokens, &s.OutputTokens, &s.CostUSD,
-			&s.LatencyMs, &s.StatusCode, &s.Stream, &tools, &epoch); err != nil {
+			&s.LatencyMs, &s.StatusCode, &errTx, &s.Stream, &tools, &epoch); err != nil {
 			return nil, fmt.Errorf("scan session row: %w", err)
 		}
 		s.Ts = formatTime(tsRaw)
 		s.AliasUsed = alias.String
+		s.Error = errTx.String
 		s.ToolCalls = tools.String
 		s.ConfigEpoch = epoch.String
 		out = append(out, s)
@@ -386,6 +389,103 @@ ORDER BY COUNT(*) DESC`
 	}
 	return out, rows.Err()
 }
+
+// SessionSummary is one conversation as the sessions index lists it: how many
+// turns, how long it spanned, what it cost, and which providers served it.
+//
+// Turns and the cost/token sums are computed over the query's *window*, not
+// over the session's whole life. A conversation straddling the window boundary
+// therefore reports fewer turns than it had and a FirstSeen at the window edge,
+// which is the right trade for an index (the alternative — a per-session
+// subquery over all time — throws away idx_requests_session) but must be said
+// out loud by whatever renders it. The transcript view is unbounded, so the two
+// can legitimately disagree.
+type SessionSummary struct {
+	Key          string  `json:"key"`
+	Turns        int64   `json:"turns"`
+	FirstSeen    string  `json:"first_seen"`
+	LastSeen     string  `json:"last_seen"`
+	InputTokens  int64   `json:"input_tokens"`
+	OutputTokens int64   `json:"output_tokens"`
+	CostUSD      float64 `json:"cost_usd"`
+	Errors       int64   `json:"errors"`
+	Providers    string  `json:"providers"` // comma-joined distinct providers, as group_concat emits them
+	Models       int64   `json:"models"`    // distinct provider/model pairs
+}
+
+// Sessions lists conversations over a window, most recently active first.
+//
+// Requests with no session key are excluded, not grouped: they are not one
+// conversation, and lumping them together would produce a fake session whose
+// transcript is unrelated requests. They are not hidden either — the index
+// carries their count as its own row (SessionlessRequestCount), because a
+// conversation whose opening turn was too short to pin records a NULL key on
+// every turn and would otherwise vanish from the only view built for reading
+// conversations.
+func (r *Reader) Sessions(ctx context.Context, w Window, limit int) ([]SessionSummary, error) {
+	if limit <= 0 || limit > MaxSessionListLimit {
+		limit = MaxSessionListLimit
+	}
+	// group_concat(DISTINCT x) cannot take a custom separator in sqlite; the
+	// default comma is what Providers carries.
+	const q = `
+SELECT session_key,
+    COUNT(*),
+    MIN(ts), MAX(ts),
+    CAST(COALESCE(SUM(input_tokens), 0)  AS INTEGER),
+    CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER),
+    COALESCE(SUM(cost_usd), 0),
+    CAST(COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS INTEGER),
+    COALESCE(group_concat(DISTINCT provider), ''),
+    COUNT(DISTINCT provider || '/' || model)
+FROM requests
+WHERE ts >= ? AND session_key IS NOT NULL AND session_key <> ''
+GROUP BY session_key
+ORDER BY MAX(ts) DESC
+LIMIT ?`
+
+	rows, err := r.db.QueryContext(ctx, q, w.Since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sessions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []SessionSummary{}
+	for rows.Next() {
+		var (
+			s              SessionSummary
+			first, lastRaw interface{}
+		)
+		if err := rows.Scan(&s.Key, &s.Turns, &first, &lastRaw, &s.InputTokens,
+			&s.OutputTokens, &s.CostUSD, &s.Errors, &s.Providers, &s.Models); err != nil {
+			return nil, fmt.Errorf("scan session summary: %w", err)
+		}
+		s.FirstSeen = formatTime(first)
+		s.LastSeen = formatTime(lastRaw)
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// SessionlessRequestCount counts the requests in a window that have no session
+// key at all. It is what keeps those requests visible in the sessions index
+// rather than silently absent from it.
+func (r *Reader) SessionlessRequestCount(ctx context.Context, w Window) (int64, error) {
+	const q = `SELECT COUNT(*) FROM requests
+WHERE ts >= ? AND (session_key IS NULL OR session_key = '')`
+
+	var n int64
+	if err := r.db.QueryRowContext(ctx, q, w.Since).Scan(&n); err != nil {
+		return 0, fmt.Errorf("sessionless request count: %w", err)
+	}
+	return n, nil
+}
+
+// MaxSessionListLimit caps the sessions index. Higher than the request list's
+// cap because one row is a whole conversation, so a page of them is still a
+// readable overview. Exported because the caller has to know what it asked for
+// to tell a full page from a truncated one.
+const MaxSessionListLimit = 1000
 
 // maxRequestListLimit caps a single list query. The default (when the caller
 // asks for no limit) is deliberately the cap: a dashboard shows recent rows,

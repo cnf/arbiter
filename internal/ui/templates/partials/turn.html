@@ -1,0 +1,52 @@
+{{/* turn.html renders a conversation turn by turn: request N's blocks, then
+response N's, so each prompt sits next to the answer it produced. Every turn
+links to its own request, which is what makes a single point in a conversation
+reachable on its own. Bodies are untrusted text and are never marked safe. */}}
+{{define "session-turns"}}
+<div id="session-turns">
+{{range .Turns}}
+<section class="turn" id="turn-{{.Index}}">
+  <header class="turnmeta">
+    <span class="turnno">
+      <a href="#turn-{{.Index}}">#{{.Index}}</a>
+    </span>
+    <span class="when">{{clock .Request.Ts}} <span class="sub">{{ago .Request.Ts}}</span></span>
+    <span class="status {{statusClass .Request.StatusCode}}">{{.Request.StatusCode}}</span>
+    <span class="prov">{{.Request.Provider}}</span><span class="sub">{{.Request.Model}}</span>
+    {{if .Request.AliasUsed}}<span class="tag">alias {{.Request.AliasUsed}}</span>{{end}}
+    <span class="num">{{tokens .Request.InputTokens}} → {{tokens .Request.OutputTokens}}</span>
+    <span class="num">{{usd .Request.CostUSD}}</span>
+    <span class="num">{{dur .Request.LatencyMs}}</span>
+    {{if .Request.Stream}}<span class="tag">stream</span>{{end}}
+    <a class="openreq" href="/admin/ui/requests/{{.Request.ID}}">request {{.Request.ID}}</a>
+  </header>
+
+  {{if .Request.Error}}<p class="turnerror">{{.Request.Error}}</p>{{end}}
+
+  {{if .CaptureOff}}
+    <p class="muted turnempty">No content stored for this turn — content capture
+      is disabled, or this turn carried nothing capturable. The store keeps those
+      two cases apart; this view cannot without the setting.</p>
+  {{else}}
+    <div class="content">
+    {{range .Blocks}}
+      <div class="block">
+        <div class="blockmeta">
+          <span class="tag">{{.BlockType}}</span>
+          <span class="dir">{{.Direction}}</span>
+          {{if .Role}}<span class="role">{{.Role}}</span>{{end}}
+          <span class="muted">msg {{.MsgIndex}} · pos {{.Position}}</span>
+        </div>
+        {{if .Captured}}
+          <pre>{{trunc .Body}}</pre>
+        {{else}}
+          <p class="binary">not captured — {{.BlockType}} block stored by hash only</p>
+        {{end}}
+      </div>
+    {{end}}
+    </div>
+  {{end}}
+</section>
+{{end}}
+</div>
+{{end}}

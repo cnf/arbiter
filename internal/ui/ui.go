@@ -103,7 +103,7 @@ func versionOf(fsys fs.FS) string {
 }
 
 // pageFiles are the page templates, each rendered only inside its own set.
-var pageFiles = []string{"requests", "request", "error"}
+var pageFiles = []string{"requests", "request", "sessions", "session", "error"}
 
 // parseTemplates builds one template set per page, each from the layout, every
 // partial, and that one page. Go's html/template cannot redefine a block name
@@ -273,7 +273,10 @@ type navItem struct {
 // base builds the common view state for a page.
 func (h *Handler) base(active string) viewBase {
 	return viewBase{
-		Nav:           []navItem{{Name: "Requests", Href: "/admin/ui/requests"}},
+		Nav: []navItem{
+			{Name: "Sessions", Href: "/admin/ui/sessions"},
+			{Name: "Requests", Href: "/admin/ui/requests"},
+		},
 		Active:        active,
 		AssetVersion:  h.assetVersion,
 		Now:           time.Now().UTC(),

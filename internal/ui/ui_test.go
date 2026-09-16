@@ -61,6 +61,8 @@ func serve(t *testing.T, h *Handler, method, target string, hx bool) *httptest.R
 	r.HandleFunc("/admin/ui/requests", h.RequestsHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}", h.RequestHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}/content", h.RequestContentHandler).Methods("GET")
+	r.HandleFunc("/admin/ui/sessions", h.SessionsHandler).Methods("GET")
+	r.HandleFunc("/admin/ui/session", h.SessionHandler).Methods("GET")
 	r.PathPrefix("/admin/ui/static/").HandlerFunc(h.StaticHandler).Methods("GET")
 
 	req := httptest.NewRequest(method, target, nil)
@@ -400,6 +402,9 @@ func TestPageReferencesVersionedAssets(t *testing.T) {
 		t.Error("the page does not reference the versioned htmx")
 	}
 }
+
+// whichProviderA keeps the session tests' provider name in one place.
+const whichProviderA = "alpha"
 
 // seedMany writes n events one second apart, for paging.
 func seedMany(t *testing.T, n int) []store.Event {

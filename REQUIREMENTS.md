@@ -283,6 +283,13 @@ step 3 + the 4a query surface is currently greenlit.
 > and the keyset cursor (`RequestFilter.BeforeTs`/`BeforeID`, rendered as one
 > opaque `?after=` token). Live-verified against fakellm in a scratch config.
 >
+> Along the way the UI exposed a **pre-existing bug worth noting**: a request
+> whose upstream could not be reached was stored with `status_code = 0`, so
+> `/admin/stats`' error counts and `?errors` — both `status_code >= 400` — were
+> blind to the most common failure mode, and such rows read as "not finished"
+> rather than "failed". Now recorded as 502, matching the status the client was
+> already given. Not a migration; older rows keep their 0.
+>
 > **7b-2 BUILT, COMMITTED** — `/admin/ui/sessions` (one row per conversation:
 > turns, span, providers, cost, errors) and `/admin/ui/session?key=…`, the
 > transcript. Requests with no session key get their own count on the index

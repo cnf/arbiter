@@ -54,6 +54,8 @@ overrides both. Loopback is the default on purpose — see
 | `GET /admin/ui/` | the admin web UI (302 to `/requests`)   |
 | `GET /admin/ui/requests` | request list + filters, as a page    |
 | `GET /admin/ui/requests/{id}` | request detail, as a page        |
+| `GET /admin/ui/sessions` | conversations, one row each          |
+| `GET /admin/ui/session?key=` | one conversation, turn by turn  |
 
 Both chat endpoints accept `stream: true` and respond with SSE in the same
 wire format as the request (formats are never mixed). Every response —
@@ -559,6 +561,33 @@ otherwise:
 `?no_session` was added to `/admin/requests` at the same time: an empty
 `?session=` means "any", so the requests with *no* session key (those whose
 affinity derivation declined to pin them) needed their own flag.
+
+**`/admin/ui/sessions` and `/admin/ui/session?key=`** are the conversation view.
+The store records one row per *request*, but a conversation is the unit a client
+actually has, and the transcript is what makes the captured content readable.
+Two properties are worth knowing because they are deliberate:
+
+- **The index is windowed, the transcript is not.** Session turns and cost are
+  aggregated over the index's window, so a conversation straddling the window
+  edge reads short there and its `first seen` is the window edge. That is the
+  trade for keeping `idx_requests_session` instead of a per-session subquery over
+  all time; the index says so rather than implying those are the session's totals,
+  and the transcript is the unbounded view, so the two can legitimately disagree.
+- **The transcript shows what each turn *added*, not what it re-sent.** A client
+  re-sends its whole history every turn, so rendering each turn's payload repeats
+  the same text once per turn — a 3-turn conversation shipped its 11.7k-character
+  system prompt three times. Each turn therefore shows its own stats (with a link
+  that opens exactly that request), the system preamble as a separate collapsible
+  field on the turn that introduced it, and the content the turn introduced.
+  Everything re-sent becomes one line naming the turn that first showed that
+  text. The match is by content hash, so "already sent" means the same bytes, not
+  something similar; and the replayed bodies are not rendered at all, since a
+  collapsed `<details>` still ships its contents to the browser.
+
+Session keys are opaque and can be 64 hex characters, so both screens show them
+truncated to 10 with the full value in the tooltip and in every link. The
+truncation is display-only — a shortened key in an href would fetch the wrong
+conversation.
 
 ### Content store
 

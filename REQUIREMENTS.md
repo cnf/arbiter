@@ -283,10 +283,27 @@ step 3 + the 4a query surface is currently greenlit.
 > and the keyset cursor (`RequestFilter.BeforeTs`/`BeforeID`, rendered as one
 > opaque `?after=` token). Live-verified against fakellm in a scratch config.
 >
-> **Next: 7b-2 (sessions index + conversation transcript)** — and the transcript
-> is to be rendered turn by turn (request N's blocks, then response N's) rather
-> than grouped by direction, so a conversation reads as a dialogue. Each turn
-> links to its own request, so any point in a conversation can be pulled out.
+> **7b-2 BUILT, COMMITTED** — `/admin/ui/sessions` (one row per conversation:
+> turns, span, providers, cost, errors) and `/admin/ui/session?key=…`, the
+> transcript. Requests with no session key get their own count on the index
+> rather than being grouped into a fake session or dropped.
+>
+> The transcript renders **the conversation's last state, not its replay**: a
+> client re-sends its whole history every turn, so each turn shows only what it
+> *added*, its own stats with a link to open exactly that request, and its
+> system preamble as a separate collapsible field. What it re-sent is one line
+> naming the turn that first showed it. The split is by content hash, so a
+> "replay" is provably the same bytes — and the replayed bodies are not rendered
+> at all, since a collapsed `<details>` still ships its contents and would leave
+> the page exactly as large. A three-turn conversation went from shipping its
+> 11.7k-character system prompt three times to once.
+>
+> Session keys are shown truncated on both screens, full value in the tooltip and
+> in every link.
+>
+> **Next: 7b-3a (pivot queries + ranked table)**. Subagent grouping in the
+> transcript is blocked on the parent/child linkage gap above — Arbiter does not
+> capture that relationship at all.
 
 1. ~~Model alias layer + wiring it into the router selection (the "auto /
    auto-coding / pinned model / model group" mechanism).~~ **DONE** —

@@ -220,6 +220,10 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	// `/` or a `:` in one would break the route. This mirrors /admin/stats/session.
 	r.HandleFunc("/admin/ui/sessions", arbiterhttp.Gate(forwardAuthHeader, adminUI.SessionsHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/session", arbiterhttp.Gate(forwardAuthHeader, adminUI.SessionHandler)).Methods("GET")
+
+	// The pivot explorer. No /series.json yet: 7b-3a is the table, and the chart
+	// endpoint arrives with the chart (and with a query that does not exist).
+	r.HandleFunc("/admin/ui/overview", arbiterhttp.Gate(forwardAuthHeader, adminUI.OverviewHandler)).Methods("GET")
 	// PathPrefix, not HandleFunc: gorilla/mux's HandleFunc matches the exact
 	// path, so a static route registered that way serves only "/static/" and
 	// 404s every asset under it — which is exactly what a first version did.

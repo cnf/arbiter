@@ -35,6 +35,8 @@ var funcs = stdhtml.FuncMap{
 	// rather than a precomputed field because it is used with a key that is
 	// already in the view model, in two different templates.
 	"requestsForSession": requestsForSession,
+	"pivotLimit":         pivotLimitNote,
+	"singleValuedHint":   func() string { return singleValuedHint },
 }
 
 // fmtChars renders a character count compactly ("9.2k chars"). Transcript

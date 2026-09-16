@@ -63,6 +63,7 @@ func serve(t *testing.T, h *Handler, method, target string, hx bool) *httptest.R
 	r.HandleFunc("/admin/ui/requests/{id}/content", h.RequestContentHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/sessions", h.SessionsHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/session", h.SessionHandler).Methods("GET")
+	r.HandleFunc("/admin/ui/overview", h.OverviewHandler).Methods("GET")
 	r.PathPrefix("/admin/ui/static/").HandlerFunc(h.StaticHandler).Methods("GET")
 
 	req := httptest.NewRequest(method, target, nil)

@@ -232,7 +232,12 @@ tr.errrow td { color: var(--err); font-size: 12px; font-family: var(--mono); }
 
 .facts {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  /* auto-fit, not auto-fill: auto-fill keeps an empty column track when the item
+     count does not fill the row, and because this grid's own background is the
+     line colour, that track renders as a solid empty cell — a metric that looks
+     like it failed to load. auto-fit collapses the empties and stretches the
+     last item instead. */
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 1px;
   margin: 0 0 1rem;
   background: var(--line);

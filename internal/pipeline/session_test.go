@@ -60,30 +60,45 @@ func TestSessionKeyDiffersForDifferentFirstMessages(t *testing.T) {
 	}
 }
 
-func TestSessionKeyRejectsShortOpenerWithNoAssistantYet(t *testing.T) {
-	// "hi" alone is below the distinctiveness threshold; two unrelated chats
-	// opening this way must NOT be pinned together.
+func TestSessionKeyRejectsShortOpenerWithNoSystemPrompt(t *testing.T) {
+	// "hi" with no system prompt has nothing at all to be distinctive about;
+	// two unrelated chats opening this way must NOT be pinned together.
 	if _, ok := SessionKey("", reqWith("", user("hi"))); ok {
 		t.Fatal("expected no key for a bare short greeting")
 	}
 }
 
-func TestSessionKeyIgnoresInjectedConstantSystemPrompt(t *testing.T) {
-	// The system_prompt guardrail prepends a long constant to every request.
-	// If that constant counted toward the length gate, every conversation
-	// would pass it and short openers would collide. Confirm a short opener
-	// stays unpinned even with a long system prompt present.
-	longSys := strings.Repeat("You are a helpful assistant. ", 10)
+func TestSessionKeyShortOpenerWithRealSystemPromptPins(t *testing.T) {
+	// A real client sends a long house prompt and a terse opening turn — an
+	// agent CLI opening with "stream", "hi", or a single word is the normal
+	// shape, not an edge case. Gating on the user turn alone left such a
+	// conversation with no key on turn 1 AND no key on turn 40 (the first user
+	// turn never changes), so it was never pinned for its entire life.
+	housePrompt := "You are opencode, an interactive CLI tool. " + strings.Repeat("More instructions. ", 40)
 
-	if _, ok := SessionKey("", reqWith(longSys, user("hi"))); ok {
-		t.Fatal("injected system prompt must not satisfy the distinctiveness gate")
+	key, ok := SessionKey("", reqWith(housePrompt, user("hi")))
+	if !ok {
+		t.Fatal("a terse opener backed by a real system prompt must still pin")
 	}
-	// ...but it IS mixed into the hash, so distinct client-supplied system
-	// prompts still separate otherwise-identical conversations.
-	a, _ := SessionKey("", reqWith("system A", user("a sufficiently long first message")))
-	b, _ := SessionKey("", reqWith("system B", user("a sufficiently long first message")))
-	if a == b {
+	if key == "" {
+		t.Fatal("empty key with ok=true")
+	}
+
+	// The system prompt must count toward distinctiveness, not just length:
+	// two clients whose house prompts differ must not share a key even when
+	// their opening turns are identical.
+	other, _ := SessionKey("", reqWith("You are a different CLI tool.", user("hi")))
+	if key == other {
 		t.Fatal("different system prompts produced the same key")
+	}
+}
+
+func TestSessionKeyRejectsBareShortOpenerWithNothingElse(t *testing.T) {
+	// The gate still refuses a genuinely uninformative request: a bare "hi"
+	// with no system prompt at all has nothing to distinguish it from any
+	// other bare "hi".
+	if _, ok := SessionKey("", reqWith("", user("hi"))); ok {
+		t.Fatal("expected no key for a bare short greeting with no system prompt")
 	}
 }
 

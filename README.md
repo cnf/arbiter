@@ -58,6 +58,35 @@ streaming or not — carries `X-Arbiter-Trace-Id`; OpenAI-style response IDs are
 built from it (`chatcmpl-<trace-id>`), so a response can be correlated with
 Arbiter's structured logs by ID alone.
 
+### What a stream relays
+
+Outbound bodies are **rebuilt** from the normalized types rather than forwarded
+byte-for-byte, so anything the normalized types do not declare is stripped by
+design. The streaming path therefore relays exactly these, and a field missing
+from one of these lists is a bug rather than a passthrough:
+
+- **Text deltas.**
+- **Tool calls**, fragment-for-fragment as the upstream sends them: the call id
+  and function name on the first fragment, a slice of the arguments JSON on
+  each subsequent one. They are relayed rather than reassembled, because the
+  OpenAI client contract is to concatenate arguments by `index` — buffering the
+  whole call first would only add latency. An agentic client cannot terminate
+  its loop if tool calls are dropped, and will retry instead.
+- **Vendor reasoning** (`reasoning` / `reasoning_content`, as OpenRouter-family
+  upstreams emit it) is not in the OpenAI spec, so it is relayed under the field
+  the upstream used; a client that does not know it ignores it.
+- **Token usage, cost and cache-read counters.** The outbound request always
+  sets `stream_options.include_usage`, regardless of whether the client asked,
+  because these are what the event store records — without the flag a stream
+  reports no counts at all and every request is stored as zero tokens. The
+  counters include `cached_tokens`, which is the only evidence that session
+  affinity is actually hitting a warm cache rather than paying full price.
+
+Two ordering invariants hold on the wire: the terminal `finish_reason` maps to a
+stop event, and a start event is never emitted after a stop. Upstreams send a
+trailing usage chunk that also carries `role: "assistant"`, so deriving a start
+from role alone would emit a second `message_start` after `message_stop`.
+
 ## Project Structure
 
 ```
@@ -157,9 +186,10 @@ The schema is deliberately denormalized (tool names go in a JSON column rather
 than a child table) until real query needs are known. `id` is the rowid, not
 `trace_id`: the inbound `X-Trace-Id` is trusted verbatim, so duplicate values
 are expected and must not collide. `session_key` is nullable — a request whose
-affinity derivation declines to produce a key is still recorded (that happens
-when a conversation opens with too little text to be distinctive; see "Session
-affinity"). `client_id`
+affinity derivation declines to produce a key is still recorded, which happens
+only when a request carries neither a session header nor enough text to be
+distinctive at all (a bare `"hi"` with no system prompt); see "Session
+affinity". `client_id`
 stays NULL until per-client API keys land (attribution, not authentication).
 `config_epoch` is nullable too — rows written before the column existed (or by
 a build with no epoch set) group under the empty string rather than
@@ -284,7 +314,7 @@ routing:
 
 session_affinity:
   header: "X-Session-Id"               # inbound header carrying a session id
-  default_ttl: "5m"                    # idle TTL for a pinned conversation
+  default_ttl: "25h"                   # idle TTL for a pinned conversation
 
 storage:                               # omit the whole block for no persistence
   path: "arbiter.db"
@@ -322,6 +352,46 @@ Aliases are client-facing and appear in `/models` alongside provider models
 (listed with provider `"alias"`). Any rule `target` may name an alias, and a
 group member may itself be another alias; resolution is depth-limited and a
 cycle is rejected at config load.
+
+### Session affinity
+
+Once a request is routed, its conversation is pinned to whichever
+provider/model actually served it, so later turns reuse the same upstream and
+its warm prompt cache instead of re-routing every turn. The pin is keyed by:
+
+1. **The configured inbound header** (`session_affinity.header`, default
+   `X-Session-Id`), when the client sends one.
+2. **Otherwise a hash of the client's own text** — `system prompt + first
+   text-bearing user turn`, each mixed into the key, gated on their combined
+   length. Both halves are needed: the system prompt (an agent CLI's house
+   prompt, thousands of characters) is what distinguishes two conversations
+   that share a terse opener, and the opening user turn is what distinguishes
+   two that share a house prompt.
+
+Two properties of the derived key are load-bearing:
+
+- **It is computed before pre-guardrails**, from the request as the client sent
+  it. Hashing after the `system_prompt` guardrail ran would mix Arbiter's own
+  injected text into every key — and would change every key at once whenever
+  that guardrail's prompt is edited, invalidating every live pin.
+- **It excludes the first assistant reply on purpose.** The reply does not
+  exist on the opening turn, so including it would make turn 1 hash differently
+  from turn 2 onward and the turn-1 pin would never be reused. The opening user
+  turn is stable for the whole conversation, which is what pinning requires.
+
+`default_ttl` is deliberately sized to a working session (25h) rather than to a
+cache window: a short idle timeout drops the pin whenever the user pauses to
+read or run a build, and the next turn then re-routes to a cold provider at
+full price. A per-provider `cache_ttl` overrides it for that provider.
+
+A content-hash key is only as stable as the text it hashes, so a client that
+*mutates* its opening turn — appending a fresh `<system-reminder>` block to it
+each turn, as some desktop clients do — produces a different key every turn and
+never pins. Arbiter serves clients that replay their history verbatim, so this
+does not arise today; a denoise step before hashing is the fix if one ever does.
+Note that changing the key derivation (denoising, a different anchor, a
+different gate) invalidates every existing pin at once, which shows up as one
+burst of re-routing across all live conversations.
 
 ### Group selection strategies
 

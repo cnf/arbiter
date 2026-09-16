@@ -86,7 +86,15 @@ type Pipeline struct {
 }
 
 // defaultAffinityTTL applies when config sets no session_affinity.default_ttl.
-const defaultAffinityTTL = 5 * time.Minute
+//
+// Sized to a working session, not to a cache window: the pin exists so a
+// conversation keeps hitting the provider that holds its warm prompt cache, and
+// a short idle timeout expires it whenever the user pauses to read, think or run
+// a build — after which the next turn re-routes to a cold provider and pays full
+// price. 25 hours covers a long agentic run plus an overnight gap, so a
+// conversation resumed the next morning is still pinned. Affinity state is a
+// small in-memory map, so a generous TTL costs nothing to hold.
+const defaultAffinityTTL = 25 * time.Hour
 
 // NewPipeline creates a new pipeline. cacheTTL is the default idle TTL for
 // session affinity pins (config's session_affinity.default_ttl, or
@@ -190,6 +198,15 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 	}
 	req.TraceID = traceID
 
+	// Session key is derived BEFORE pre-guardrails, from the client's own text.
+	// Deriving it after meant the key hashed whatever the system_prompt
+	// guardrail had injected, so editing that guardrail's prompt changed every
+	// key at once and invalidated every live pin — the same blast radius a
+	// denoise change has. The client's own opening turn is stable across the
+	// whole conversation either way, so there is nothing to gain by waiting.
+	sessionKey, hasKey := SessionKey(sessionHint, req)
+	req.SessionKey = sessionKey
+
 	// Capture content BEFORE any pre-guardrail runs. A guardrail such as
 	// system_prompt rewrites req.SystemPrompt, and capturing after it would
 	// store Arbiter's own injected prompt as though the client had sent it —
@@ -215,13 +232,6 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		p.logger.LogGuardrail(ctx, g.Name(), "applied", true)
 		req = mutated
 	}
-
-	// Session key is derived after pre-guardrails, not before: a guardrail
-	// like system_prompt can rewrite req.SystemPrompt, and the key must hash
-	// the final content that actually goes out — otherwise the same
-	// conversation could hash differently across requests.
-	sessionKey, hasKey := SessionKey(sessionHint, req)
-	req.SessionKey = sessionKey
 
 	route, sig, err := p.resolveRoute(ctx, req, hasKey)
 	if err != nil {

@@ -7,19 +7,28 @@ import (
 	"github.com/cnf/arbiter/pkg/types"
 )
 
-// minSessionTextLen is the minimum amount of conversation text required
+// minSessionContentLen is the minimum amount of conversation text required
 // before a content-derived session key is considered distinctive enough to
 // pin on. Below this, two unrelated conversations (e.g. both opening with
 // "hi", 2 chars) would collide, and pinning them together is worse than not
 // pinning at all — so SessionKey reports ok=false instead.
 //
-// Deliberately measured on user+assistant text only, NOT on the system
-// prompt: a configured system_prompt guardrail prepends a constant to
-// SystemPrompt on every request, so counting it would make the gate pass
-// unconditionally and defeat its purpose. The system prompt is still mixed
-// into the hash (it adds distinctiveness when the client supplied a real
-// one, and is harmless when it's the injected constant).
-const minSessionTextLen = 16
+// It is measured over the system prompt PLUS the first text-bearing user turn,
+// and either may carry the whole budget. A real client's system prompt is
+// thousands of characters (an agent CLI's house prompt), while its opening user
+// turn is often a single word — measuring only the user turn left such a
+// conversation unpinnable for its entire life, because the first user turn is
+// the same short string on turn 1 and on turn 40. Hashing the two together
+// keeps both sources of distinctiveness: the user turn separates two
+// conversations that share a house prompt, and the system prompt separates two
+// that share a terse opener.
+//
+// The threshold is a multi-tenant defence — merging two unrelated
+// conversations is worse than not pinning — and this deployment is not that:
+// one user, a handful of clients, low concurrency. It is therefore kept low
+// enough to pass a real terse opener backed by a real system prompt, while
+// still refusing a bare "hi" with nothing else.
+const minSessionContentLen = 16
 
 // SessionKey derives the key used to look up/record a session's affinity
 // pin. If hint (from an inbound header) is non-empty, it's used directly.
@@ -29,6 +38,12 @@ const minSessionTextLen = 16
 // text to be distinctive — the caller must treat that as "never pin this
 // request", which is the safe failure mode (a false pin merges unrelated
 // conversations).
+//
+// Must be called on the request as it arrived, BEFORE pre-guardrails: a
+// guardrail like system_prompt prepends a constant to SystemPrompt, and hashing
+// after it would mix Arbiter's own text into every key — and would change every
+// key at once whenever that guardrail's prompt is edited, invalidating every
+// live pin in a single step. The caller passes the client's own text.
 //
 // Deliberately does NOT include the first assistant reply (an earlier draft
 // did): the reply doesn't exist yet on the opening turn, so including it
@@ -41,7 +56,7 @@ func SessionKey(hint string, req *types.NormalizedRequest) (key string, ok bool)
 	}
 
 	userText := types.FirstUserText(req)
-	if len(userText) < minSessionTextLen {
+	if len(req.SystemPrompt)+len(userText) < minSessionContentLen {
 		return "", false
 	}
 

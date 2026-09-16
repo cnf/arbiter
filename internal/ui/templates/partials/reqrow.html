@@ -28,7 +28,7 @@ every htmx swap, so the two can never render a row differently. */}}
         {{if .Effort}}<span class="tag">{{.Effort}}</span>{{end}}
         {{if .CostClass}}<span class="tag">{{.CostClass}}</span>{{end}}
       </td>
-      <td>{{if .SessionKey}}<a href="/admin/ui/requests?session={{.SessionKey}}">{{.SessionKey}}</a>
+      <td>{{if .SessionKey}}<a href="/admin/ui/session?key={{.SessionKey}}" title="{{.SessionKey}}">{{.ShortSession}}</a>
           {{else}}<span class="muted">none</span>{{end}}</td>
       <td class="why">{{.RoutingRationale}}</td>
     </tr>

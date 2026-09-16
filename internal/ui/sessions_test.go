@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +121,188 @@ func TestSessionIndexAndTranscript(t *testing.T) {
 	// The unrelated conversation's content must not leak into this transcript.
 	if strings.Contains(transcript, "other-conv") {
 		t.Error("content from another session leaked into the transcript")
+	}
+}
+
+// A conversation re-sends its whole context every turn, so the transcript must
+// show what each turn *introduced* and collapse what it merely repeated —
+// otherwise the page is a multiple of the conversation rather than a record of
+// it. The split is by content hash, so it is exact.
+func TestTranscriptSeparatesNewContentFromReplay(t *testing.T) {
+	key := "growing"
+	base := timeAt()
+
+	// One block reused verbatim across all three turns (a client preamble), one
+	// system block, and a fresh user turn each time.
+	sysBlock := store.Block{MsgIndex: 0, Position: 0, Role: "system", Kind: "text",
+		Body: []byte("you are a helpful assistant, always answer briefly")}
+	first := store.Block{MsgIndex: 1, Position: 0, Role: "user", Kind: "text",
+		Body: []byte("first question please")}
+	second := store.Block{MsgIndex: 2, Position: 0, Role: "user", Kind: "text",
+		Body: []byte("second question please")}
+	reply := func(s string) store.Block {
+		return store.Block{MsgIndex: 0, Position: 0, Role: "assistant", Kind: "text", Body: []byte(s)}
+	}
+
+	h, _ := newSeededHandler(t,
+		// Turn 1: system + first user turn, and a reply.
+		store.Event{TraceID: "t1", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
+			Ts: base, SessionKey: key,
+			Content: &store.CapturedContent{Request: []store.Block{sysBlock, first}, Response: []store.Block{reply("answer one")}}},
+		// Turn 2: the same system block plus turn 1 replayed, and a new user turn.
+		store.Event{TraceID: "t2", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
+			Ts: base.Add(time.Minute), SessionKey: key,
+			Content: &store.CapturedContent{Request: []store.Block{sysBlock, first,
+				{MsgIndex: 2, Position: 0, Role: "assistant", Kind: "text", Body: []byte("answer one")},
+				second}, Response: []store.Block{reply("answer two")}}},
+		// Turn 3: everything again, one more user turn.
+		store.Event{TraceID: "t3", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
+			Ts: base.Add(2 * time.Minute), SessionKey: key,
+			Content: &store.CapturedContent{Request: []store.Block{sysBlock, first,
+				{MsgIndex: 2, Position: 0, Role: "assistant", Kind: "text", Body: []byte("answer one")},
+				second,
+				{MsgIndex: 3, Position: 0, Role: "assistant", Kind: "text", Body: []byte("answer two")},
+				{MsgIndex: 4, Position: 0, Role: "user", Kind: "text", Body: []byte("third question please")}},
+				Response: []store.Block{reply("answer three")}}},
+	)
+
+	body := serve(t, h, "GET", "/admin/ui/session?key="+key, false).Body.String()
+
+	// The shared system block is rendered exactly ONCE in the whole page — not
+	// once per turn behind a collapsed <details>, which would ship the same
+	// bytes to the browser and leave the page just as large.
+	preCount := 0
+	for _, m := range regexp.MustCompile(`(?s)<pre>(.*?)</pre>`).FindAllStringSubmatch(body, -1) {
+		if strings.Contains(m[1], "you are a helpful assistant") {
+			preCount++
+		}
+	}
+	if preCount != 1 {
+		t.Errorf("the shared system block appears in %d <pre> blocks; want exactly 1", preCount)
+	}
+	if strings.Count(body, "you are a helpful assistant") != 1 {
+		t.Errorf("the shared system block appears %d times in the HTML at all; want 1",
+			strings.Count(body, "you are a helpful assistant"))
+	}
+	// The same for a replayed conversation turn.
+	if n := strings.Count(body, "answer one"); n != 1 {
+		t.Errorf("a replayed reply appears %d times; want only where it was introduced", n)
+	}
+
+	// Every turn's own new question and answer are rendered at full size.
+	for _, want := range []string{"first question please", "second question please", "third question please",
+		"answer one", "answer two", "answer three"} {
+		found := false
+		for _, m := range regexp.MustCompile(`(?s)<pre>(.*?)</pre>`).FindAllStringSubmatch(body, -1) {
+			if strings.Contains(m[1], want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%q is not rendered at full size anywhere", want)
+		}
+	}
+
+	// What was replayed is still *visible* — as a pointer to the turn that has
+	// it, so the reader knows context was sent without re-reading it.
+	if !strings.Contains(body, `class="replayref"`) {
+		t.Error("no replay pointer is rendered; the repeated context vanished silently")
+	}
+	if !strings.Contains(body, "see turn #") {
+		t.Error("a replay pointer does not name the turn that holds the text")
+	}
+	// The preamble is its own collapsible field.
+	if !strings.Contains(body, `class="preamble"`) {
+		t.Error("the system preamble is not its own collapsible field")
+	}
+	// The header reports how much was replayed for that turn.
+	if !strings.Contains(body, "replayed") {
+		t.Error("no turn reports how much it replayed")
+	}
+
+	// Turn 1 introduces everything it sends, so it has nothing replayed.
+	firstTurn := body[strings.Index(body, `id="turn-1"`):strings.Index(body, `id="turn-2"`)]
+	if strings.Contains(firstTurn, `class="replayref"`) {
+		t.Error("the opening turn claims to have replayed content, but it introduced all of it")
+	}
+	if !strings.Contains(firstTurn, `class="preamble"`) {
+		t.Error("the opening turn does not show the system preamble it introduced")
+	}
+}
+
+// One turn can contribute BOTH its preamble and some conversation history to a
+// later turn's replay. Those must stay separate groups: merging them mislabels
+// the history as preamble and undercounts neither while misdescribing both.
+func TestReplayKeepsPreambleAndHistoryApart(t *testing.T) {
+	key := "both-kinds"
+	base := timeAt()
+	sys := store.Block{MsgIndex: 0, Position: 0, Role: "system", Kind: "text", Body: []byte("THE PREAMBLE TEXT")}
+	q1 := store.Block{MsgIndex: 1, Position: 0, Role: "user", Kind: "text", Body: []byte("question one")}
+	a1 := store.Block{MsgIndex: 2, Position: 0, Role: "assistant", Kind: "text", Body: []byte("answer one")}
+	q2 := store.Block{MsgIndex: 3, Position: 0, Role: "user", Kind: "text", Body: []byte("question two")}
+
+	h, _ := newSeededHandler(t,
+		// Turn 1 introduces the preamble and the first exchange.
+		store.Event{TraceID: "t1", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
+			Ts: base, SessionKey: key,
+			Content: &store.CapturedContent{Request: []store.Block{sys, q1},
+				Response: []store.Block{a1}}},
+		// Turn 2 re-sends all of it and adds one question.
+		store.Event{TraceID: "t2", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
+			Ts: base.Add(time.Minute), SessionKey: key,
+			Content: &store.CapturedContent{Request: []store.Block{sys, q1, a1, q2}}},
+	)
+
+	body := serve(t, h, "GET", "/admin/ui/session?key="+key, false).Body.String()
+	turn2 := body[strings.Index(body, `id="turn-2"`):]
+
+	// Two separate pointers to turn 1, not one merged line.
+	refs := regexp.MustCompile(`class="replayref"`).FindAllString(turn2, -1)
+	if len(refs) != 2 {
+		t.Errorf("turn 2 has %d replay pointers; want 2 (the preamble and the history, separately)", len(refs))
+	}
+	if !strings.Contains(turn2, "system preamble") {
+		t.Error("the replayed preamble is not labelled as such")
+	}
+	if !strings.Contains(turn2, "conversation history") {
+		t.Error("replayed conversation is not labelled as history; it is being called preamble")
+	}
+	// The history entry must count the two history blocks, not the preamble.
+	if !strings.Contains(turn2, "2 blocks of conversation history") {
+		t.Errorf("the history pointer does not count both history blocks; turn2 = %s", firstLine(turn2))
+	}
+}
+
+// A turn introducing a block that an *earlier* turn also had must not be
+// mistaken for introducing it: only the first appearance counts as new.
+func TestReplaySplitGoesByFirstAppearance(t *testing.T) {
+	key := "reordered"
+	base := timeAt()
+	shared := store.Block{MsgIndex: 0, Position: 0, Role: "user", Kind: "text", Body: []byte("the shared question")}
+
+	h, _ := newSeededHandler(t,
+		store.Event{TraceID: "t1", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
+			Ts: base, SessionKey: key,
+			Content: &store.CapturedContent{Request: []store.Block{shared}}},
+		store.Event{TraceID: "t2", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
+			Ts: base.Add(time.Minute), SessionKey: key,
+			Content: &store.CapturedContent{Request: []store.Block{shared}}},
+	)
+	body := serve(t, h, "GET", "/admin/ui/session?key="+key, false).Body.String()
+
+	// Turn 1 shows it; turn 2 collapses it.
+	turn1 := body[strings.Index(body, `id="turn-1"`):strings.Index(body, `id="turn-2"`)]
+	turn2 := body[strings.Index(body, `id="turn-2"`):]
+	if strings.Contains(turn1, `class="replayref"`) {
+		t.Error("the first appearance was treated as replay")
+	}
+	if !strings.Contains(turn2, `class="replayref"`) {
+		t.Error("the second appearance was treated as new; the split ignores history")
+	}
+	if strings.Count(body, "the shared question") != 1 {
+		t.Errorf("the shared block appears %d times; want once, at its origin turn",
+			strings.Count(body, "the shared question"))
 	}
 }
 

@@ -29,11 +29,27 @@ var funcs = stdhtml.FuncMap{
 	"splitList":   splitList,
 	"sessionsNav": func(raw string) string { return sessionsNavHref(raw) },
 	"sinceLabel":  sinceLabel,
+	"chars":       fmtChars,
 	// requestsForSession builds a link to the flat request list filtered to one
 	// session — the request-level view of the same conversation. It is a func
 	// rather than a precomputed field because it is used with a key that is
 	// already in the view model, in two different templates.
 	"requestsForSession": requestsForSession,
+}
+
+// fmtChars renders a character count compactly ("9.2k chars"). Transcript
+// entries are sized in characters rather than tokens because a character count
+// is exact for text the page is about to render or hide, while a token count
+// would be an estimate Arbiter did not make.
+func fmtChars(n int) string {
+	switch {
+	case n < 1000:
+		return fmt.Sprintf("%d chars", n)
+	case n < 1000*1000:
+		return fmt.Sprintf("%.1fk chars", float64(n)/1000)
+	default:
+		return fmt.Sprintf("%.1fM chars", float64(n)/1_000_000)
+	}
 }
 
 // fmtAvgCost is cost-per-turn, the figure that makes two conversations of

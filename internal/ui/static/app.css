@@ -326,3 +326,41 @@ td.key { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
   border-radius: 3px;
   padding: 0 4px;
 }
+
+/* The system preamble is its own field: a client's standing instructions are
+   worth having apart from the conversation, and they are usually the largest
+   single thing in a turn. Closed by default — it is context, not the message. */
+details.preamble {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg);
+  margin-bottom: 0.4rem;
+  padding: 0.3rem 0.5rem;
+}
+details.preamble > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+}
+details.preamble > summary::marker { color: var(--muted); }
+details.preamble[open] > summary { margin-bottom: 0.4rem; }
+
+/* A replay pointer. It replaced the replayed text rather than hiding it: a
+   <details> would still ship the same bytes to the browser every turn. */
+.replayref {
+  margin: 0.3rem 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  border-left: 2px solid var(--line);
+  padding-left: 0.5rem;
+}
+
+/* The new content is the point of the turn, so it is not boxed like the rest:
+   no border, no background, just the blocks and their labels. */
+.newcontent { margin-top: 0.2rem; }
+.newcontent .block:first-child { margin-top: 0; }
+
+/* The response half is what the reader is usually looking for; give it the
+   accent so a turn reads as question-then-answer at a glance. */
+.block:has(> .blockmeta > .dir) { }
+.turnmeta .openreq { margin-left: auto; font-size: 11px; }

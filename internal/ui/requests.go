@@ -38,11 +38,21 @@ type requestFilterView struct {
 	Any bool
 }
 
+// requestRowView pairs a stored row with its display-only short session key.
+//
+// The shortening is a separate field rather than a transformation of SessionKey,
+// because the full value still has to reach the filter link and the session
+// link: a truncated key in an href fetches the wrong conversation.
+type requestRowView struct {
+	store.RequestRow
+	ShortSession string
+}
+
 // rowsView is what the request table renders. It is carried by the page and by
 // the htmx fragment alike, so a swapped table and a loaded page cannot
 // disagree about the rows, the pager, or the filter state.
 type rowsView struct {
-	Rows    []store.RequestRow
+	Rows    []requestRowView
 	More    bool
 	MoreURL string
 	F       requestFilterView
@@ -137,7 +147,14 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
 			return
 		}
-		view.Rows = rows
+		for _, row := range rows {
+			view.Rows = append(view.Rows, requestRowView{
+				RequestRow:   row,
+				ShortSession: shortSessionKey(row.SessionKey),
+			})
+		}
+		// moreURL needs the stored rows (it reads the cursor off the last one),
+		// not the view rows.
 		view.MoreURL = moreURL(q, rows, f.Limit)
 		view.More = view.MoreURL != ""
 	}

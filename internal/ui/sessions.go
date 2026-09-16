@@ -120,33 +120,80 @@ func (h *Handler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "sessions", "session-rows", view)
 }
 
-// transcriptBlock is one block of one turn's content.
+// transcriptBlock is one block of one turn's content, with its hash carried
+// separately so turns can be compared against each other.
+//
+// The stored hash is also what makes the "already sent" split exact rather than
+// heuristic: a client re-sends its whole conversation every turn, so a block
+// whose hash appeared in an earlier turn of this same session is, byte for byte,
+// the same text — not merely similar.
 type transcriptBlock struct {
 	store.ContentBlock
 	RequestID int64
+	turnIndex int
 }
 
-// transcriptTurn is one request/response exchange in a conversation: the
-// turn's metadata plus every block it carried, in conversation order.
+// replayRef points at where a turn's re-sent content already lives, instead of
+// repeating it.
 //
-// Turns are the unit rather than directions on purpose. The store records blocks
-// as request and response halves, but a conversation read that way is two
-// parallel streams — all the prompts, then all the replies — which is not how
-// anyone reads a dialogue. Grouping by turn puts each prompt next to the answer
-// it produced, and each turn links to its own request so a single point in the
-// conversation can be pulled out on its own.
+// A client re-sends its whole conversation every turn, so a transcript that
+// renders each turn's payload shows the same text once per turn — the page
+// becomes a multiple of the conversation rather than a record of it. The fix is
+// not to hide the repeats: a <details> element still ships its contents to the
+// browser, so collapsing in CSS leaves the page just as large. The repeats are
+// therefore not rendered at all, and each one becomes a line naming the turn
+// that first showed it, which is exact — same content hash, same bytes.
+type replayRef struct {
+	// Turn is the number of the turn that introduced this text, so the line can
+	// link to it.
+	Turn int
+
+	// System distinguishes the client's standing preamble from conversation
+	// history: one is what the client always says, the other is what was said.
+	System bool
+
+	Blocks int
+	Chars  int
+}
+
+// transcriptTurn is one request/response exchange in a conversation.
+//
+// It distinguishes what the turn *introduced* from what it merely re-sent. A
+// conversation read turn by turn shows each prompt next to the answer it
+// produced; showing the replayed system prompt and history inline at every turn
+// instead makes the page a multiple of the conversation rather than a record of
+// it. The distinction comes from the content hashes, so it needs no guessing.
 type transcriptTurn struct {
 	Request store.SessionRequest
 	Index   int
 
-	// Blocks is every captured block of this request, request-half first.
-	Blocks []transcriptBlock
+	// New is what this turn added: every request-side block that was never
+	// captured before in this session, plus the whole response. It is what a
+	// reader actually wants — the new question and its answer.
+	New []transcriptBlock
+
+	// Preamble is this turn's system-role blocks, and it is populated only for
+	// the turn that *introduced* them — normally the first. It is rendered as
+	// its own collapsible field, because a client's standing instructions are
+	// worth having separately from the conversation and are usually the largest
+	// single thing in a turn.
+	Preamble []transcriptBlock
+
+	// Replay names where this turn's re-sent text was first shown, one entry per
+	// run of content that shares an origin turn. No bodies: see replayRef.
+	Replay []replayRef
 
 	// CaptureOff is true when there are no blocks at all. It is rendered as its
 	// own message because "nothing was captured" and "this turn had no content
 	// to capture" are different answers, and the store keeps them apart by
 	// whether any block rows exist.
 	CaptureOff bool
+
+	// The three sizes, so a turn can show how much it introduced, how much was
+	// standing instructions, and how much it merely repeated.
+	NewChars      int
+	PreambleChars int
+	ReplayChars   int
 }
 
 // sessionView is the conversation transcript page.
@@ -206,6 +253,14 @@ func (h *Handler) SessionHandler(w http.ResponseWriter, r *http.Request) {
 			view.Capped = true
 		}
 
+		// seen accumulates every block hash the session has shown so far, so a
+		// turn's replayed preamble and history can be told from its new content.
+		// This is exact, not heuristic: the client re-sends earlier turns
+		// verbatim, and the store addresses blocks by hash, so "same hash" means
+		// "the same bytes". Read in turn order, which is what makes the first
+		// appearance the new one.
+		seen := map[string]int{}
+
 		for i, t := range turns {
 			turn := transcriptTurn{Request: t, Index: i + 1}
 			view.TotalCost += t.CostUSD
@@ -220,8 +275,67 @@ func (h *Handler) SessionHandler(w http.ResponseWriter, r *http.Request) {
 					map[string]interface{}{"phase": "admin_ui_session_content", "request_id": t.ID})
 			}
 			turn.CaptureOff = len(blocks) == 0
+
+			// replayed is keyed by the turn that first showed a body, so a run
+			// of re-sent blocks from the same origin collapses into one line
+			// rather than one line per block.
+			// Keyed by (origin turn, preamble-or-not), not by origin turn alone:
+			// one turn can contribute both its preamble and some history to a
+			// later turn's replay, and collapsing those into one line would
+			// mislabel the history as preamble.
+			type runKey struct {
+				origin int
+				system bool
+			}
+			type replayRun struct {
+				ref   replayRef
+				order int
+			}
+			runs := map[runKey]*replayRun{}
+			var runOrder []runKey
+
 			for _, b := range blocks {
-				turn.Blocks = append(turn.Blocks, transcriptBlock{ContentBlock: b, RequestID: t.ID})
+				tb := transcriptBlock{ContentBlock: b, RequestID: t.ID}
+				origin, previouslySeen := seen[b.Hash]
+				if b.Direction == "request" && previouslySeen {
+					// Request-side and already shown: this turn is re-sending
+					// context, not saying anything new. Its body is not
+					// rendered — the line below points at the turn that has it.
+					key := runKey{origin: origin, system: b.Role == "system"}
+					run, ok := runs[key]
+					if !ok {
+						run = &replayRun{
+							ref: replayRef{
+								Turn:   origin,
+								System: key.system,
+							},
+							order: len(runOrder),
+						}
+						runs[key] = run
+						runOrder = append(runOrder, key)
+					}
+					run.ref.Blocks++
+					run.ref.Chars += len(b.Body)
+					turn.ReplayChars += len(b.Body)
+					continue
+				}
+				seen[b.Hash] = i + 1
+				tb.turnIndex = i + 1
+				// The preamble is split out only for the turn that introduces
+				// it, so a client's standing instructions are readable on their
+				// own rather than mixed into the conversation. It is *moved into*
+				// Preamble, not copied there: a block appended to both would be
+				// rendered twice by the turn that introduced it.
+				if b.Role == "system" && b.Direction == "request" {
+					turn.Preamble = append(turn.Preamble, tb)
+					turn.PreambleChars += len(b.Body)
+					continue
+				}
+				turn.New = append(turn.New, tb)
+				turn.NewChars += len(b.Body)
+			}
+			for _, key := range runOrder {
+				turn.Replay = append(turn.Replay, runs[key].ref)
 			}
 			view.Turns = append(view.Turns, turn)
 		}

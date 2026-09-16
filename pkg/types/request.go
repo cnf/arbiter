@@ -1,5 +1,11 @@
 package types
 
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+)
+
 // NormalizedRequest is the canonical internal representation of a request,
 // independent of Anthropic or OpenAI wire format.
 type NormalizedRequest struct {
@@ -103,16 +109,114 @@ type AnthropicRequest struct {
 	Model       string             `json:"model"`
 	MaxTokens   int                `json:"max_tokens"`
 	Temperature float64            `json:"temperature,omitempty"`
-	System      string             `json:"system,omitempty"`
+	System      AnthropicSystem    `json:"system,omitempty"`
 	Messages    []AnthropicMessage `json:"messages"`
 	Tools       []AnthropicTool    `json:"tools,omitempty"`
 	Stream      bool               `json:"stream,omitempty"`
 }
 
-// AnthropicMessage is a message in Anthropic wire format.
+// AnthropicSystem is the request's top-level system prompt. Anthropic's wire
+// format allows either a bare string or a list of content blocks
+// ("system": [{"type":"text","text":"..."}]), and real clients send both —
+// Claude Desktop/Code send the block form, plain curl and simple clients send
+// the string. Declaring it as `string` rejected the block form outright, with
+// a 400 before any routing happened, which made Arbiter unreachable for the
+// clients that speak its own native format. The block form's text blocks are
+// joined; non-text blocks carry no system prompt (Anthropic documents text
+// only here) so they contribute nothing rather than failing.
+type AnthropicSystem string
+
+// UnmarshalJSON accepts a string or an array of content blocks.
+func (s *AnthropicSystem) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*s = ""
+		return nil
+	}
+
+	if trimmed[0] == '"' {
+		var plain string
+		if err := json.Unmarshal(trimmed, &plain); err != nil {
+			return err
+		}
+		*s = AnthropicSystem(plain)
+		return nil
+	}
+
+	var blocks []AnthropicContent
+	if err := json.Unmarshal(trimmed, &blocks); err != nil {
+		return err
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	*s = AnthropicSystem(strings.Join(parts, "\n\n"))
+	return nil
+}
+
+// MarshalJSON always emits the string form. Anthropic accepts both, and the
+// string form is what a normalizing proxy should send: it is the shape a
+// single-prompt request has anyway, and it keeps the outbound body identical
+// regardless of which shape the client used.
+func (s AnthropicSystem) MarshalJSON() ([]byte, error) {
+	return json.Marshal(string(s))
+}
+
+// AnthropicMessage is a message in Anthropic wire format. Its Content accepts
+// either a bare string or a list of content blocks — Anthropic allows both, and
+// simple clients (and plain curl) send the string form, which a plain
+// `[]AnthropicContent` field rejected at parse time.
 type AnthropicMessage struct {
 	Role    string             `json:"role"`
 	Content []AnthropicContent `json:"content"`
+}
+
+// UnmarshalJSON normalizes a bare-string `content` into a single text block so
+// the rest of the pipeline only ever sees the block form.
+func (m *AnthropicMessage) UnmarshalJSON(data []byte) error {
+	// An alias avoids recursing into this method for the block-list case.
+	type messageAlias struct {
+		Role    string             `json:"role"`
+		Content []AnthropicContent `json:"content"`
+	}
+
+	var probe struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+
+	m.Role = probe.Role
+
+	trimmed := bytes.TrimSpace(probe.Content)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		m.Content = nil
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var plain string
+		if err := json.Unmarshal(trimmed, &plain); err != nil {
+			return err
+		}
+		if plain == "" {
+			m.Content = nil
+			return nil
+		}
+		m.Content = []AnthropicContent{{Type: "text", Text: plain}}
+		return nil
+	}
+
+	var alias messageAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	m.Content = alias.Content
+	return nil
 }
 
 // AnthropicContent is a content block in Anthropic wire format.
@@ -145,6 +249,19 @@ type OpenAIRequest struct {
 	Temperature float64         `json:"temperature,omitempty"`
 	Tools       []OpenAITool    `json:"tools,omitempty"`
 	Stream      bool            `json:"stream,omitempty"`
+
+	// StreamOptions is sent on streaming requests to ask the upstream for a
+	// terminal usage chunk. Without it the provider reports no token counts on
+	// a stream at all, so every streamed request would be recorded with zero
+	// tokens, zero cost, and no cache-read figure — which is also the only
+	// number that shows whether prompt-cache affinity is working.
+	StreamOptions *OpenAIStreamOptions `json:"stream_options,omitempty"`
+}
+
+// OpenAIStreamOptions carries the streaming request options OpenRouter and
+// OpenAI both accept.
+type OpenAIStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // OpenAIMessage is a message in OpenAI wire format. Content may be a plain

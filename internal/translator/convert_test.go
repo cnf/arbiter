@@ -35,6 +35,101 @@ func TestAnthropicRequestRoundTrip(t *testing.T) {
 	}
 }
 
+// Real Anthropic clients send `system` as an array of content blocks, which a
+// plain `string` field rejected at parse time — a 400 before any routing, so
+// the client could not reach Arbiter at all. These two tests pin the shapes as
+// raw wire JSON rather than as constructed structs: building an
+// AnthropicRequest in Go and round-tripping it only ever proves Arbiter agrees
+// with itself, which is exactly how the mismatch survived the suite.
+func TestAnthropicSystemAcceptsBlockArray(t *testing.T) {
+	const payload = `{
+		"model": "claude-3-opus-20250219",
+		"max_tokens": 100,
+		"system": [{"type": "text", "text": "You are Claude."}],
+		"messages": [{"role": "user", "content": "hi"}]
+	}`
+
+	norm, err := NewDefaultTranslator().ToNormalized([]byte(payload), "anthropic")
+	if err != nil {
+		t.Fatalf("ToNormalized rejected a block-array system prompt: %v", err)
+	}
+	if norm.SystemPrompt != "You are Claude." {
+		t.Fatalf("SystemPrompt = %q, want %q", norm.SystemPrompt, "You are Claude.")
+	}
+}
+
+func TestAnthropicSystemJoinsMultipleBlocks(t *testing.T) {
+	const payload = `{
+		"model": "m",
+		"max_tokens": 1,
+		"system": [
+			{"type": "text", "text": "first"},
+			{"type": "text", "text": "second"},
+			{"type": "thinking", "thinking": "ignored"}
+		],
+		"messages": [{"role": "user", "content": "hi"}]
+	}`
+
+	norm, err := NewDefaultTranslator().ToNormalized([]byte(payload), "anthropic")
+	if err != nil {
+		t.Fatalf("ToNormalized: %v", err)
+	}
+	if norm.SystemPrompt != "first\n\nsecond" {
+		t.Fatalf("SystemPrompt = %q, want %q", norm.SystemPrompt, "first\n\nsecond")
+	}
+}
+
+// A bare-string message content is legal Anthropic and is what simple clients
+// and plain curl send.
+func TestAnthropicMessageAcceptsStringContent(t *testing.T) {
+	const payload = `{
+		"model": "m",
+		"max_tokens": 1,
+		"messages": [{"role": "user", "content": "hello there"}]
+	}`
+
+	norm, err := NewDefaultTranslator().ToNormalized([]byte(payload), "anthropic")
+	if err != nil {
+		t.Fatalf("ToNormalized rejected string message content: %v", err)
+	}
+	if len(norm.Messages) != 1 || len(norm.Messages[0].Content) != 1 {
+		t.Fatalf("expected one message with one block, got %+v", norm.Messages)
+	}
+	if got := norm.Messages[0].Content[0].Text; got != "hello there" {
+		t.Fatalf("text = %q, want %q", got, "hello there")
+	}
+}
+
+// Both tolerant shapes at once, mirroring a real client request.
+func TestAnthropicAcceptsBothShapesTogether(t *testing.T) {
+	const payload = `{
+		"model": "m",
+		"max_tokens": 1,
+		"system": [{"type": "text", "text": "sys"}],
+		"messages": [
+			{"role": "user", "content": "plain"},
+			{"role": "assistant", "content": [{"type": "text", "text": "block form"}]}
+		]
+	}`
+
+	norm, err := NewDefaultTranslator().ToNormalized([]byte(payload), "anthropic")
+	if err != nil {
+		t.Fatalf("ToNormalized: %v", err)
+	}
+	if norm.SystemPrompt != "sys" {
+		t.Fatalf("SystemPrompt = %q", norm.SystemPrompt)
+	}
+	if len(norm.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(norm.Messages))
+	}
+	if norm.Messages[0].Content[0].Text != "plain" {
+		t.Fatalf("string-content message lost: %+v", norm.Messages[0])
+	}
+	if norm.Messages[1].Content[0].Text != "block form" {
+		t.Fatalf("block-content message lost: %+v", norm.Messages[1])
+	}
+}
+
 func TestOpenAIRequestSystemMessageExtraction(t *testing.T) {
 	req := &types.OpenAIRequest{
 		Model: "gpt-4o",

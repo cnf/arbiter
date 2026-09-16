@@ -128,7 +128,7 @@ func anthropicRequestToNormalized(req *types.AnthropicRequest) *types.Normalized
 		Model:        req.Model,
 		MaxTokens:    req.MaxTokens,
 		Temperature:  req.Temperature,
-		SystemPrompt: req.System,
+		SystemPrompt: string(req.System),
 		Tools:        tools,
 		Stream:       req.Stream,
 	}
@@ -160,7 +160,7 @@ func normalizedToAnthropicRequest(req *types.NormalizedRequest) *types.Anthropic
 		Model:       req.Model,
 		MaxTokens:   maxTokens,
 		Temperature: req.Temperature,
-		System:      req.SystemPrompt,
+		System:      types.AnthropicSystem(req.SystemPrompt),
 		Messages:    messages,
 		Tools:       tools,
 		Stream:      req.Stream,

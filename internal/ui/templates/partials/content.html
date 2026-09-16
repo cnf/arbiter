@@ -1,0 +1,17 @@
+{{/* content.html renders the captured blocks of one request, grouped by
+direction. Bodies are untrusted text and are rendered as plain strings inside
+<pre>; nothing is marked safe. A block stored hash-only (an image, a streamed
+tool call) says so rather than being omitted, so "not capturable" and "not
+captured" do not look the same. */}}
+{{define "request-content"}}
+<div id="content" class="content">
+{{if .Blocks}}
+  {{range .Blocks}}{{template "block" .}}{{end}}
+{{else}}
+  <p class="empty">No content stored for this request. Either content capture is
+    off (<code>storage.capture_content</code>) or this request had nothing to
+    capture — the store keeps those two cases distinguishable, but this view
+    cannot tell them apart without the setting.</p>
+{{end}}
+</div>
+{{end}}

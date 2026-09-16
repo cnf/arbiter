@@ -121,7 +121,8 @@ func (h *StatsHandler) ToolsHandler(w http.ResponseWriter, r *http.Request) {
 // needs the rows themselves, not just their sums.
 //
 // Query parameters, all optional: since, provider, session, alias, status,
-// errors (presence = only status >= 400), limit.
+// errors (presence = only status >= 400), no_session (presence = only the
+// requests with no session key), limit.
 func (h *StatsHandler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 	if h.reader == nil {
 		writeError(w, http.StatusServiceUnavailable, "event store disabled (storage.path unset)")
@@ -135,6 +136,12 @@ func (h *StatsHandler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 		SessionKey: q.Get("session"),
 		Alias:      q.Get("alias"),
 		ErrorsOnly: q.Has("errors"),
+
+		// no_session selects the requests whose affinity derivation declined
+		// to produce a key. It is a presence flag rather than a sentinel value
+		// for ?session, so "any", "none" and a literal empty string stay three
+		// different things.
+		SessionKeyless: q.Has("no_session"),
 	}
 	if raw := q.Get("status"); raw != "" {
 		n, err := strconv.Atoi(raw)

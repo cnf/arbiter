@@ -269,8 +269,24 @@ step 3 + the 4a query surface is currently greenlit.
 > "any"), and tool-call arguments from streams are stored hash-only rather
 > than reassembled.
 >
-> **Next: the user's mini-planning session for 7b** — the UI design is
-> expected to be preliminary and to change through use.
+> **7b planned 2026-09-16** (plan at `~/.claude/plans/1-lets-go-with-snoopy-dawn.md`,
+> reviewed against the code before any of it was built — three of its claims about
+> the store's `ts` column were wrong and are corrected in place). Split into five
+> separately shippable phases: 7b-1 shell + request list/detail, 7b-2 sessions +
+> transcript, 7b-3a pivot table, 7b-3b chart, 7b-4 discovery, 7b-5 live tail.
+>
+> **7b-1 BUILT, COMMITTED** — `internal/ui` (embedded templates + assets, htmx
+> for in-page swaps only), the request list with the 7a filters as a real form,
+> keyset paging, and the request detail page with captured content loaded lazily.
+> Two things landed with it because the page needed them: `?no_session` on
+> `/admin/requests` (the filter `reader.go`'s own doc comment said was missing),
+> and the keyset cursor (`RequestFilter.BeforeTs`/`BeforeID`, rendered as one
+> opaque `?after=` token). Live-verified against fakellm in a scratch config.
+>
+> **Next: 7b-2 (sessions index + conversation transcript)** — and the transcript
+> is to be rendered turn by turn (request N's blocks, then response N's) rather
+> than grouped by direction, so a conversation reads as a dialogue. Each turn
+> links to its own request, so any point in a conversation can be pulled out.
 
 1. ~~Model alias layer + wiring it into the router selection (the "auto /
    auto-coding / pinned model / model group" mechanism).~~ **DONE** —

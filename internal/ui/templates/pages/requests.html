@@ -1,0 +1,7 @@
+{{define "content"}}
+<h1>Requests</h1>
+<p class="lede">Every completed request in the store, newest first. Filters are
+real URLs: what you see is what the address bar says.</p>
+{{template "filters" .}}
+{{template "req-rows" .}}
+{{end}}

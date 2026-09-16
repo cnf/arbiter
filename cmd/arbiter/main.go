@@ -25,6 +25,7 @@ import (
 	"github.com/cnf/arbiter/internal/router"
 	"github.com/cnf/arbiter/internal/store"
 	"github.com/cnf/arbiter/internal/translator"
+	"github.com/cnf/arbiter/internal/ui"
 	"github.com/cnf/arbiter/internal/upstream"
 	"github.com/cnf/arbiter/pkg/types"
 )
@@ -90,6 +91,11 @@ func main() {
 	}
 	stats := arbiterhttp.NewStatsHandler(reader, logger)
 
+	// The admin UI reads the same Reader as the JSON surface. It is a separate
+	// package rather than more handlers on stats because it brings its own
+	// embedded templates and assets; its dependencies are identical.
+	adminUI := ui.New(reader, logger)
+
 	// Content retention runs on its own goroutine and its own connection, so an
 	// expiry sweep never blocks a request. With no TTL configured, content never
 	// expires and no sweeper is started — an upgrade must not silently begin
@@ -98,7 +104,7 @@ func main() {
 	defer stopSweeper()
 	startContentSweeper(sweepCtx, cfg.Storage.Path, cfg.Storage.ContentTTL, logger)
 
-	r := newRouter(handler, admin, stats, cfg.Admin.ForwardAuthHeader)
+	r := newRouter(handler, admin, stats, adminUI, cfg.Admin.ForwardAuthHeader)
 
 	srv := &stdhttp.Server{
 		Handler: r,
@@ -157,7 +163,7 @@ func main() {
 // inline in main so the /admin/* gate is exercised by a real request in tests
 // rather than asserted by reading the wiring. forwardAuthHeader is the
 // configured admin gate header ("" = ungated).
-func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, stats *arbiterhttp.StatsHandler, forwardAuthHeader string) *mux.Router {
+func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, stats *arbiterhttp.StatsHandler, adminUI *ui.Handler, forwardAuthHeader string) *mux.Router {
 	r := mux.NewRouter()
 	r.HandleFunc("/v1/messages", handler.MessagesHandler).Methods("POST")
 	r.HandleFunc("/chat/completions", handler.CompletionsHandler).Methods("POST")
@@ -191,6 +197,29 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	// these return empty results rather than an error, because "no content
 	// stored" is a legitimate answer and the endpoints are harmless.
 	r.HandleFunc("/admin/content/repeated", arbiterhttp.Gate(forwardAuthHeader, stats.RepeatedContentHandler)).Methods("GET")
+
+	// The admin UI. Same gate, same path-and-verb registration, so the whole
+	// page can be allowed or denied by a fronting proxy alongside the JSON
+	// reads it renders. Order matters: the concrete routes are registered
+	// before the static PathPrefix, which would otherwise shadow them.
+	//
+	// The asset tree is behind the gate too, deliberately: an unauthenticated
+	// peer should not be able to enumerate it any more than the data. The
+	// consequence is that a direct-to-loopback browser with forward_auth_header
+	// set gets an unstyled 401 on everything including the CSS — see the
+	// README's admin section.
+	r.HandleFunc("/admin/ui/", arbiterhttp.Gate(forwardAuthHeader, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
+		stdhttp.Redirect(w, req, "/admin/ui/requests", stdhttp.StatusFound)
+	})).Methods("GET")
+	r.HandleFunc("/admin/ui/requests", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestsHandler)).Methods("GET")
+	r.HandleFunc("/admin/ui/requests/{id}", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestHandler)).Methods("GET")
+	r.HandleFunc("/admin/ui/requests/{id}/content", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestContentHandler)).Methods("GET")
+	// PathPrefix, not HandleFunc: gorilla/mux's HandleFunc matches the exact
+	// path, so a static route registered that way serves only "/static/" and
+	// 404s every asset under it — which is exactly what a first version did.
+	// Gate takes and returns an http.HandlerFunc, so the handler is passed as a
+	// method value rather than as an http.Handler.
+	r.PathPrefix("/admin/ui/static/").HandlerFunc(arbiterhttp.Gate(forwardAuthHeader, adminUI.StaticHandler)).Methods("GET")
 	return r
 }
 

@@ -117,13 +117,38 @@ type ToolStat struct {
 // correct for this store: the recorded provider is never empty and a status
 // code of 0 never occurs.
 type RequestFilter struct {
-	Since          time.Time // inclusive lower bound on ts; zero means all time
-	Provider       string
-	SessionKey     string // "none" is not special-cased — see ListRequests
-	Alias          string
-	StatusCode     int
-	ErrorsOnly     bool // status_code >= 400
-	Limit          int  // clamped to [1, maxRequestListLimit]; 0 means the default
+	Since      time.Time // inclusive lower bound on ts; zero means all time
+	Provider   string
+	SessionKey string // "none" is not special-cased — see ListRequests
+	Alias      string
+	StatusCode int
+	ErrorsOnly bool // status_code >= 400
+	Limit      int  // clamped to [1, maxRequestListLimit]; 0 means the default
+
+	// SessionKeyless selects the requests that have *no* session key —
+	// `session_key IS NULL OR session_key = ''`. It exists because the zero
+	// value of SessionKey means "any" (above), so the absent case is otherwise
+	// unexpressible. It is reachable in practice: the affinity derivation
+	// declines to pin a conversation whose first message is too short, and
+	// those requests must still be visible in a list rather than silently
+	// grouped under a session they do not belong to.
+	SessionKeyless bool
+
+	// BeforeTs/BeforeID are the keyset cursor: return only rows strictly older
+	// than this (ts, id) pair under the list's own `ts DESC, id DESC` ordering.
+	// Both must be set together; either alone is ignored.
+	//
+	// Ts is compared as the *stored text*, not as a bound built from a Go
+	// time, because the store's ts column is TEXT in a layout SQLite's date
+	// functions cannot parse and a fraction-free bound sorts below every row
+	// in its own second. The caller therefore echoes back the exact value the
+	// list handed it (RequestRow.TsRaw) rather than reformatting a timestamp.
+	BeforeTs string
+	BeforeID int64
+
+	// IncludeContent is declared and never read. Content is reached through
+	// ContentForRequest, which is what both callers do; this field is a
+	// leftover from before capture existed and is scheduled for removal.
 	IncludeContent bool // include prompt/response text — see RequestDetail
 }
 
@@ -131,9 +156,15 @@ type RequestFilter struct {
 // happened and where it went, without the prompt/response bodies. It is what
 // a dashboard's main table renders.
 type RequestRow struct {
-	ID               int64   `json:"id"`
-	TraceID          string  `json:"trace_id"`
-	Ts               string  `json:"ts"`
+	ID      int64  `json:"id"`
+	TraceID string `json:"trace_id"`
+	Ts      string `json:"ts"`
+
+	// TsRaw is the timestamp exactly as stored, which is what the keyset
+	// cursor must carry to compare correctly (see RequestFilter.BeforeTs).
+	// Unmarshalled off the wire: it is a handle for the next page, not a
+	// second rendering of the same instant.
+	TsRaw            string  `json:"-"`
 	SessionKey       string  `json:"session_key,omitempty"`
 	Format           string  `json:"format"`
 	Provider         string  `json:"provider"`
@@ -503,17 +534,15 @@ LIMIT ?`
 // requestRowColumns is the list projection, shared by ListRequests and
 // GetRequest so the two cannot drift into returning differently-shaped rows.
 const requestRowColumns = `
-    id, trace_id, ts, session_key, format, provider, model, alias_used,
+    id, trace_id, ts, CAST(ts AS TEXT), session_key, format, provider, model, alias_used,
     routing_rationale, domain, effort, cost_class, input_tokens, output_tokens,
     cost_usd, latency_ms, status_code, error, stream, config_epoch`
 
 // ListRequests returns requests newest first, narrowed by f.
 //
-// A note on the session filter: an empty SessionKey means "any", so there is
-// no way to ask for the requests that have *no* session key. That case is
-// reachable (the affinity derivation declines to produce a key) and a UI may
-// eventually want it, but it needs an explicit sentinel or a separate
-// boolean; guessing at a magic string now would be worse than not offering it.
+// A note on the session filter: an empty SessionKey means "any" — see
+// RequestFilter.SessionKeyless for the absent case, which is expressed as its
+// own boolean rather than as a magic string.
 func (r *Reader) ListRequests(ctx context.Context, f RequestFilter) ([]RequestRow, error) {
 	where := []string{"1 = 1"}
 	args := []interface{}{}
@@ -530,6 +559,9 @@ func (r *Reader) ListRequests(ctx context.Context, f RequestFilter) ([]RequestRo
 		where = append(where, "session_key = ?")
 		args = append(args, f.SessionKey)
 	}
+	if f.SessionKeyless {
+		where = append(where, "(session_key IS NULL OR session_key = '')")
+	}
 	if f.Alias != "" {
 		where = append(where, "alias_used = ?")
 		args = append(args, f.Alias)
@@ -540,6 +572,15 @@ func (r *Reader) ListRequests(ctx context.Context, f RequestFilter) ([]RequestRo
 	}
 	if f.ErrorsOnly {
 		where = append(where, "status_code >= 400")
+	}
+	// Keyset continuation. The row-value comparison matches the ordering below
+	// exactly, which is what makes paging stable: an id-only cursor would skip
+	// or repeat rows whenever ts is not monotonic in id (a backfill, an
+	// import, a clock step). Both halves of the cursor are required; a
+	// half-set cursor is ignored rather than silently mis-paging.
+	if f.BeforeTs != "" && f.BeforeID > 0 {
+		where = append(where, "(ts, id) < (?, ?)")
+		args = append(args, f.BeforeTs, f.BeforeID)
 	}
 
 	limit := f.Limit
@@ -596,7 +637,7 @@ FROM requests WHERE id = ?`
 		client  sql.NullString
 	)
 	err := r.db.QueryRowContext(ctx, q, id).Scan(
-		&d.ID, &d.TraceID, &tsRaw, &session, &d.Format, &d.Provider, &d.Model, &alias,
+		&d.ID, &d.TraceID, &tsRaw, &d.TsRaw, &session, &d.Format, &d.Provider, &d.Model, &alias,
 		&d.RoutingRationale, &domain, &effort, &costCl, &d.InputTokens, &d.OutputTokens,
 		&d.CostUSD, &d.LatencyMs, &d.StatusCode, &errText, &d.Stream, &epoch,
 		&conf, &d.CacheReadTokens, &d.CacheWriteTokens, &tools, &client)
@@ -639,7 +680,7 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 		errText sql.NullString
 		epoch   sql.NullString
 	)
-	if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &session, &s.Format, &s.Provider,
+	if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &s.TsRaw, &session, &s.Format, &s.Provider,
 		&s.Model, &alias, &s.RoutingRationale, &domain, &effort, &costCl,
 		&s.InputTokens, &s.OutputTokens, &s.CostUSD, &s.LatencyMs, &s.StatusCode,
 		&errText, &s.Stream, &epoch); err != nil {

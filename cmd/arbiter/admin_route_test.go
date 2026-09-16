@@ -12,6 +12,7 @@ import (
 	arbiterhttp "github.com/cnf/arbiter/internal/http"
 	"github.com/cnf/arbiter/internal/logging"
 	"github.com/cnf/arbiter/internal/store"
+	"github.com/cnf/arbiter/internal/ui"
 )
 
 // newTestRouter builds the real route table (newRouter) against a handler
@@ -33,7 +34,71 @@ func newTestRouter(t *testing.T, configPath, forwardAuthHeader string) (*arbiter
 		return reload(ctx, configPath, h, logger, store.NoopWriter{})
 	}, logger)
 	stats := arbiterhttp.NewStatsHandler(nil, logger)
-	return h, newRouter(h, admin, stats, forwardAuthHeader)
+	adminUI := ui.New(nil, logger)
+	return h, newRouter(h, admin, stats, adminUI, forwardAuthHeader)
+}
+
+// The UI is wired onto the same gate as the rest of /admin/*, and that
+// includes the embedded asset tree: an unauthenticated peer must not be able to
+// enumerate the assets any more than read the data. The static route is the one
+// worth asserting separately, because it is registered as a PathPrefix after
+// every other route and a mistake there fails silently — the page would render
+// and only the stylesheet and the script would 401.
+func TestAdminUIRoutesAreGated(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lanes.yaml")
+	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, r := newTestRouter(t, path, "X-Forwarded-User")
+
+	for _, target := range []string{
+		"/admin/ui/",
+		"/admin/ui/requests",
+		"/admin/ui/requests/1",
+		"/admin/ui/requests/1/content",
+		"/admin/ui/static/htmx.min.js",
+		"/admin/ui/static/app.css",
+	} {
+		resp := httptest.NewRecorder()
+		r.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, target, nil))
+		if resp.Code != http.StatusUnauthorized {
+			t.Errorf("ungated GET %s = %d, want 401", target, resp.Code)
+		}
+	}
+}
+
+// With the header present the UI is reachable, and with no store configured it
+// still returns a page rather than an error: "store disabled" is explained, not
+// reported as a failure.
+func TestAdminUIReachableWithHeaderAndNoStore(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lanes.yaml")
+	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, r := newTestRouter(t, path, "X-Forwarded-User")
+
+	for _, target := range []string{"/admin/ui/requests", "/admin/ui/static/app.css"} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("X-Forwarded-User", "op")
+		resp := httptest.NewRecorder()
+		r.ServeHTTP(resp, req)
+		if resp.Code != http.StatusOK {
+			t.Errorf("gated GET %s = %d, want 200", target, resp.Code)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/ui/", nil)
+	req.Header.Set("X-Forwarded-User", "op")
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusFound {
+		t.Errorf("GET /admin/ui/ = %d, want 302 to the requests page", resp.Code)
+	}
+	if loc := resp.Header().Get("Location"); loc != "/admin/ui/requests" {
+		t.Errorf("redirect Location = %q", loc)
+	}
 }
 
 // The gate must be wired onto the *route*, not just available as a helper:

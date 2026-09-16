@@ -1,0 +1,15 @@
+{{/* pagination.html renders the list footer: whether the list is complete, and
+the keyset "load more" control when it is not. */}}
+{{define "pagination"}}
+{{if .Rows}}
+  <p class="pager">
+    {{if .More}}
+      <button class="more" hx-get="{{.MoreURL}}" hx-target="#rows" hx-swap="outerHTML"
+              hx-push-url="true">load more</button>
+    {{else}}
+      <span class="muted">end of results</span>
+    {{end}}
+    <span class="muted">{{len .Rows}} row{{if ne (len .Rows) 1}}s{{end}} shown</span>
+  </p>
+{{end}}
+{{end}}

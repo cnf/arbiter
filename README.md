@@ -51,6 +51,9 @@ overrides both. Loopback is the default on purpose — see
 | `GET /admin/requests` | request list, newest first           |
 | `GET /admin/requests/{id}` | one request in full, incl. captured content |
 | `GET /admin/content/repeated` | blocks recurring across requests |
+| `GET /admin/ui/` | the admin web UI (302 to `/requests`)   |
+| `GET /admin/ui/requests` | request list + filters, as a page    |
+| `GET /admin/ui/requests/{id}` | request detail, as a page        |
 
 Both chat endpoints accept `stream: true` and respond with SSE in the same
 wire format as the request (formats are never mixed). Every response —
@@ -104,6 +107,7 @@ arbiter/
 │   ├── upstream/         # provider HTTP calls, SSE reading, response parsing
 │   ├── logging/          # single structured logging path (JSON, trace-correlated)
 │   ├── store/            # sqlite event store: schema, async writer, content store, Reader
+│   ├── ui/               # admin web UI: embedded templates + assets, htmx fragments
 │   └── config/           # lanes.yaml loading (strict: unknown fields rejected)
 ├── pkg/
 │   ├── types/            # Normalized* request/response/stream types (the hub)
@@ -495,9 +499,9 @@ last 7 days, and `/admin/stats/session` takes the session key as `?key=`.
 `/admin/requests` is the same data one row at a time — the aggregates above
 cannot answer "what just happened", so this returns the requests themselves,
 newest first. `?since`, `?provider`, `?session`, `?alias`, `?status=<code>`,
-`?errors` (presence only: status ≥ 400) and `?limit=<n>` (default and maximum
-500) narrow it; a malformed `status` or `limit` is a **400**, not a silently
-ignored filter. Ordering is `ts DESC, id DESC` — the id tiebreaker matters
+`?errors` (presence only: status ≥ 400), `?no_session` (presence only: only the
+requests with no session key) and `?limit=<n>` (default and maximum 500) narrow
+it; a malformed `status` or `limit` is a **400**, not a silently ignored filter. Ordering is `ts DESC, id DESC` — the id tiebreaker matters
 because rows written within one timestamp tick would otherwise come back in an
 arbitrary order. `/admin/requests/{id}` takes the `id` the list returns and
 adds the fields a list row omits (confidence, cache token counts, tool calls);
@@ -516,6 +520,45 @@ deduplicated (below) — and `/admin/requests/{id}` then carries a `content`
 array of the request/response blocks in conversation order. The
 `request_text`/`response_text` fields on that response predate capture and are
 always empty; `content` is the field that carries bodies.
+
+### Admin web UI
+
+`internal/ui` serves a read-only browser over the same event store, under the
+same gate: `/admin/ui/requests` is the request list with the filters above as a
+real form, and `/admin/ui/requests/{id}` is one request in full with its
+captured content loaded lazily. It is HTML rather than JSON because the
+questions REQUIREMENTS §2 asks — what happened, to which conversation, at what
+cost — are answerable by reading rows, not by summing them.
+
+It is a separate package from `internal/http` because it shares none of that
+package's concerns (wire formats, SSE flushing, the request hot path) and brings
+its own embedded assets. Its dependencies are exactly `StatsHandler`'s: a
+`*store.Reader` and a logger. Nothing is fetched at runtime — `htmx` and our CSS
+are embedded in the binary (`internal/ui/static/`, see `THIRD_PARTY.md`), so the
+UI needs no network of its own and no JS build step.
+
+Three behaviours worth knowing, because they are deliberate and look like bugs
+otherwise:
+
+- **A disabled store renders an explanatory page, not a 503.** The JSON surface
+  returns 503 for `/admin/stats*` (correct for a scripted client), but a browser
+  landing on a JSON error body is a dead end. The page says which setting is
+  missing. Fragment requests — the htmx swaps — do get a 503, because they are
+  swapped into a page that already explains itself.
+- **The asset tree is behind the gate too**, so an unauthenticated peer cannot
+  enumerate it. The consequence: with `forward_auth_header` set, a browser
+  pointed directly at loopback gets a 401 on the CSS and sees an unstyled page.
+  Through Caddy it is fine — the proxy injects the header on every request,
+  assets included.
+- **Paging uses an opaque `?after=` cursor**, not `?before_ts=`. The honest
+  cursor is the row's stored timestamp text (`… +0000 UTC`), whose `+`
+  characters a query string is entitled to read as spaces; a client that does so
+  gets an empty page rather than an error. The token is base64 over
+  `ts \x00 id` and is URL-exact.
+
+`?no_session` was added to `/admin/requests` at the same time: an empty
+`?session=` means "any", so the requests with *no* session key (those whose
+affinity derivation declined to pin them) needed their own flag.
 
 ### Content store
 

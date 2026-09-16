@@ -714,12 +714,17 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 		p.logger.LogUpstream(ctx, served.Provider, status, time.Since(streamStart), usage)
 
 		usage.CostUSD = p.computeCost(served.Provider, served.Model, usage)
-		// Response capture on the streaming path: the text arrives as deltas,
-		// so it is accumulated per block index as the events flow and stored
-		// when the stream ends. Only successfully completed text is captured —
-		// tool_use arguments arrive as JSON fragments and are not reassembled
-		// yet, so those blocks are stored hash-only rather than guessed at.
-		var respContent store.CapturedContent
+		// Content capture on the streaming path. The response half is rebuilt
+		// from the accumulated deltas, since the text arrives in fragments; the
+		// REQUEST half is the capture taken before pre-guardrails at the top of
+		// Execute and handed down here. Both halves must ride on the event: an
+		// earlier version recorded only the response, so every streamed row had
+		// a reply with no prompt, and a session transcript read as a list of
+		// answers to questions nobody asked. Only successfully completed text is
+		// captured — tool_use arguments arrive as JSON fragments and are not
+		// reassembled yet, so those blocks are stored hash-only rather than
+		// guessed at.
+		respContent := content
 		if p.captureContent {
 			respContent.Response = capturedStreamBlocks(orderedText)
 		}

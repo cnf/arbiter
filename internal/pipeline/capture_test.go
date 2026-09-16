@@ -8,6 +8,7 @@ import (
 
 	"github.com/cnf/arbiter/internal/guardrail"
 	"github.com/cnf/arbiter/internal/store"
+	"github.com/cnf/arbiter/internal/upstream"
 	"github.com/cnf/arbiter/pkg/types"
 )
 
@@ -179,6 +180,81 @@ func TestCaptureStoresRequestAndResponse(t *testing.T) {
 	}
 }
 
+// TestCaptureStreamStoresRequestAndResponse proves the streaming path records
+// BOTH halves of the capture. It used to record only the response — the request
+// half, captured before pre-guardrails in Execute, was never carried into the
+// streamed event — so every streamed row held a reply with no prompt, and a
+// session transcript rendered as a list of answers to questions nobody asked.
+func TestCaptureStreamStoresRequestAndResponse(t *testing.T) {
+	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
+	w := &capturingRecorder{}
+	p := NewPipeline(
+		nil, streamingNormalizer{model: "m-primary"}, fakeDenormalizer{},
+		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
+		fakeLogger{}, time.Minute, nil, w, nil,
+	)
+	p.SetCaptureContent(true)
+
+	out, err := p.Execute(context.Background(), []byte("a question with substance"), "openai", "t1", "")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	sr, ok := out.(*upstream.StreamResponse)
+	if !ok {
+		t.Fatalf("stream Execute returned %T, want *upstream.StreamResponse", out)
+	}
+	for range sr.EventChan {
+	}
+
+	ev, ok := waitForRecorderEvent(w)
+	if !ok {
+		t.Fatal("streamed request was not recorded")
+	}
+	if ev.Content == nil {
+		t.Fatal("no content captured on the streaming path")
+	}
+	if len(ev.Content.Request) == 0 {
+		t.Error("no request blocks captured on a streamed request — the prompt half is missing")
+	}
+	// The normalizer turns the payload into the user turn, so the captured
+	// request block must carry that text; it is what the transcript page shows
+	// above the reply.
+	if got := string(ev.Content.Request[0].Body); got != "a question with substance" {
+		t.Errorf("request block = %q, want the client's own text", got)
+	}
+	if ev.Content.Request[0].Role != "user" {
+		t.Errorf("request role = %q, want user", ev.Content.Request[0].Role)
+	}
+}
+
+// TestCaptureStreamOffRecordsNoContent mirrors the non-streaming case: with
+// capture disabled the event carries no content field at all, on either path.
+func TestCaptureStreamOffRecordsNoContent(t *testing.T) {
+	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
+	w := &capturingRecorder{}
+	p := NewPipeline(
+		nil, streamingNormalizer{model: "m-primary"}, fakeDenormalizer{},
+		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
+		fakeLogger{}, time.Minute, nil, w, nil,
+	)
+
+	out, err := p.Execute(context.Background(), []byte("anything"), "openai", "t1", "")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	sr, _ := out.(*upstream.StreamResponse)
+	for range sr.EventChan {
+	}
+
+	ev, ok := waitForRecorderEvent(w)
+	if !ok {
+		t.Fatal("streamed request was not recorded")
+	}
+	if ev.Content != nil {
+		t.Errorf("Content = %+v, want nil when capture is off", ev.Content)
+	}
+}
+
 // TestRejectedRequestContentIsRecorded proves the (b) decision at the pipeline
 // level: a request a pre-guardrail refuses still gets its content stored, under
 // a rejection id, so "why was this refused" has something to show.
@@ -269,4 +345,19 @@ func lastEvent(w *capturingRecorder) (store.Event, bool) {
 		return store.Event{}, false
 	}
 	return w.events[len(w.events)-1], true
+}
+
+// waitForRecorderEvent polls for up to a second, since the stream write path
+// records in a goroutine that finishes just after its channel closes. The
+// capturingRecorder fake has no lock of its own (its tests are sequential), so
+// this mirrors waitForEvent without asserting on the other writer type.
+func waitForRecorderEvent(w *capturingRecorder) (store.Event, bool) {
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if ev, ok := lastEvent(w); ok {
+			return ev, true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return store.Event{}, false
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,6 +13,18 @@ import (
 	arbitererrors "github.com/cnf/arbiter/pkg/errors"
 	"github.com/cnf/arbiter/pkg/types"
 )
+
+// defaultFraming is the instruction sentence used when a classifier configures
+// no `instructions:`. Deliberately one line: the framing is the least
+// interesting part of the prompt, and everything that carries accuracy — the
+// per-label rubrics — sits below it.
+const defaultFraming = "Classify the user's message into exactly one of these categories."
+
+// replyContract is appended to every classification prompt and is NOT
+// overridable by config. Parsing one word instead of JSON is what makes a
+// half-parsed reply impossible; a configurable reply format would let a rubric
+// edit break the one property the parser depends on.
+const replyContract = "Reply with the single matching word and nothing else — no punctuation, no explanation."
 
 // LLMClassifier fills one axis (domain, in practice — nothing here prevents
 // another axis, but only domain is built today) by asking an upstream model
@@ -29,17 +42,28 @@ type LLMClassifier struct {
 	alias     string
 	upstream  upstream.Client
 	providers map[string]types.ProviderConfig
-	labels    []string
-	fallback  Classifier
-	timeout   time.Duration
+
+	// labels carries each category's optional rubric description, and escape
+	// names the label meaning "none of these apply" (empty for none).
+	labels []types.Label
+	escape string
+
+	// instructions replaces defaultFraming when non-empty.
+	instructions string
+
+	fallback Classifier
+	timeout  time.Duration
 }
 
 // NewLLMClassifier creates an LLM-backed classifier. alias names a configured
 // alias (pinned or group) that routes the classification call — resolved the
 // same way a client-named alias would be, including a group alias's member
-// selection and fallback siblings. fallback is used whenever the call fails
+// selection and fallback siblings. labels carries each category's optional
+// rubric description; escape names the label that means "no category fits",
+// whose verdict fills no axis at all. instructions, when non-empty, replaces
+// the default framing sentence. fallback is used whenever the call fails
 // outright; timeout <= 0 defaults to 10s.
-func NewLLMClassifier(name, axis string, resolver *router.AliasResolver, alias string, u upstream.Client, providers map[string]types.ProviderConfig, labels []string, fallback Classifier, timeout time.Duration) *LLMClassifier {
+func NewLLMClassifier(name, axis string, resolver *router.AliasResolver, alias string, u upstream.Client, providers map[string]types.ProviderConfig, labels []types.Label, escape, instructions string, fallback Classifier, timeout time.Duration) *LLMClassifier {
 	if axis == "" {
 		axis = AxisDomain
 	}
@@ -47,15 +71,17 @@ func NewLLMClassifier(name, axis string, resolver *router.AliasResolver, alias s
 		timeout = 10 * time.Second
 	}
 	return &LLMClassifier{
-		name:      name,
-		axis:      axis,
-		resolver:  resolver,
-		alias:     alias,
-		upstream:  u,
-		providers: providers,
-		labels:    labels,
-		fallback:  fallback,
-		timeout:   timeout,
+		name:         name,
+		axis:         axis,
+		resolver:     resolver,
+		alias:        alias,
+		upstream:     u,
+		providers:    providers,
+		labels:       labels,
+		escape:       escape,
+		instructions: instructions,
+		fallback:     fallback,
+		timeout:      timeout,
 	}
 }
 
@@ -80,17 +106,34 @@ func (c *LLMClassifier) Classify(ctx context.Context, req *types.NormalizedReque
 	}
 
 	sig := types.Signals{Confidence: 1.0, ClassifierCalls: []*types.ClassifierCallInfo{call}}
+	c.fillAxis(&sig, label)
+	return sig, nil
+}
+
+// fillAxis writes the chosen label onto whichever Signals field this instance
+// fills. An escape verdict leaves every axis empty, which is the point: a
+// policy router's `when: {domain: ...}` rules then simply do not match and a
+// chained router takes over, instead of the operator having to write a rule for
+// a literal "unknown" domain.
+//
+// The axis still counts as classified — Confidence 1.0, one recorded call — so
+// the empty value reads as "the model said nothing fits", not as "no classifier
+// ran". MergedClassifier keys its per-axis pick on a non-empty value, so an
+// escape verdict leaves whichever other classifier fills that axis to win.
+func (c *LLMClassifier) fillAxis(sig *types.Signals, label *types.Label) {
+	if label == nil {
+		return
+	}
 	switch c.axis {
 	case AxisEffort:
-		sig.Effort = label
+		sig.Effort = label.Name
 	case AxisCostClass:
-		sig.CostClass = label
+		sig.CostClass = label.Name
 	case AxisCapabilities:
-		sig.RequiredCapabilities = []string{label}
+		sig.RequiredCapabilities = []string{label.Name}
 	default:
-		sig.Domain = label
+		sig.Domain = label.Name
 	}
-	return sig, nil
 }
 
 // runFallback calls the wrapped classifier, defensively treating a nil
@@ -105,16 +148,17 @@ func (c *LLMClassifier) runFallback(ctx context.Context, req *types.NormalizedRe
 
 // tryClassify attempts the upstream call. ok=false means it failed outright
 // (nothing usable came back); call is still non-nil in that case so the
-// failure has diagnostics. ok=true means label is a value from c.labels the
-// model actually chose.
-func (c *LLMClassifier) tryClassify(ctx context.Context, req *types.NormalizedRequest) (call *types.ClassifierCallInfo, label string, ok bool) {
+// failure has diagnostics. ok=true means label is the label the model actually
+// chose — nil when it chose the escape label, which is a successful verdict
+// that fills no axis.
+func (c *LLMClassifier) tryClassify(ctx context.Context, req *types.NormalizedRequest) (call *types.ClassifierCallInfo, label *types.Label, ok bool) {
 	if c.resolver == nil || c.alias == "" || len(c.labels) == 0 {
-		return nil, "", false
+		return nil, nil, false
 	}
 
 	candidates, err := c.candidates()
 	if err != nil || len(candidates) == 0 {
-		return &types.ClassifierCallInfo{Error: errString(err, "no route for classifier alias")}, "", false
+		return &types.ClassifierCallInfo{Error: errString(err, "no route for classifier alias")}, nil, false
 	}
 
 	text := types.LastUserText(req)
@@ -143,7 +187,7 @@ func (c *LLMClassifier) tryClassify(ctx context.Context, req *types.NormalizedRe
 		}
 
 		reply := strings.TrimSpace(extractText(resp))
-		matched, isLabel := matchLabel(reply, c.labels)
+		matched, isLabel := c.matchVerdict(reply)
 		lastCall = &types.ClassifierCallInfo{
 			Provider: route.Provider, Model: route.Model, LatencyMs: latency,
 			Usage: resp.Usage, StatusCode: 200, RawReply: reply,
@@ -154,7 +198,28 @@ func (c *LLMClassifier) tryClassify(ctx context.Context, req *types.NormalizedRe
 		}
 		return lastCall, matched, true
 	}
-	return lastCall, "", false
+	return lastCall, nil, false
+}
+
+// matchVerdict resolves a reply to the label it names. isLabel=false means the
+// reply matched nothing usable, which counts as a failed call and falls back.
+//
+// A returned nil label with isLabel=true is the escape verdict. A bare "none" is
+// accepted as escape whenever an escape label is configured, so a rubric that
+// describes "nothing fits" without spelling a keyword still yields a successful
+// verdict rather than an unparseable reply.
+func (c *LLMClassifier) matchVerdict(reply string) (label *types.Label, isLabel bool) {
+	l, ok := types.FindLabel(c.labels, reply)
+	if !ok {
+		if c.escape != "" && strings.EqualFold(reply, "none") {
+			return nil, true
+		}
+		return nil, false
+	}
+	if c.escape != "" && strings.EqualFold(l.Name, c.escape) {
+		return nil, true
+	}
+	return &l, true
 }
 
 // candidates resolves the configured alias into a primary route plus its
@@ -177,25 +242,46 @@ func (c *LLMClassifier) candidates() ([]types.Route, error) {
 	return append([]types.Route{primary}, fallbacks...), nil
 }
 
-// systemPrompt asks for exactly one word so parsing stays a plain string
-// match — no JSON, no schema, nothing that can half-parse.
+// systemPrompt assembles the three-part prompt: framing (configurable), the
+// label set with its rubrics (configurable, and where accuracy lives), then the
+// reply contract (fixed, always last).
+//
+// Labels are sorted before joining because Go map iteration is randomized, so an
+// unsorted set would emit different prompt bytes on every call and make the
+// logged prompt impossible to diff against the previous one. It buys no prompt
+// cache hit — a prompt this short is below every provider's minimum cacheable
+// length, so it is not cached either way — which makes stability here purely
+// about comparing one call's prompt to the next.
 func (c *LLMClassifier) systemPrompt() string {
-	return fmt.Sprintf(
-		"Classify the user's message into exactly one of these categories: %s.\n"+
-			"Reply with the single matching word and nothing else — no punctuation, no explanation.",
-		strings.Join(c.labels, ", "))
-}
+	framing := c.instructions
+	if framing == "" {
+		framing = defaultFraming
+	}
 
-// matchLabel compares reply against labels case-insensitively and returns
-// the canonically-configured spelling, not the model's own casing.
-func matchLabel(reply string, labels []string) (string, bool) {
-	lower := strings.ToLower(reply)
-	for _, l := range labels {
-		if strings.ToLower(l) == lower {
-			return l, true
+	sorted := make([]types.Label, len(c.labels))
+	copy(sorted, c.labels)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+
+	var b strings.Builder
+	b.WriteString(framing)
+	b.WriteString("\n\n")
+	for i, l := range sorted {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("- ")
+		b.WriteString(l.Name)
+		if l.Description != "" {
+			b.WriteString(": ")
+			b.WriteString(l.Description)
 		}
 	}
-	return "", false
+	if c.escape != "" {
+		fmt.Fprintf(&b, "\n- none: none of the above apply (this means %s).", c.escape)
+	}
+	b.WriteString("\n\n")
+	b.WriteString(replyContract)
+	return b.String()
 }
 
 // extractText concatenates every text block in a response — a classification

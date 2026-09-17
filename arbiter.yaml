@@ -43,6 +43,54 @@ providers:
 # high-confidence domain match can't starve the effort axis. `axis` may be
 # omitted on a "heuristic" classifier (defaults to domain, matching older
 # configs); the legacy "capability_detector" type always fills capabilities.
+#
+# A `type: "llm"` classifier asks an upstream model to classify instead of
+# matching keywords. Its `config:` takes:
+#   alias:        required — a configured alias the classification call routes
+#                 through (resolved like any client-named alias, so a group
+#                 alias's fallback siblings apply to it too).
+#   labels:       required — either a list of bare names, or a map of
+#                 name -> description. The description is the category's
+#                 BOUNDARY and is the single biggest lever on accuracy: a bare
+#                 "code_generation" tells the model nothing about where it ends
+#                 and "reasoning" begins. Both shapes may be mixed in one list.
+#   escape:       optional — the label name meaning "none of these apply". Its
+#                 verdict fills NO axis, so a policy router's rules simply don't
+#                 match and a chained router takes over. Without one, "nothing
+#                 fits" can only be a wrong label or an off-list reply, and an
+#                 off-list reply counts as a FAILURE that falls back.
+#   instructions: optional — replaces the default framing sentence. The
+#                 single-word reply contract is always appended and is not
+#                 configurable.
+#   fallback:     required — another (non-llm) classifier to defer to whenever
+#                 the call fails outright.
+#   timeout:      optional — Go duration, defaults to 10s.
+#
+# Every call is recorded as its own kind="classifier" row. With capture_content
+# on, that row also carries the text it classified and the prompt it was given,
+# so a wrong verdict can be read against what produced it.
+#
+# classifiers:
+#   - name: "domain-heuristic"
+#     type: "heuristic"
+#     config:
+#       keywords: { code_generation: ["write", "refactor"] }
+#   - name: "domain-llm"
+#     type: "llm"
+#     axis: "domain"
+#     config:
+#       alias: "cheap-claude"
+#       labels:
+#         code_generation: >-
+#           the user wants code written, modified, refactored, or reviewed —
+#           an implementation task with a concrete code artifact as the answer.
+#         reasoning: >-
+#           the user wants something explained, analyzed or debugged — an
+#           answer in prose, with no code artifact as the deliverable.
+#         chat: "greeting or small talk with no artifact expected."
+#         none: "none of the other categories apply."
+#       escape: "none"
+#       fallback: "domain-heuristic"
 classifiers:
   - name: "domain"
     type: "heuristic"

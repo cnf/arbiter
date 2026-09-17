@@ -582,18 +582,28 @@ func buildClassifier(cc config.ClassifierConfig) (classifier.Classifier, error) 
 
 // buildLLMClassifier builds an "llm" classifier: alias (required) names the
 // configured alias its classification calls route through, labels (required,
-// non-empty) is the set of values it may return, fallback (required) names
-// another classifier already built in buildClassifiers' first pass, and
-// timeout is an optional Go duration (defaults inside NewLLMClassifier).
+// non-empty) is the set of values it may return — bare names, or name ->
+// rubric-description pairs — escape (optional) names the label meaning "no
+// category fits", instructions (optional) replaces the default framing
+// sentence, fallback (required) names another classifier already built in
+// buildClassifiers' first pass, and timeout is an optional Go duration
+// (defaults inside NewLLMClassifier).
 func buildLLMClassifier(cc config.ClassifierConfig, resolver *router.AliasResolver, providers map[string]types.ProviderConfig, u upstream.Client, byName map[string]classifier.Classifier) (classifier.Classifier, error) {
 	alias, _ := cc.Config["alias"].(string)
 	if alias == "" {
 		return nil, fmt.Errorf(`"llm" classifier requires "alias"`)
 	}
-	labels := stringSlice(cc.Config, "labels")
+	// The same parser config validation uses, so the two cannot disagree about
+	// what a labels block means (see types.ParseLabels).
+	labels, err := types.ParseLabels(cc.Config["labels"])
+	if err != nil {
+		return nil, fmt.Errorf("invalid labels: %w", err)
+	}
 	if len(labels) == 0 {
 		return nil, fmt.Errorf(`"llm" classifier requires a non-empty "labels" list`)
 	}
+	escape, _ := cc.Config["escape"].(string)
+	instructions, _ := cc.Config["instructions"].(string)
 	fallbackName, _ := cc.Config["fallback"].(string)
 	if fallbackName == "" {
 		return nil, fmt.Errorf(`"llm" classifier requires "fallback"`)
@@ -610,20 +620,7 @@ func buildLLMClassifier(cc config.ClassifierConfig, resolver *router.AliasResolv
 		}
 		timeout = d
 	}
-	return classifier.NewLLMClassifier(cc.Name, cc.Axis, resolver, alias, u, providers, labels, fallback, timeout), nil
-}
-
-// stringSlice reads a []string from a config map's key, silently dropping any
-// non-string element — the same tolerance stringListMap's inner lists use.
-func stringSlice(cfg map[string]interface{}, key string) []string {
-	raw, _ := cfg[key].([]interface{})
-	out := make([]string, 0, len(raw))
-	for _, v := range raw {
-		if s, ok := v.(string); ok {
-			out = append(out, s)
-		}
-	}
-	return out
+	return classifier.NewLLMClassifier(cc.Name, cc.Axis, resolver, alias, u, providers, labels, escape, instructions, fallback, timeout), nil
 }
 
 // buildAliasResolver builds the resolver used by policy routers to resolve

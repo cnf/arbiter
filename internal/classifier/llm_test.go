@@ -2,6 +2,7 @@ package classifier
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,7 +87,16 @@ func testReq() *types.NormalizedRequest {
 	return &types.NormalizedRequest{Messages: []types.Message{{Role: "user", Content: []types.ContentBlock{types.TextBlock("please fix this bug")}}}}
 }
 
-var labels = []string{"code_generation", "chat"}
+// bareLabels is the original list form: names with no rubric description, so
+// every pre-rubric config keeps loading and behaving identically.
+var bareLabels = []types.Label{{Name: "code_generation"}, {Name: "chat"}}
+
+// rubricLabels is the map form: the same names, each carrying the description
+// that gives the model the category's boundary — the whole point of the rubric.
+var rubricLabels = []types.Label{
+	{Name: "code_generation", Description: "the user wants code written, modified, refactored, or reviewed."},
+	{Name: "chat", Description: "greeting or small talk with no artifact expected."},
+}
 
 // TestLLMClassifierSuccessReturnsLabelAndCallInfo proves the happy path:
 // the model's reply matches a configured label, Domain is filled with it,
@@ -94,7 +104,7 @@ var labels = []string{"code_generation", "chat"}
 // is recorded with no error.
 func TestLLMClassifierSuccessReturnsLabelAndCallInfo(t *testing.T) {
 	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("code_generation")}}
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), labels, fakeHeuristic{domain: "chat"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {
@@ -120,7 +130,7 @@ func TestLLMClassifierSuccessReturnsLabelAndCallInfo(t *testing.T) {
 // and still records the failed attempt's diagnostics.
 func TestLLMClassifierUpstreamErrorFallsBack(t *testing.T) {
 	u := &fakeUpstream{errs: map[string]error{"primary": arbitererrors.NewUpstreamError("primary", 429, "rate limited", nil)}}
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), labels, fakeHeuristic{domain: "chat"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {
@@ -142,7 +152,7 @@ func TestLLMClassifierUpstreamErrorFallsBack(t *testing.T) {
 // "surface ambiguity, never guess" rule the rest of the codebase follows.
 func TestLLMClassifierUnparseableReplyFallsBack(t *testing.T) {
 	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("I'm not sure, maybe coding?")}}
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), labels, fakeHeuristic{domain: "chat"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {
@@ -164,7 +174,7 @@ func TestLLMClassifierTriesGroupFallbackMember(t *testing.T) {
 		errs:      map[string]error{"primary": arbitererrors.NewUpstreamError("primary", 503, "down", nil)},
 		responses: map[string]*types.NormalizedResponse{"fallback": reply("chat")},
 	}
-	c := NewLLMClassifier("t", AxisDomain, groupResolver(), "classify", u, testProviders(), labels, fakeHeuristic{domain: "code_generation"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, groupResolver(), "classify", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "code_generation"}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {
@@ -184,7 +194,7 @@ func TestLLMClassifierTriesGroupFallbackMember(t *testing.T) {
 // the runtime one.
 func TestLLMClassifierUnknownAliasFallsBack(t *testing.T) {
 	u := &fakeUpstream{}
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "does-not-exist", u, testProviders(), labels, fakeHeuristic{domain: "chat"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "does-not-exist", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {
@@ -195,5 +205,140 @@ func TestLLMClassifierUnknownAliasFallsBack(t *testing.T) {
 	}
 	if len(u.calls) != 0 {
 		t.Errorf("upstream calls = %v, want none (never reached — the alias doesn't resolve)", u.calls)
+	}
+}
+
+// TestSystemPromptCarriesRubricAndKeepsReplyContract proves the prompt's three
+// parts: the framing sentence, each label with its description, and the reply
+// contract last. The descriptions are the point of the feature — a bare label
+// gives the model no boundary.
+func TestSystemPromptCarriesRubricAndKeepsReplyContract(t *testing.T) {
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", &fakeUpstream{}, testProviders(), rubricLabels, "", "", fakeHeuristic{}, time.Second)
+	p := c.systemPrompt()
+
+	if !strings.Contains(p, "the user wants code written, modified, refactored, or reviewed.") {
+		t.Errorf("prompt does not carry the code_generation rubric:\n%s", p)
+	}
+	if !strings.Contains(p, "greeting or small talk with no artifact expected.") {
+		t.Errorf("prompt does not carry the chat rubric:\n%s", p)
+	}
+	if !strings.Contains(p, "code_generation:") {
+		t.Errorf("prompt does not render the label with its description:\n%s", p)
+	}
+	// The reply contract is not overridable, so it must be present verbatim even
+	// though instructions was empty here.
+	if !strings.Contains(p, "Reply with the single matching word and nothing else") {
+		t.Errorf("prompt is missing the fixed reply contract:\n%s", p)
+	}
+}
+
+// TestSystemPromptIsStableAcrossCalls is the sorting rule: Go map iteration is
+// randomized, so an unsorted label set would emit different prompt bytes on
+// every call and make the logged prompt impossible to diff. Note this buys no
+// prompt cache hit — a prompt this short is below every provider's minimum
+// cacheable length — so the property being asserted is stability, not caching.
+func TestSystemPromptIsStableAcrossCalls(t *testing.T) {
+	// Shuffled input order, as a map iteration would deliver it.
+	shuffled := []types.Label{
+		{Name: "discovery"}, {Name: "chat"}, {Name: "code_generation"}, {Name: "reasoning"},
+	}
+	first := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", &fakeUpstream{}, testProviders(), shuffled, "", "", fakeHeuristic{}, time.Second).systemPrompt()
+	for i := 0; i < 20; i++ {
+		got := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", &fakeUpstream{}, testProviders(), shuffled, "", "", fakeHeuristic{}, time.Second).systemPrompt()
+		if got != first {
+			t.Fatalf("prompt changed between calls (iteration %d):\n%q\nvs\n%q", i, got, first)
+		}
+	}
+	// And the order is actually sorted, not merely stable.
+	if strings.Index(first, "chat") > strings.Index(first, "code_generation") {
+		t.Errorf("labels are not sorted in the prompt:\n%s", first)
+	}
+}
+
+// TestSystemPromptUsesConfiguredInstructions proves `instructions:` replaces the
+// default framing while the reply contract survives — the one part a rubric edit
+// must not be able to break.
+func TestSystemPromptUsesConfiguredInstructions(t *testing.T) {
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", &fakeUpstream{}, testProviders(), bareLabels, "", "Pick the single best category.", fakeHeuristic{}, time.Second)
+	p := c.systemPrompt()
+
+	if !strings.Contains(p, "Pick the single best category.") {
+		t.Errorf("prompt does not use the configured instructions:\n%s", p)
+	}
+	if strings.Contains(p, defaultFraming) {
+		t.Errorf("prompt still carries the default framing alongside configured instructions:\n%s", p)
+	}
+	if !strings.Contains(p, "Reply with the single matching word and nothing else") {
+		t.Errorf("configured instructions dropped the reply contract:\n%s", p)
+	}
+}
+
+// TestLLMClassifierEscapeLabelFillsNoAxis is the escape-label behavior: the
+// model's "nothing fits" is a successful verdict that fills no axis, so a policy
+// router's rules simply do not match rather than the operator having to write a
+// rule for a literal "unknown" domain. Confidence stays 1.0 because it IS a real
+// judgment, and the call is still recorded.
+func TestLLMClassifierEscapeLabelFillsNoAxis(t *testing.T) {
+	withEscape := []types.Label{
+		{Name: "code_generation"}, {Name: "chat"}, {Name: "none"},
+	}
+	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("none")}}
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), withEscape, "none", "", fakeHeuristic{domain: "chat"}, time.Second)
+
+	sig, err := c.Classify(context.Background(), testReq())
+	if err != nil {
+		t.Fatalf("Classify returned an error: %v", err)
+	}
+	if sig.Domain != "" {
+		t.Errorf("Domain = %q, want empty (the escape verdict fills no axis)", sig.Domain)
+	}
+	if sig.Confidence != 1.0 {
+		t.Errorf("Confidence = %v, want 1.0 (a confident 'nothing fits' is a real judgment)", sig.Confidence)
+	}
+	if len(sig.ClassifierCalls) != 1 {
+		t.Fatalf("ClassifierCalls = %v, want the escape verdict recorded as a call", sig.ClassifierCalls)
+	}
+	if got := sig.ClassifierCalls[0].Error; got != "" {
+		t.Errorf("call error = %q, want empty (escape is a success, not a fallback)", got)
+	}
+	if got := sig.ClassifierCalls[0].RawReply; got != "none" {
+		t.Errorf("RawReply = %q, want the model's own reply preserved", got)
+	}
+}
+
+// TestLLMClassifierBareNoneIsEscapeWhenConfigured proves a literal "none" reply
+// is accepted whenever an escape label is configured, so a rubric that describes
+// "nothing fits" without spelling a keyword still yields a successful verdict
+// instead of an unparseable one.
+func TestLLMClassifierBareNoneIsEscapeWhenConfigured(t *testing.T) {
+	withEscape := []types.Label{
+		{Name: "code_generation"}, {Name: "chat"}, {Name: "unsure"},
+	}
+	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("none")}}
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), withEscape, "unsure", "", fakeHeuristic{domain: "chat"}, time.Second)
+
+	sig, err := c.Classify(context.Background(), testReq())
+	if err != nil {
+		t.Fatalf("Classify returned an error: %v", err)
+	}
+	if sig.Domain != "" {
+		t.Errorf("Domain = %q, want empty (a bare 'none' is the escape verdict)", sig.Domain)
+	}
+}
+
+// TestLLMClassifierNoEscapeConfiguredStillFallsBack is the control for the two
+// tests above: without an escape label, an off-list reply stays a failed call.
+// Otherwise "no escape configured" would silently behave as if every unknown
+// reply were a confident verdict.
+func TestLLMClassifierNoEscapeConfiguredStillFallsBack(t *testing.T) {
+	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("none")}}
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
+
+	sig, err := c.Classify(context.Background(), testReq())
+	if err != nil {
+		t.Fatalf("Classify returned an error: %v", err)
+	}
+	if sig.Domain != "chat" {
+		t.Errorf("Domain = %q, want chat (fallback: no escape label is configured)", sig.Domain)
 	}
 }

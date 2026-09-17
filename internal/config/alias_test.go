@@ -570,3 +570,126 @@ classifiers:
 		t.Fatalf("Load: want an empty-labels error, got %v", err)
 	}
 }
+
+// llmRubricConfig is the map form of `labels:` — name -> rubric description —
+// plus the optional escape and instructions fields.
+const llmRubricConfig = `
+aliases:
+  cheap-classifier:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku"
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"
+    config:
+      alias: "cheap-classifier"
+      labels:
+        code_generation: "the user wants code written, modified, refactored, or reviewed."
+        chat: "greeting or small talk with no artifact expected."
+        none: "none of the other categories apply."
+      escape: "none"
+      instructions: "Pick the category that best describes the request."
+      fallback: "domain-heuristic"
+`
+
+// TestLLMClassifierLoadsRubricLabels proves the map form of `labels:` is
+// accepted, and that escape/instructions load alongside it. The list form is
+// covered by TestLLMClassifierLoads, which must keep passing unchanged — the
+// map is additive, not a replacement.
+func TestLLMClassifierLoadsRubricLabels(t *testing.T) {
+	if err := loadConfig(t, baseConfig+llmRubricConfig); err != nil {
+		t.Fatalf("Load: want rubric labels to load, got %v", err)
+	}
+}
+
+// TestLLMClassifierRejectsEscapeNotALabel keeps the escape label honest: it is
+// the word the model is told to reply with, so a name the model is never offered
+// could only be matched by coincidence.
+func TestLLMClassifierRejectsEscapeNotALabel(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+aliases:
+  cheap-classifier:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku"
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"
+    config:
+      alias: "cheap-classifier"
+      labels: ["code_generation", "chat"]
+      escape: "none"
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), "escape") {
+		t.Fatalf("Load: want an escape-not-a-label error, got %v", err)
+	}
+}
+
+// TestLLMClassifierRejectsDuplicateLabel guards the map form's one hazard: two
+// keys differing only in case both reach the model as the same word, and the
+// reply can then match only one of them.
+func TestLLMClassifierRejectsDuplicateLabel(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+aliases:
+  cheap-classifier:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku"
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"
+    config:
+      alias: "cheap-classifier"
+      labels: ["code_generation", "Code_Generation"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), "more than once") {
+		t.Fatalf("Load: want a duplicate-label error, got %v", err)
+	}
+}
+
+// TestLLMClassifierRejectsNonStringInstructions keeps a typo'd shape (a list, a
+// number) from being silently dropped by the builder — the failure mode where
+// validation accepts what construction ignores.
+func TestLLMClassifierRejectsNonStringInstructions(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+aliases:
+  cheap-classifier:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku"
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"
+    config:
+      alias: "cheap-classifier"
+      labels: ["code_generation"]
+      instructions: ["be careful"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), "instructions") {
+		t.Fatalf("Load: want an instructions-must-be-a-string error, got %v", err)
+	}
+}

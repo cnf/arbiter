@@ -111,7 +111,7 @@ func TestMergedClassifierPerAxisConfidence(t *testing.T) {
 // of which other classifiers ran alongside it in the same chain.
 func TestMergedClassifierPropagatesClassifierCalls(t *testing.T) {
 	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("code_generation")}}
-	llm := NewLLMClassifier("domain-llm", AxisDomain, pinnedResolver(), "classify", u, testProviders(), labels, fakeHeuristic{domain: "chat"}, 0)
+	llm := NewLLMClassifier("domain-llm", AxisDomain, pinnedResolver(), "classify", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, 0)
 	effort := NewHeuristicClassifier("effort", AxisEffort, map[string][]string{"hard": {"complex"}})
 	merged := NewMergedClassifier("merged", []Classifier{llm, effort})
 

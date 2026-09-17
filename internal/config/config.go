@@ -352,12 +352,12 @@ func validateClassifierAxes(cs []ClassifierConfig) error {
 	return nil
 }
 
-// validateLLMClassifiers checks every "llm"-type classifier's alias, labels
-// and fallback reference. This is the one place a classifier's otherwise-
-// opaque `config:` map (cmd/arbiter's buildClassifier is what interprets it
-// for every type) gets a load-time look from this package — worth the
-// exception because a bad alias or a missing fallback would otherwise only
-// surface as a silent runtime fallback (every classification call failing
+// validateLLMClassifiers checks every "llm"-type classifier's alias, labels,
+// escape label, instructions and fallback reference. This is the one place a
+// classifier's otherwise-opaque `config:` map (cmd/arbiter's buildClassifier is
+// what interprets it for every type) gets a load-time look from this package —
+// worth the exception because a bad alias or a missing fallback would otherwise
+// only surface as a silent runtime fallback (every classification call failing
 // and falling through to its wrapped classifier, with no load-time signal
 // that anything is wrong) rather than a config error, which is exactly the
 // class of mistake this package exists to catch elsewhere.
@@ -378,8 +378,39 @@ func (c *Config) validateLLMClassifiers() error {
 		if _, ok := c.Aliases[alias]; !ok {
 			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: alias %q is not configured", cc.Name, alias), nil)
 		}
-		if labels, _ := cc.Config["labels"].([]interface{}); len(labels) == 0 {
+		// Parsed with the same function the builder uses, so a shape
+		// validation accepts cannot be one construction drops. Labels may be
+		// bare names or name -> rubric-description pairs.
+		labels, err := types.ParseLabels(cc.Config["labels"])
+		if err != nil {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: invalid labels: %v", cc.Name, err), nil)
+		}
+		if len(labels) == 0 {
 			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"llm\" requires a non-empty \"labels\" list", cc.Name), nil)
+		}
+		seen := make(map[string]bool, len(labels))
+		for _, l := range labels {
+			if l.Name == "" {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: labels must not contain an empty name", cc.Name), nil)
+			}
+			key := strings.ToLower(l.Name)
+			if seen[key] {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: label %q is declared more than once", cc.Name, l.Name), nil)
+			}
+			seen[key] = true
+		}
+		// An escape label must be one of the declared labels: it is the name
+		// the model is told to reply with, so a name the model is never offered
+		// could only ever be reached by coincidence.
+		if escape, _ := cc.Config["escape"].(string); escape != "" {
+			if !seen[strings.ToLower(escape)] {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: escape label %q is not one of the declared labels", cc.Name, escape), nil)
+			}
+		}
+		if raw, ok := cc.Config["instructions"]; ok {
+			if _, isStr := raw.(string); !isStr {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: instructions must be a string", cc.Name), nil)
+			}
 		}
 		fallback, _ := cc.Config["fallback"].(string)
 		if fallback == "" {

@@ -856,10 +856,48 @@ classifiers:
     axis: "domain"                      # only "domain" is built today
     config:
       alias: "cheap-classifier"         # routes the classification call — any pinned or group alias
-      labels: ["code_generation", "reasoning", "debugging", "chat", "discovery"]
+      labels:                           # bare names, or name -> rubric description
+        code_generation: >-
+          the user wants code written, modified, refactored, or reviewed —
+          an implementation task with a concrete code artifact as the answer.
+        reasoning: >-
+          the user wants something explained, analyzed or debugged — an
+          answer in prose, with no code artifact as the deliverable.
+        chat: "greeting or small talk with no artifact expected."
+        none: "none of the other categories apply."
+      escape: "none"                    # this label's verdict fills no axis
+      instructions: "Pick the category that best describes the request."  # optional
       fallback: "domain-heuristic"      # another classifier, declared anywhere in this list
       timeout: "5s"                     # optional, defaults to 10s
 ```
+
+`labels` accepts either shape and both may be mixed freely in one list: a plain
+list of names (`labels: ["code_generation", "chat"]`, unchanged from before
+rubrics existed) or a map of name to description. The description is where a
+category's *boundary* lives — a bare name tells the model nothing about where
+`code_generation` ends and `reasoning` begins — so a rubric is the single
+biggest lever on classification accuracy.
+
+The prompt is assembled from three parts, in this order: the framing sentence
+(`instructions`, or a fixed default), the label list with its descriptions, and
+the reply contract. Only the first two are configurable — the contract
+("reply with the single matching word and nothing else") is always appended
+last, because a single-word reply is what makes a half-parsed answer impossible
+and a configurable reply format would let a rubric edit break the parser. Labels
+are sorted into the prompt, so the same config always produces byte-identical
+prompt text and one call's prompt can be diffed against the next. (That is for
+comparability only: a prompt this short is below every provider's minimum
+cacheable length, so it is never cached either way.)
+
+`escape` names the label meaning "no category fits" and **fills no axis at
+all** — the axis is left empty, so a policy router's `when: {domain: ...}` rules
+simply don't match and a chained router takes over. That is the point: without
+an escape label, "nothing fits" can only be expressed as a wrong category or an
+off-list reply, and an off-list reply counts as a *failure* that falls back to
+the heuristic — so the model's honest uncertainty is indistinguishable from a
+broken call. The verdict is still recorded as a successful call with confidence
+1.0; it just carries no value. A bare `none` reply is also accepted as escape
+whenever an escape label is configured.
 
 `alias` is resolved exactly the way a client-named alias is — a group alias's
 member selection and its unselected siblings (tried in order on failure) work

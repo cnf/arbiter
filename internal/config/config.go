@@ -441,7 +441,12 @@ func validSelect(s string) bool {
 // validateModelCatalog checks catalog rows: the provider must be configured,
 // and the model must be one of that provider's declared Models. Both are
 // errors — a row that can never match is a config bug, and the lookup's
-// unknown-row tolerance is for genuinely absent entries, not typos.
+// unknown-row tolerance is for genuinely absent entries, not typos. By the
+// time this runs, mergeModelCatalogFile has already dropped any
+// model_catalog_file row that fails this same check (a generated catalog is
+// expected to be a superset), so in practice this only ever rejects the
+// hand-written inline model_catalog: block — which is exactly where a typo is
+// worth catching.
 func (c *Config) validateModelCatalog() error {
 	seen := make(map[string]int, len(c.ModelCatalog))
 	for i, e := range c.ModelCatalog {
@@ -674,6 +679,18 @@ func (c *Config) mergeModelCatalogFile(configPath string) error {
 	for _, e := range cf.ModelCatalog {
 		if inline[e.Provider+"\x00"+e.Model] {
 			continue // an inline row replaces this one wholesale
+		}
+		// A generated file (catalog-convert) is expected to be a superset of
+		// what lanes.yaml declares — it pulls every model under a
+		// litellm_provider, not just the ones this config happens to list —
+		// so a row naming an undeclared provider/model is not the config bug
+		// an inline typo would be; it's simply unused, exactly like a missing
+		// row (StaticCatalog.Lookup already treats "no entry" as unknown
+		// cost, ranking it last). Drop it rather than failing config load;
+		// validateModelCatalog below still applies its full strictness to the
+		// inline block, where a typo is still worth catching.
+		if p, ok := c.Providers[e.Provider]; !ok || !slicesContain(p.Models, e.Model) {
+			continue
 		}
 		merged = append(merged, e)
 	}

@@ -4,9 +4,11 @@
 // LiteLLM keys its price list by model name and quotes costs in USD per single
 // token; Arbiter's catalog is keyed by provider/model and quotes USD per
 // million tokens. Neither the key mapping nor the unit change is guessable, so
-// this tool takes a small mapping file stating which provider each entry
-// belongs to, and it converts the units. Latency is not in LiteLLM's list at
-// all, so it is supplied by hand in that same mapping file.
+// this tool takes a small mapping file stating which litellm_provider each
+// Arbiter provider corresponds to, and it converts the units. Latency is not
+// in LiteLLM's list at all, so it is supplied by hand in that same mapping
+// file. There is no per-model list to maintain: every chat-mode entry under a
+// mapped litellm_provider becomes a catalog row.
 //
 // The generated file is meant to be referenced from lanes.yaml as
 // model_catalog_file:.
@@ -18,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 )
@@ -32,11 +35,12 @@ func main() {
 func run(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("catalog-convert", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	mapPath := fs.String("mapping", "", "Path to the mapping YAML (litellm entry -> arbiter provider/model). Required.")
+	mapPath := fs.String("mapping", "", "Path to the mapping YAML (arbiter provider -> litellm_provider). Required.")
+	configPath := fs.String("config", "", "Path to lanes.yaml. When set, catalog rows are generated for every provider it declares (skipping any with no mapping entry) instead of every provider the mapping file lists.")
 	outPath := fs.String("out", "", "Write the catalog to this path instead of stdout.")
-	strict := fs.Bool("strict", false, "Exit non-zero if any mapped model had no usable litellm entry.")
+	strict := fs.Bool("strict", false, "Exit non-zero if any provider had no usable litellm entries.")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stderr, "Usage: catalog-convert -mapping mapping.yaml [-out catalog.yaml] [-strict] <model_prices_and_context_window.json>\n\n")
+		_, _ = fmt.Fprintf(stderr, "Usage: catalog-convert -mapping mapping.yaml [-config lanes.yaml] [-out catalog.yaml] [-strict] <model_prices_and_context_window.json>\n\n")
 		_, _ = fmt.Fprintf(stderr, "The litellm price list is read from the single positional argument, or stdin when it is omitted.\n\n")
 		fs.PrintDefaults()
 	}
@@ -68,6 +72,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("mapping %s declares no providers", *mapPath)
 	}
 
+	providerNames, err := resolveProviderNames(*configPath, m)
+	if err != nil {
+		return err
+	}
+
 	litellmIn := io.Reader(os.Stdin)
 	if fs.NArg() == 1 {
 		f, err := os.Open(fs.Arg(0))
@@ -86,7 +95,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintln(stderr, "skipped "+s)
 	}
 
-	rows, skips := buildCatalog(entries, m)
+	rows, skips := buildCatalog(entries, m, providerNames)
 	for _, s := range skips {
 		_, _ = fmt.Fprintln(stderr, "skipped "+s)
 	}
@@ -123,9 +132,51 @@ func run(args []string, stdout, stderr io.Writer) error {
 	_, _ = fmt.Fprintln(stderr)
 
 	if *strict && len(skips)+len(malformed) > 0 {
-		return fmt.Errorf("strict: %d models had no usable litellm entry", len(skips)+len(malformed))
+		return fmt.Errorf("strict: %d issue(s) — see the skipped lines above", len(skips)+len(malformed))
 	}
 	return nil
+}
+
+// resolveProviderNames decides which Arbiter provider names to generate
+// catalog rows for: every provider lanes.yaml declares, when configPath is
+// set, else every provider the mapping file itself lists (today's
+// mapping-drives-everything behavior, kept for standalone use — e.g. CI
+// generating a catalog with no access to a real lanes.yaml).
+func resolveProviderNames(configPath string, m mapping) ([]string, error) {
+	if configPath == "" {
+		names := make([]string, 0, len(m.Providers))
+		for p := range m.Providers {
+			names = append(names, p)
+		}
+		sort.Strings(names)
+		return names, nil
+	}
+	return providerNamesFromConfig(configPath)
+}
+
+// providerNamesFromConfig reads just the top-level `providers:` map's keys
+// out of a lanes.yaml — not a full config.Load, deliberately: this tool needs
+// only provider names, and a full load would (a) require every env var the
+// real config references to be resolvable, and (b) choke on a lanes.yaml that
+// names a model_catalog_file which doesn't exist yet — exactly the file this
+// tool is about to generate on a first run.
+func providerNamesFromConfig(path string) ([]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config %s: %w", path, err)
+	}
+	var doc struct {
+		Providers map[string]interface{} `yaml:"providers"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	names := make([]string, 0, len(doc.Providers))
+	for p := range doc.Providers {
+		names = append(names, p)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // header is a comment banner for the generated file. Regeneration is expected

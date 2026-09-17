@@ -390,18 +390,31 @@ model_catalog_file: "nope.yaml"
 	}
 }
 
-// The file's rows get the same validation as inline rows.
-func TestModelCatalogFileRowIsValidated(t *testing.T) {
-	_, err := loadConfigWithFile(t, baseConfig+`
+// A generated file is expected to be a superset of what this config declares
+// (catalog-convert pulls every model under a litellm_provider, not just the
+// ones lanes.yaml happens to list) — so a file row naming an undeclared
+// provider/model is dropped rather than failing config load. The inline block
+// gets no such leniency: see TestModelCatalogRejectsUndeclaredModel.
+func TestModelCatalogFileRowForUndeclaredModelIsDroppedNotRejected(t *testing.T) {
+	cfg, err := loadConfigWithFile(t, baseConfig+`
 model_catalog_file: "catalog.yaml"
 `, `
 model_catalog:
   - provider: "claude"
+    model: "claude-3-haiku"
+    input_cost_per_mtok: 0.25
+  - provider: "claude"
     model: "not-a-declared-model"
     input_cost_per_mtok: 1
+  - provider: "not-a-configured-provider"
+    model: "whatever"
+    input_cost_per_mtok: 1
 `)
-	if err == nil || !strings.Contains(err.Error(), "not declared") {
-		t.Fatalf("Load: want undeclared-model error from the file's row, got %v", err)
+	if err != nil {
+		t.Fatalf("Load: want the undeclared row dropped rather than an error, got %v", err)
+	}
+	if len(cfg.ModelCatalog) != 1 || cfg.ModelCatalog[0].Model != "claude-3-haiku" {
+		t.Fatalf("ModelCatalog = %+v, want only the declared haiku row", cfg.ModelCatalog)
 	}
 }
 

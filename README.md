@@ -455,26 +455,41 @@ price list (`model_prices_and_context_window.json`) into this shape — the
 runtime never parses a foreign schema itself. LiteLLM keys its list by model
 name and quotes USD *per token*; the catalog is keyed by provider/model in
 USD *per million tokens*, so the converter needs a small mapping file saying
-which provider each entry belongs to (the two changes are not interchangeable
-by guesswork):
+which `litellm_provider` each Arbiter provider corresponds to (the two
+changes are not interchangeable by guesswork):
 
 ```bash
 devenv shell
 go run ./cmd/catalog-convert \
   -mapping cmd/catalog-convert/mapping.example.yaml \
+  -config lanes.yaml \
   -out catalog.yaml \
   model_prices_and_context_window.json
 ```
 
 `-mapping` is required (copy `mapping.example.yaml` and edit); the price list
 comes from the positional argument or stdin; output goes to stdout unless
-`-out` is given. Latency is not in LiteLLM's list at all, so the mapping
-supplies it — a per-provider default with per-model overrides. A mapped model
-with no usable LiteLLM entry (missing, non-chat, or filed under a different
-`litellm_provider` than the mapping claims) is *skipped with a reason* on
-stderr rather than guessed at, so it simply has no catalog row; `-strict`
-turns any such skip into a non-zero exit. Rows are emitted in sorted order,
-so regenerating the same inputs produces the same file.
+`-out` is given. **There is no per-model list to maintain**: every chat-mode
+LiteLLM entry filed under a mapped `litellm_provider` becomes a catalog row.
+`-config` (optional) points at `lanes.yaml` and limits generation to the
+providers it actually declares — skipping (with a reason on stderr) any
+mapping entry with no match there; omit it and every provider the mapping
+file lists is used instead. Latency is not in LiteLLM's list at all, so the
+mapping supplies it — a per-provider default with per-model overrides.
+`-strict` turns any skip (a provider with no mapping entry, or one whose
+`litellm_provider` matched nothing) into a non-zero exit. Rows are emitted in
+the given provider order, so regenerating the same inputs produces the same
+file.
+
+**The generated catalog is a superset of what `lanes.yaml` declares, by
+design** — a row naming a provider/model this config doesn't (yet) list is
+inert, not an error: `model_catalog_file:` rows are checked leniently (an
+undeclared row is silently dropped) precisely because they're expected to
+cover more than any one config uses, while the hand-written inline
+`model_catalog:` block keeps strict validation (an undeclared row there is
+still a config-load error — a typo worth catching). Adding a model to
+`lanes.yaml` therefore needs no catalog-convert change at all; the next
+regeneration already has it.
 
 A rejected conversion is the safe failure: the generated catalog is inert on
 write, so nothing changes in the running config until you call

@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/cnf/arbiter/internal/config"
 )
@@ -22,19 +23,22 @@ type litellmEntry struct {
 }
 
 // providerMap says how one Arbiter provider's models are found in the LiteLLM
-// list. LiteLLM keys rows by model name, not by Arbiter's provider/model pair,
-// so the correspondence has to be stated rather than guessed; KeyPrefix covers
-// the entries that namespace the model (e.g. "openrouter/...").
+// list: which litellm_provider they're filed under, and the namespace prefix
+// (if any) LiteLLM keys them with. There is deliberately no per-model list —
+// every chat-mode entry under LitellmProvider becomes a catalog row. Rows for
+// models the operator hasn't declared in lanes.yaml are simply unused
+// (config.go treats a generated-file row naming an undeclared model as inert,
+// not a config error) — see the "catalog is a superset" note in README.md.
 type providerMap struct {
-	LitellmProvider string   `yaml:"litellm_provider"`
-	KeyPrefix       string   `yaml:"key_prefix,omitempty"`
-	LatencyMsP50    int      `yaml:"latency_ms_p50,omitempty"`
-	Models          []string `yaml:"models"`
+	LitellmProvider string `yaml:"litellm_provider"`
+	KeyPrefix       string `yaml:"key_prefix,omitempty"`
+	LatencyMsP50    int    `yaml:"latency_ms_p50,omitempty"`
 }
 
 // mapping is the converter's input file. Latency is not in LiteLLM's list, so
-// it is supplied here: per model under latency_ms_p50 (keyed "provider/model")
-// or as a per-provider default.
+// it is supplied here: per model under latency_ms_p50 (keyed "provider/model",
+// using the *emitted* model name — i.e. after KeyPrefix is stripped) or as a
+// per-provider default.
 type mapping struct {
 	Providers    map[string]providerMap `yaml:"providers"`
 	LatencyMsP50 map[string]int         `yaml:"latency_ms_p50,omitempty"`
@@ -84,44 +88,54 @@ func perMTok(perToken float64) float64 {
 	return math.Round(perToken*1e6*1e10) / 1e10
 }
 
-// buildCatalog resolves every model named in the mapping against the LiteLLM
-// list and returns the catalog rows plus a human-readable reason for each model
-// that was skipped. Providers are visited in sorted order so regenerating the
-// same inputs produces the same file.
+// buildCatalog emits one catalog row per LiteLLM chat-mode entry under each
+// named provider's litellm_provider, for every name in providerNames — in
+// that order, so the caller controls determinism (main.go sorts it). A name
+// with no mapping entry, or whose litellm_provider matches nothing in the
+// price list, is skipped with a reason rather than silently producing zero
+// rows for it.
 //
-// A model is skipped, not guessed at, when LiteLLM has no matching entry, when
-// the entry is not a chat model, or when its litellm_provider contradicts the
-// mapping. A skipped model simply has no catalog row, which the router already
-// treats as unknown cost (ranked last) rather than an error.
-func buildCatalog(entries map[string]litellmEntry, m mapping) ([]config.ModelCatalogEntry, []string) {
-	providers := make([]string, 0, len(m.Providers))
-	for p := range m.Providers {
-		providers = append(providers, p)
+// There is no per-model allow-list: pulling everything under a
+// litellm_provider is what removes the old mapping file's maintenance burden
+// (keeping a model list in sync with lanes.yaml by hand). An emitted row for
+// a model the operator hasn't declared is simply unused — see README.md's
+// "Model pricing catalog" section.
+func buildCatalog(entries map[string]litellmEntry, m mapping, providerNames []string) ([]config.ModelCatalogEntry, []string) {
+	keys := make([]string, 0, len(entries))
+	for k := range entries {
+		keys = append(keys, k)
 	}
-	sort.Strings(providers)
+	sort.Strings(keys)
 
 	var out []config.ModelCatalogEntry
 	var skips []string
-	for _, p := range providers {
-		pm := m.Providers[p]
-		if len(pm.Models) == 0 {
-			skips = append(skips, fmt.Sprintf("%s: no models listed in mapping", p))
+	for _, p := range providerNames {
+		pm, ok := m.Providers[p]
+		if !ok {
+			skips = append(skips, fmt.Sprintf("%s: no mapping entry (add it under providers: in the mapping file)", p))
 			continue
 		}
-		for _, model := range pm.Models {
-			key := pm.KeyPrefix + model
-			e, ok := entries[key]
-			if !ok {
-				skips = append(skips, fmt.Sprintf("%s/%s: no litellm entry for %q", p, model, key))
+		if pm.LitellmProvider == "" {
+			skips = append(skips, fmt.Sprintf("%s: mapping entry has no litellm_provider", p))
+			continue
+		}
+
+		matched := 0
+		for _, key := range keys {
+			e := entries[key]
+			if e.LitellmProvider != pm.LitellmProvider {
 				continue
 			}
 			if e.Mode != "" && e.Mode != "chat" {
-				skips = append(skips, fmt.Sprintf("%s/%s: litellm mode %q is not chat", p, model, e.Mode))
 				continue
 			}
-			if pm.LitellmProvider != "" && e.LitellmProvider != pm.LitellmProvider {
-				skips = append(skips, fmt.Sprintf("%s/%s: litellm_provider is %q, mapping expected %q", p, model, e.LitellmProvider, pm.LitellmProvider))
-				continue
+			model := key
+			if pm.KeyPrefix != "" {
+				if !strings.HasPrefix(key, pm.KeyPrefix) {
+					skips = append(skips, fmt.Sprintf("%s: litellm key %q (litellm_provider %q) does not start with configured key_prefix %q", p, key, pm.LitellmProvider, pm.KeyPrefix))
+					continue
+				}
+				model = strings.TrimPrefix(key, pm.KeyPrefix)
 			}
 
 			latency := pm.LatencyMsP50
@@ -135,6 +149,10 @@ func buildCatalog(entries map[string]litellmEntry, m mapping) ([]config.ModelCat
 				OutputCostPerMTok: perMTok(e.OutputCostPerToken),
 				LatencyMsP50:      latency,
 			})
+			matched++
+		}
+		if matched == 0 {
+			skips = append(skips, fmt.Sprintf("%s: no chat-mode litellm entries found for litellm_provider %q", p, pm.LitellmProvider))
 		}
 	}
 	sort.Strings(skips)

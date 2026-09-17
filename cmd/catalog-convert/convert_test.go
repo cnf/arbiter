@@ -118,19 +118,15 @@ func TestBuildCatalogConvertsUnitsAndKeys(t *testing.T) {
 	entries := parseSample(t)
 	m := mapping{
 		Providers: map[string]providerMap{
-			"claude": {
-				LitellmProvider: "anthropic",
-				Models:          []string{"claude-3-haiku-20250307", "claude-3-opus-20250219"},
-			},
+			"claude": {LitellmProvider: "anthropic"},
 			"litellm": {
 				LitellmProvider: "openrouter",
 				KeyPrefix:       "openrouter/",
-				Models:          []string{"anthropic/claude-3.5-sonnet"},
 			},
 		},
 	}
 
-	rows, skips := buildCatalog(entries, m)
+	rows, skips := buildCatalog(entries, m, []string{"claude", "litellm"})
 	if len(skips) != 0 {
 		t.Fatalf("unexpected skips: %v", skips)
 	}
@@ -153,7 +149,7 @@ func TestBuildCatalogConvertsUnitsAndKeys(t *testing.T) {
 
 	sonnet, ok := byKey["litellm/anthropic/claude-3.5-sonnet"]
 	if !ok {
-		t.Fatalf("slash-keyed model not mapped; got %+v", rows)
+		t.Fatalf("slash-keyed model not mapped (key_prefix not stripped); got %+v", rows)
 	}
 	if sonnet.InputCostPerMTok != 3 || sonnet.OutputCostPerMTok != 15 {
 		t.Errorf("sonnet costs = %v/%v, want 3/15", sonnet.InputCostPerMTok, sonnet.OutputCostPerMTok)
@@ -165,56 +161,66 @@ func TestBuildCatalogConvertsUnitsAndKeys(t *testing.T) {
 	}
 }
 
-func TestBuildCatalogSkipsNonChatAndUnknown(t *testing.T) {
+// TestBuildCatalogSkipsNonChatEntries proves a pulled-everything litellm_provider
+// still excludes embedding/image entries filed under it, without needing them
+// named anywhere — there is no per-model list to omit them from.
+func TestBuildCatalogSkipsNonChatEntries(t *testing.T) {
 	entries := parseSample(t)
 	m := mapping{
 		Providers: map[string]providerMap{
-			"openai": {
-				LitellmProvider: "openai",
-				Models: []string{
-					"text-embedding-3-small", // mode: embedding
-					"gpt-image-1",            // mode: image_generation
-					"gpt-4o",                 // absent from the price list
-				},
-			},
+			"openai": {LitellmProvider: "openai"},
 		},
 	}
 
-	rows, skips := buildCatalog(entries, m)
+	rows, skips := buildCatalog(entries, m, []string{"openai"})
 	if len(rows) != 0 {
-		t.Fatalf("expected no rows, got %+v", rows)
+		t.Fatalf("expected no rows (only embedding/image entries exist for openai), got %+v", rows)
 	}
-	if len(skips) != 3 {
-		t.Fatalf("got %d skips, want 3: %v", len(skips), skips)
-	}
-	joined := strings.Join(skips, "\n")
-	for _, want := range []string{"embedding", "image_generation", "no litellm entry"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("skips missing %q:\n%s", want, joined)
-		}
+	if len(skips) != 1 || !strings.Contains(skips[0], "no chat-mode litellm entries") {
+		t.Fatalf("got skips %v, want one 'no chat-mode litellm entries' skip", skips)
 	}
 }
 
-// TestBuildCatalogRejectsProviderMismatch ensures the mapping is checked rather
-// than trusted: mapping a model under the wrong litellm_provider is a mistake
-// worth surfacing, not silently pricing.
-func TestBuildCatalogRejectsProviderMismatch(t *testing.T) {
+// TestBuildCatalogSkipsProviderWithNoMappingEntry proves a providerNames entry
+// absent from the mapping is reported, not silently dropped or guessed at.
+func TestBuildCatalogSkipsProviderWithNoMappingEntry(t *testing.T) {
+	entries := parseSample(t)
+	m := mapping{Providers: map[string]providerMap{"claude": {LitellmProvider: "anthropic"}}}
+
+	rows, skips := buildCatalog(entries, m, []string{"claude", "local"})
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2 from claude", len(rows))
+	}
+	if len(skips) != 1 || !strings.Contains(skips[0], "local") || !strings.Contains(skips[0], "no mapping entry") {
+		t.Fatalf("got skips %v, want one naming local's missing mapping entry", skips)
+	}
+}
+
+// A litellm_provider match whose key doesn't start with the configured
+// key_prefix is surfaced, not silently dropped — it means the prefix
+// assumption is wrong for at least one entry.
+func TestBuildCatalogReportsKeyPrefixMismatch(t *testing.T) {
 	entries := parseSample(t)
 	m := mapping{
 		Providers: map[string]providerMap{
-			"claude": {
-				LitellmProvider: "openai", // wrong: haiku's entry says anthropic
-				Models:          []string{"claude-3-haiku-20250307"},
-			},
+			// openrouter's one sample entry is "openrouter/anthropic/claude-3.5-sonnet";
+			// this prefix doesn't match it.
+			"litellm": {LitellmProvider: "openrouter", KeyPrefix: "wrong-prefix/"},
 		},
 	}
 
-	rows, skips := buildCatalog(entries, m)
+	rows, skips := buildCatalog(entries, m, []string{"litellm"})
 	if len(rows) != 0 {
-		t.Fatalf("expected no rows on provider mismatch, got %+v", rows)
+		t.Fatalf("expected no rows, got %+v", rows)
 	}
-	if len(skips) != 1 || !strings.Contains(skips[0], "litellm_provider") {
-		t.Fatalf("expected a litellm_provider mismatch skip, got %v", skips)
+	found := false
+	for _, s := range skips {
+		if strings.Contains(s, "key_prefix") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("got skips %v, want one mentioning key_prefix", skips)
 	}
 }
 
@@ -222,18 +228,14 @@ func TestBuildCatalogLatencyResolution(t *testing.T) {
 	entries := parseSample(t)
 	m := mapping{
 		Providers: map[string]providerMap{
-			"claude": {
-				LitellmProvider: "anthropic",
-				LatencyMsP50:    900, // provider default
-				Models:          []string{"claude-3-haiku-20250307", "claude-3-opus-20250219"},
-			},
+			"claude": {LitellmProvider: "anthropic", LatencyMsP50: 900},
 		},
 		LatencyMsP50: map[string]int{
 			"claude/claude-3-opus-20250219": 4500, // per-model override
 		},
 	}
 
-	rows, skips := buildCatalog(entries, m)
+	rows, skips := buildCatalog(entries, m, []string{"claude"})
 	if len(skips) != 0 {
 		t.Fatalf("unexpected skips: %v", skips)
 	}
@@ -256,14 +258,10 @@ func TestOutputRoundTripsThroughConfig(t *testing.T) {
 	entries := parseSample(t)
 	m := mapping{
 		Providers: map[string]providerMap{
-			"claude": {
-				LitellmProvider: "anthropic",
-				LatencyMsP50:    900,
-				Models:          []string{"claude-3-haiku-20250307", "claude-3-opus-20250219"},
-			},
+			"claude": {LitellmProvider: "anthropic", LatencyMsP50: 900},
 		},
 	}
-	rows, skips := buildCatalog(entries, m)
+	rows, skips := buildCatalog(entries, m, []string{"claude"})
 	if len(skips) != 0 {
 		t.Fatalf("unexpected skips: %v", skips)
 	}
@@ -332,13 +330,9 @@ providers:
   claude:
     litellm_provider: anthropic
     latency_ms_p50: 900
-    models:
-      - claude-3-haiku-20250307
   litellm:
     litellm_provider: openrouter
     key_prefix: "openrouter/"
-    models:
-      - anthropic/claude-3.5-sonnet
 latency_ms_p50:
   claude/claude-3-haiku-20250307: 750
 `), 0o644); err != nil {
@@ -358,7 +352,9 @@ latency_ms_p50:
 	if stdout.Len() != 0 {
 		t.Errorf("with -out set, stdout should be empty; got:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "wrote 2 catalog rows") {
+	// claude pulls both haiku and opus (no per-model list to restrict it), plus
+	// litellm's one openrouter entry: 3 rows.
+	if !strings.Contains(stderr.String(), "wrote 3 catalog rows") {
 		t.Errorf("stderr missing row count report:\n%s", stderr.String())
 	}
 
@@ -375,8 +371,8 @@ latency_ms_p50:
 	if err := dec.Decode(&round); err != nil {
 		t.Fatalf("generated catalog does not parse: %v\n%s", err, written)
 	}
-	if len(round.ModelCatalog) != 2 {
-		t.Fatalf("got %d rows, want 2:\n%s", len(round.ModelCatalog), written)
+	if len(round.ModelCatalog) != 3 {
+		t.Fatalf("got %d rows, want 3:\n%s", len(round.ModelCatalog), written)
 	}
 	for _, r := range round.ModelCatalog {
 		if r.Provider == "claude" && r.Model == "claude-3-haiku-20250307" {
@@ -387,6 +383,53 @@ latency_ms_p50:
 	}
 }
 
+// TestRunWithConfigLimitsToDeclaredProviders proves -config drives which
+// providers get catalog rows: mapping.yaml can name more providers than
+// lanes.yaml declares (e.g. a shared mapping reused across deployments), and
+// only the declared ones are generated for.
+func TestRunWithConfigLimitsToDeclaredProviders(t *testing.T) {
+	dir := t.TempDir()
+	mapPath := dir + "/mapping.yaml"
+	if err := os.WriteFile(mapPath, []byte(`
+providers:
+  claude:
+    litellm_provider: anthropic
+  litellm:
+    litellm_provider: openrouter
+    key_prefix: "openrouter/"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// lanes.yaml declares only "claude" — "litellm" exists in the mapping but
+	// not here, so it must not contribute rows, and no other lanes.yaml field
+	// needs to be valid (this is a minimal fixture, not a loadable config).
+	lanesPath := dir + "/lanes.yaml"
+	if err := os.WriteFile(lanesPath, []byte(`
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    models: ["claude-3-haiku-20250307"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jsonPath := dir + "/prices.json"
+	if err := os.WriteFile(jsonPath, []byte(sampleLitellm), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"-mapping", mapPath, "-config", lanesPath, jsonPath}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "provider: litellm") {
+		t.Errorf("litellm should not appear (not declared in lanes.yaml):\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "claude-3-haiku-20250307") {
+		t.Errorf("claude's rows missing:\n%s", stdout.String())
+	}
+}
+
 func TestRunStdoutByDefault(t *testing.T) {
 	dir := t.TempDir()
 	mapPath := dir + "/mapping.yaml"
@@ -394,7 +437,6 @@ func TestRunStdoutByDefault(t *testing.T) {
 providers:
   claude:
     litellm_provider: anthropic
-    models: [claude-3-haiku-20250307]
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -422,10 +464,8 @@ func TestRunStrictFailsOnSkips(t *testing.T) {
 providers:
   claude:
     litellm_provider: anthropic
-    models: [claude-3-haiku-20250307]
   openai:
     litellm_provider: openai
-    models: [gpt-4o]
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -436,9 +476,9 @@ providers:
 
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"-mapping", mapPath, "-strict", jsonPath}, &stdout, &stderr); err == nil {
-		t.Fatal("expected -strict to fail when a mapped model was skipped")
+		t.Fatal("expected -strict to fail: openai's sample entries are all non-chat")
 	}
-	// gpt-4o is absent, so strict must fail even though one row was produced.
+	// claude's rows should still be emitted before the strict failure.
 	if !strings.Contains(stdout.String(), "claude-3-haiku") {
 		t.Errorf("non-strict rows should still be emitted before the strict failure:\n%s", stdout.String())
 	}
@@ -458,7 +498,6 @@ func TestRunEmptyCatalogIsAnError(t *testing.T) {
 providers:
   openai:
     litellm_provider: openai
-    models: [does-not-exist]
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -469,19 +508,18 @@ providers:
 
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"-mapping", mapPath, jsonPath}, &stdout, &stderr); err == nil {
-		t.Fatal("expected an error when no rows are produced")
+		t.Fatal("expected an error when no rows are produced (openai's sample entries are all non-chat)")
 	}
 }
 
 // TestMappingRejectsUnknownFields keeps the mapping file honest: a typo'd key
-// would otherwise be silently ignored and quietly drop a provider's models.
+// would otherwise be silently ignored.
 func TestMappingRejectsUnknownFields(t *testing.T) {
 	var m mapping
 	dec := yaml.NewDecoder(strings.NewReader(`
 providers:
   claude:
     litellm_provider: anthropic
-    models: [claude-3-haiku-20250307]
     latency_ms_p500: 900
 `))
 	dec.KnownFields(true)
@@ -495,12 +533,13 @@ func TestBuildCatalogIsDeterministic(t *testing.T) {
 	entries := parseSample(t)
 	m := mapping{
 		Providers: map[string]providerMap{
-			"z":      {LitellmProvider: "openrouter", KeyPrefix: "openrouter/", Models: []string{"anthropic/claude-3.5-sonnet"}},
-			"claude": {LitellmProvider: "anthropic", Models: []string{"claude-3-haiku-20250307", "claude-3-opus-20250219"}},
+			"z":      {LitellmProvider: "openrouter", KeyPrefix: "openrouter/"},
+			"claude": {LitellmProvider: "anthropic"},
 		},
 	}
-	first, _ := buildCatalog(entries, m)
-	second, _ := buildCatalog(entries, m)
+	names := []string{"claude", "z"} // caller-controlled order, sorted the way main.go sorts it
+	first, _ := buildCatalog(entries, m, names)
+	second, _ := buildCatalog(entries, m, names)
 	if len(first) != len(second) {
 		t.Fatalf("row count differs between runs")
 	}
@@ -510,11 +549,60 @@ func TestBuildCatalogIsDeterministic(t *testing.T) {
 		}
 	}
 	if first[0].Provider != "claude" {
-		t.Errorf("providers should be visited in sorted order, got first row %+v", first[0])
+		t.Errorf("providers should be visited in the given order, got first row %+v", first[0])
 	}
 	// Sanity: the straight-through JSON decode must agree with the fixture.
 	var check map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(sampleLitellm), &check); err != nil {
 		t.Fatalf("fixture is not valid JSON: %v", err)
+	}
+}
+
+// TestResolveProviderNamesFallsBackToMapping proves the mapping's own
+// provider keys are used, sorted, when -config isn't given (standalone use).
+func TestResolveProviderNamesFallsBackToMapping(t *testing.T) {
+	m := mapping{Providers: map[string]providerMap{
+		"z": {LitellmProvider: "openrouter"},
+		"a": {LitellmProvider: "anthropic"},
+	}}
+	names, err := resolveProviderNames("", m)
+	if err != nil {
+		t.Fatalf("resolveProviderNames: %v", err)
+	}
+	if len(names) != 2 || names[0] != "a" || names[1] != "z" {
+		t.Fatalf("names = %v, want [a z]", names)
+	}
+}
+
+// TestProviderNamesFromConfigIgnoresRestOfFile proves this reads bare
+// provider names without needing the rest of lanes.yaml (routers, aliases,
+// env vars) to be valid — including a model_catalog_file that doesn't exist
+// yet, the exact chicken-and-egg case a full config.Load would hit on a first
+// run.
+func TestProviderNamesFromConfigIgnoresRestOfFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/lanes.yaml"
+	if err := os.WriteFile(path, []byte(`
+model_catalog_file: "does-not-exist-yet.yaml"
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${SOME_VAR_NOT_SET}"
+    models: ["claude-3-haiku-20250307"]
+  gpt4:
+    type: "openai"
+    endpoint: "https://api.openai.com/v1"
+    models: ["gpt-4o"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	names, err := providerNamesFromConfig(path)
+	if err != nil {
+		t.Fatalf("providerNamesFromConfig: %v", err)
+	}
+	if len(names) != 2 || names[0] != "claude" || names[1] != "gpt4" {
+		t.Fatalf("names = %v, want [claude gpt4]", names)
 	}
 }

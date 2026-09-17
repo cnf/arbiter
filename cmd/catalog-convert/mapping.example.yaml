@@ -1,53 +1,48 @@
-# Example mapping for catalog-convert: says which LiteLLM price-list entries
-# belong to which Arbiter provider/model. Copy next to your config and edit.
+# Example mapping for catalog-convert: says which litellm_provider each
+# Arbiter provider corresponds to. Copy next to your config and edit.
 #
 #   devenv shell -- go run ./cmd/catalog-convert \
 #     -mapping cmd/catalog-convert/mapping.example.yaml \
+#     -config lanes.yaml \
 #     -out catalog.yaml \
 #     model_prices_and_context_window.json
 #
-# `litellm_provider` is checked against the entry's own field, so a model filed
-# under the wrong upstream is skipped rather than mispriced. `key_prefix` is
-# prepended to each model name to reach the price-list key (LiteLLM namespaces
-# some providers, e.g. "openrouter/anthropic/claude-3.5-sonnet").
+# There is no per-model list to maintain: every chat-mode entry LiteLLM files
+# under a mapped litellm_provider becomes a catalog row. `-config lanes.yaml`
+# limits generation to the providers it actually declares (skipping any
+# mapping entry with no match there); omit -config and every provider listed
+# below is used instead.
+#
+# `key_prefix` strips a namespacing prefix LiteLLM uses for some providers
+# (e.g. "openrouter/anthropic/claude-3.5-sonnet") before the remainder becomes
+# the catalog row's `model` — which is exactly the string you'd write under
+# that provider's `models:` in lanes.yaml, so no further translation is
+# needed. A litellm_provider entry whose key doesn't start with the configured
+# prefix is reported on stderr rather than guessed at.
+#
+# Rows for models you haven't declared in lanes.yaml are simply unused — see
+# README.md's "Group selection strategies" section for why that's fine.
 #
 # Latency is NOT in LiteLLM's price list. `latency_ms_p50` sets a per-provider
-# default; the top-level `latency_ms_p50` map overrides it per "provider/model".
-# Omit both and rows are written with latency 0 (the `fastest` strategy treats
-# 0 as unknown and ranks such members last, so a real figure is worth supplying
-# for anything you intend to select by speed).
-#
-# IMPORTANT: a model name must match on BOTH sides — it has to be one of the
-# provider's declared `models` in lanes.yaml, AND (after key_prefix) a key that
-# actually exists in the LiteLLM price list. If it exists on only one side the
-# converter skips it with a reason on stderr, and the row is simply absent. The
-# claude names below mirror lanes.yaml's placeholders, which are not real
-# upstream model ids — replace them with the ids your lanes.yaml declares and
-# verify each exists, e.g.:
-#   jq 'has("claude-3-haiku-20240307")' model_prices_and_context_window.json
+# default; the top-level `latency_ms_p50` map overrides it per "provider/model"
+# (using the model name as it appears in the generated catalog, i.e. after
+# key_prefix is stripped). Omit both and rows are written with latency 0 (the
+# `fastest` strategy treats 0 as unknown and ranks such members last, so a
+# real figure is worth supplying for anything you intend to select by speed).
 
 providers:
   claude:
     litellm_provider: anthropic
     latency_ms_p50: 900
-    models:
-      - claude-3-opus-20250219
-      - claude-3-sonnet-20250219
-      - claude-3-haiku-20250307
 
   gpt4:
     litellm_provider: openai
     latency_ms_p50: 1200
-    models:
-      - gpt-4-turbo
-      - gpt-4o
 
   litellm:
     litellm_provider: openrouter
     key_prefix: "openrouter/"
     latency_ms_p50: 2500
-    models:
-      - anthropic/claude-3.5-sonnet
 
 # Per-model latency overrides, keyed "provider/model" as Arbiter sees them.
 latency_ms_p50:

@@ -447,3 +447,126 @@ aliases:
 		t.Fatalf("Load: want unknown-select error, got %v", err)
 	}
 }
+
+// llmClassifierConfig is a minimal valid "llm" classifier plus its heuristic
+// fallback and the alias it routes through, appended to baseConfig by the
+// tests below (each overrides exactly the field it's testing).
+const llmClassifierConfig = `
+aliases:
+  cheap-classifier:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku"
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"
+    config:
+      alias: "cheap-classifier"
+      labels: ["code_generation", "chat"]
+      fallback: "domain-heuristic"
+`
+
+func TestLLMClassifierLoads(t *testing.T) {
+	if err := loadConfig(t, baseConfig+llmClassifierConfig); err != nil {
+		t.Fatalf("Load: want a valid llm classifier to load, got %v", err)
+	}
+}
+
+func TestLLMClassifierRejectsUnknownAlias(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"
+    config:
+      alias: "does-not-exist"
+      labels: ["code_generation"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), "alias") || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("Load: want an unconfigured-alias error, got %v", err)
+	}
+}
+
+func TestLLMClassifierRejectsMissingFallback(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+aliases:
+  cheap-classifier:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku"
+classifiers:
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"
+    config:
+      alias: "cheap-classifier"
+      labels: ["code_generation"]
+      fallback: "does-not-exist"
+`)
+	if err == nil || !strings.Contains(err.Error(), "fallback") {
+		t.Fatalf("Load: want a missing-fallback error, got %v", err)
+	}
+}
+
+func TestLLMClassifierRejectsLLMFallback(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+aliases:
+  cheap-classifier:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku"
+classifiers:
+  - name: "domain-llm-a"
+    type: "llm"
+    axis: "domain"
+    config:
+      alias: "cheap-classifier"
+      labels: ["code_generation"]
+      fallback: "domain-llm-b"
+  - name: "domain-llm-b"
+    type: "llm"
+    axis: "domain"
+    config:
+      alias: "cheap-classifier"
+      labels: ["code_generation"]
+      fallback: "domain-llm-a"
+`)
+	if err == nil || !strings.Contains(err.Error(), "must not itself be type") {
+		t.Fatalf("Load: want a chained-llm-fallback error, got %v", err)
+	}
+}
+
+func TestLLMClassifierRejectsEmptyLabels(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+aliases:
+  cheap-classifier:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku"
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"
+    config:
+      alias: "cheap-classifier"
+      labels: []
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), "labels") {
+		t.Fatalf("Load: want an empty-labels error, got %v", err)
+	}
+}

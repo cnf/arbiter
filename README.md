@@ -839,6 +839,56 @@ always fills `capabilities` and rejects an explicit `axis`. In a policy rule's
 `cost_sensitivity` (for `cost_class`) are still accepted, but setting a key and
 its replacement on the same rule is an error rather than a silent pick.
 
+### LLM-backed classification
+
+A `type: "llm"` classifier asks an upstream model to classify a request
+instead of guessing from keywords — real semantic understanding, at the cost
+of a real upstream call:
+
+```yaml
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write", "refactor"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"                      # only "domain" is built today
+    config:
+      alias: "cheap-classifier"         # routes the classification call — any pinned or group alias
+      labels: ["code_generation", "reasoning", "debugging", "chat", "discovery"]
+      fallback: "domain-heuristic"      # another classifier, declared anywhere in this list
+      timeout: "5s"                     # optional, defaults to 10s
+```
+
+`alias` is resolved exactly the way a client-named alias is — a group alias's
+member selection and its unselected siblings (tried in order on failure) work
+the same way here as they do for real traffic. `fallback` names another
+configured classifier (built first regardless of declaration order) that
+takes over completely whenever the LLM call fails outright: a timeout, an
+upstream error, or a reply that doesn't match any configured label exactly
+(never guessed at — the same "surface ambiguity, don't guess" rule
+`literalModelRoute` follows). `Classify` therefore never returns an error
+itself; `MergedClassifier` aborts its *entire* merge on any sub-classifier
+error, so a bubbled failure here would silently kill every other axis being
+classified alongside it, not just this one — the fallback exists precisely so
+that never happens. A `fallback` naming another `"llm"` classifier is
+rejected at config load — no chained LLM fallbacks.
+
+Every call — success or failure — is recorded as its own request row, tagged
+`kind: "classifier"` (see above): visible on the request detail page and its
+triggering session's trajectory, excluded from the default request list and
+every cost/latency aggregate. This makes the store double as a training-data
+source for a future locally-trained classifier: `domain` and (with
+`storage.capture_content` on) the classified text are both already captured,
+for free, as a side effect of routing.
+
+Session affinity does the caching here for free: once a session is pinned,
+`classify()` never runs again for that conversation, so an LLM classifier
+call happens once per session, not once per turn — no separate mechanism
+needed. A session with no derivable key (no header, too-short opener)
+classifies fresh every turn, same as any other classifier.
+
 Provider notes:
 
 - `type` selects the wire format/transport, independent of the provider's name

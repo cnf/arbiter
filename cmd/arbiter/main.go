@@ -417,15 +417,6 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 		}
 	}
 
-	classifiers := make([]classifier.Classifier, 0, len(cfg.Classifiers))
-	for _, cc := range cfg.Classifiers {
-		c, err := buildClassifier(cc)
-		if err != nil {
-			return nil, fmt.Errorf("classifier %q: %w", cc.Name, err)
-		}
-		classifiers = append(classifiers, c)
-	}
-
 	catalog := modelCostEntries(cfg.ModelCatalog)
 	resolver := buildAliasResolver(cfg.Aliases, providers, catalog)
 
@@ -435,6 +426,18 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 	var costLookup router.CostLatencyLookup
 	if len(catalog) > 0 {
 		costLookup = router.NewStaticCatalog(catalog)
+	}
+
+	// Built here rather than lower down: an "llm" classifier needs a real
+	// upstream.Client to route its own classification calls through, and
+	// resolver/providers to resolve the alias it's configured against — the
+	// same three things every other classifier type doesn't need at all.
+	t := translator.NewDefaultTranslator()
+	u := upstream.NewHTTPClient(t)
+
+	classifiers, err := buildClassifiers(cfg.Classifiers, resolver, providers, u)
+	if err != nil {
+		return nil, err
 	}
 
 	routers := make([]router.Router, 0, len(cfg.Routers))
@@ -466,9 +469,6 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 		}
 		postGuardrails = append(postGuardrails, g)
 	}
-
-	t := translator.NewDefaultTranslator()
-	u := upstream.NewHTTPClient(t)
 
 	var defaultCacheTTL time.Duration
 	if cfg.SessionAffinity.DefaultTTL != "" {
@@ -519,10 +519,48 @@ func configuredModels(cfg *config.Config) []arbiterhttp.Model {
 	return models
 }
 
+// buildClassifiers builds every configured classifier in two passes: every
+// non-"llm" type first (indexed by name), then every "llm" type, resolving
+// its named `fallback` from that index. Two passes rather than one so an
+// "llm" classifier's fallback is guaranteed to exist regardless of which one
+// is declared first in config — the final list is still assembled in
+// declared order, only the dependency resolution is two-phase. A fallback
+// naming another "llm" classifier is rejected: no chained/nested LLM
+// fallbacks in v1.
+func buildClassifiers(ccs []config.ClassifierConfig, resolver *router.AliasResolver, providers map[string]types.ProviderConfig, u upstream.Client) ([]classifier.Classifier, error) {
+	byName := make(map[string]classifier.Classifier, len(ccs))
+	for _, cc := range ccs {
+		if cc.Type == "llm" {
+			continue
+		}
+		c, err := buildClassifier(cc)
+		if err != nil {
+			return nil, fmt.Errorf("classifier %q: %w", cc.Name, err)
+		}
+		byName[cc.Name] = c
+	}
+
+	ordered := make([]classifier.Classifier, 0, len(ccs))
+	for _, cc := range ccs {
+		if cc.Type != "llm" {
+			ordered = append(ordered, byName[cc.Name])
+			continue
+		}
+		c, err := buildLLMClassifier(cc, resolver, providers, u, byName)
+		if err != nil {
+			return nil, fmt.Errorf("classifier %q: %w", cc.Name, err)
+		}
+		ordered = append(ordered, c)
+	}
+	return ordered, nil
+}
+
 // buildClassifier's axis defaulting preserves pre-axis behavior: a plain
 // "heuristic" classifier with no declared axis fills Domain, and the legacy
 // "capability_detector" type always fills Capabilities regardless of what's
-// declared (it never meant anything else).
+// declared (it never meant anything else). Does not handle "llm" — that type
+// needs the resolver/providers/upstream client buildClassifiers threads in,
+// which is why it has its own builder and its own pass.
 func buildClassifier(cc config.ClassifierConfig) (classifier.Classifier, error) {
 	switch cc.Type {
 	case "heuristic":
@@ -540,6 +578,52 @@ func buildClassifier(cc config.ClassifierConfig) (classifier.Classifier, error) 
 	default:
 		return nil, fmt.Errorf("unknown classifier type %q", cc.Type)
 	}
+}
+
+// buildLLMClassifier builds an "llm" classifier: alias (required) names the
+// configured alias its classification calls route through, labels (required,
+// non-empty) is the set of values it may return, fallback (required) names
+// another classifier already built in buildClassifiers' first pass, and
+// timeout is an optional Go duration (defaults inside NewLLMClassifier).
+func buildLLMClassifier(cc config.ClassifierConfig, resolver *router.AliasResolver, providers map[string]types.ProviderConfig, u upstream.Client, byName map[string]classifier.Classifier) (classifier.Classifier, error) {
+	alias, _ := cc.Config["alias"].(string)
+	if alias == "" {
+		return nil, fmt.Errorf(`"llm" classifier requires "alias"`)
+	}
+	labels := stringSlice(cc.Config, "labels")
+	if len(labels) == 0 {
+		return nil, fmt.Errorf(`"llm" classifier requires a non-empty "labels" list`)
+	}
+	fallbackName, _ := cc.Config["fallback"].(string)
+	if fallbackName == "" {
+		return nil, fmt.Errorf(`"llm" classifier requires "fallback"`)
+	}
+	fallback, ok := byName[fallbackName]
+	if !ok {
+		return nil, fmt.Errorf("fallback %q is not a configured non-llm classifier (must be declared, and must not itself be type \"llm\")", fallbackName)
+	}
+	var timeout time.Duration
+	if raw, _ := cc.Config["timeout"].(string); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid timeout %q: %w", raw, err)
+		}
+		timeout = d
+	}
+	return classifier.NewLLMClassifier(cc.Name, cc.Axis, resolver, alias, u, providers, labels, fallback, timeout), nil
+}
+
+// stringSlice reads a []string from a config map's key, silently dropping any
+// non-string element — the same tolerance stringListMap's inner lists use.
+func stringSlice(cfg map[string]interface{}, key string) []string {
+	raw, _ := cfg[key].([]interface{})
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // buildAliasResolver builds the resolver used by policy routers to resolve

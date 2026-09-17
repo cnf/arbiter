@@ -265,6 +265,9 @@ func (c *Config) Validate() error {
 	if err := validateClassifierAxes(c.Classifiers); err != nil {
 		return err
 	}
+	if err := c.validateLLMClassifiers(); err != nil {
+		return err
+	}
 	if err := validateUniqueNames("router", routerNames(c.Routers)); err != nil {
 		return err
 	}
@@ -344,6 +347,55 @@ func validateClassifierAxes(cs []ClassifierConfig) error {
 		}
 		if !canonicalAxisSet[c.Axis] {
 			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: unknown axis %q (want one of %v)", c.Name, c.Axis, types.KnownAxes), nil)
+		}
+	}
+	return nil
+}
+
+// validateLLMClassifiers checks every "llm"-type classifier's alias, labels
+// and fallback reference. This is the one place a classifier's otherwise-
+// opaque `config:` map (cmd/arbiter's buildClassifier is what interprets it
+// for every type) gets a load-time look from this package — worth the
+// exception because a bad alias or a missing fallback would otherwise only
+// surface as a silent runtime fallback (every classification call failing
+// and falling through to its wrapped classifier, with no load-time signal
+// that anything is wrong) rather than a config error, which is exactly the
+// class of mistake this package exists to catch elsewhere.
+func (c *Config) validateLLMClassifiers() error {
+	classifierTypes := make(map[string]string, len(c.Classifiers)) // name -> type
+	for _, cc := range c.Classifiers {
+		classifierTypes[cc.Name] = cc.Type
+	}
+
+	for _, cc := range c.Classifiers {
+		if cc.Type != "llm" {
+			continue
+		}
+		alias, _ := cc.Config["alias"].(string)
+		if alias == "" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"llm\" requires \"alias\"", cc.Name), nil)
+		}
+		if _, ok := c.Aliases[alias]; !ok {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: alias %q is not configured", cc.Name, alias), nil)
+		}
+		if labels, _ := cc.Config["labels"].([]interface{}); len(labels) == 0 {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"llm\" requires a non-empty \"labels\" list", cc.Name), nil)
+		}
+		fallback, _ := cc.Config["fallback"].(string)
+		if fallback == "" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"llm\" requires \"fallback\"", cc.Name), nil)
+		}
+		fbType, ok := classifierTypes[fallback]
+		if !ok {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: fallback %q is not a configured classifier", cc.Name, fallback), nil)
+		}
+		if fbType == "llm" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: fallback %q must not itself be type \"llm\" (no chained LLM fallbacks)", cc.Name, fallback), nil)
+		}
+		if raw, _ := cc.Config["timeout"].(string); raw != "" {
+			if _, err := time.ParseDuration(raw); err != nil {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: invalid timeout %q", cc.Name, raw), err)
+			}
 		}
 	}
 	return nil

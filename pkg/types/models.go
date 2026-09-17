@@ -22,6 +22,32 @@ type Signals struct {
 	EstimatedTokens      int
 	CostClass            string  // "free_only", "budget", "quality_first"
 	Confidence           float64 // 0.0-1.0
+
+	// ClassifierCalls carries diagnostics for any sub-classifier that made its
+	// own upstream request to produce a signal (e.g. an LLM-backed domain
+	// classifier) — nil/empty for classifiers that don't (the heuristic ones).
+	// The pipeline reads this to record one store event per call, tagged
+	// kind="classifier", alongside the real request's own event. A slice, not
+	// a single value, so more than one LLM-backed axis can coexist later
+	// without reworking this seam again.
+	ClassifierCalls []*ClassifierCallInfo
+}
+
+// ClassifierCallInfo is one upstream call a classifier made on its own behalf
+// while producing a Signals value. Provider/Model/Usage/LatencyMs/StatusCode
+// describe the call that was actually attempted (the one that determined the
+// outcome — the last one tried, on either success or exhausted failure).
+// Error is empty on success. RawReply is the model's literal text reply,
+// kept for debugging "why did it pick this domain" without needing full
+// content capture.
+type ClassifierCallInfo struct {
+	Provider   string
+	Model      string
+	LatencyMs  int64
+	Usage      Usage
+	StatusCode int
+	Error      string
+	RawReply   string
 }
 
 // KnownAxes lists the axis names a force-alias may target. Keys are the

@@ -104,3 +104,28 @@ func TestMergedClassifierPerAxisConfidence(t *testing.T) {
 		t.Fatalf("effort axis starved by higher-confidence domain axis, got %q", sig.Effort)
 	}
 }
+
+// TestMergedClassifierPropagatesClassifierCalls proves a sub-classifier that
+// made its own upstream call (an LLMClassifier) has that call surfaced on
+// the merged Signals — this is what lets the pipeline record it, regardless
+// of which other classifiers ran alongside it in the same chain.
+func TestMergedClassifierPropagatesClassifierCalls(t *testing.T) {
+	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("code_generation")}}
+	llm := NewLLMClassifier("domain-llm", AxisDomain, pinnedResolver(), "classify", u, testProviders(), labels, fakeHeuristic{domain: "chat"}, 0)
+	effort := NewHeuristicClassifier("effort", AxisEffort, map[string][]string{"hard": {"complex"}})
+	merged := NewMergedClassifier("merged", []Classifier{llm, effort})
+
+	sig, err := merged.Classify(context.Background(), req("a complex request"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.Domain != "code_generation" {
+		t.Errorf("Domain = %q, want code_generation", sig.Domain)
+	}
+	if sig.Effort != "hard" {
+		t.Errorf("Effort = %q, want hard (must survive alongside the LLM classifier)", sig.Effort)
+	}
+	if len(sig.ClassifierCalls) != 1 || sig.ClassifierCalls[0].Provider != "primary" {
+		t.Fatalf("ClassifierCalls = %v, want the LLM classifier's one call propagated", sig.ClassifierCalls)
+	}
+}

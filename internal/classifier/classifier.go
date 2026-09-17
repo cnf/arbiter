@@ -182,6 +182,10 @@ func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedR
 		if sig.Confidence > merged.Confidence {
 			merged.Confidence = sig.Confidence
 		}
+		// Additive, like RequiredCapabilities: every sub-classifier that made
+		// its own upstream call (an LLMClassifier) is worth recording, not
+		// just the one whose axis ends up winning.
+		merged.ClassifierCalls = append(merged.ClassifierCalls, sig.ClassifierCalls...)
 	}
 
 	return merged, nil

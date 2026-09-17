@@ -375,6 +375,44 @@ func (p *Pipeline) record(ev store.Event) {
 	p.store.Record(ev)
 }
 
+// recordClassifierCalls stores one event per upstream call a classifier made
+// while producing sig (see types.ClassifierCallInfo — an LLM-backed
+// classifier's own request, not the client's). Each shares the triggering
+// request's trace and session key, so it shows up in context on that
+// session's trajectory, and is tagged kind="classifier" so it's excluded
+// from the default request list and every cost/latency aggregate (see
+// Reader's kind='client' queries) — a classifier call's own spend must not
+// be mistaken for what the client asked for.
+//
+// This runs before the real request's own event (recorded on success or
+// failure, later in Execute), so a classifier call is visible even if
+// routing or the upstream call that follows never completes. sig.Domain is
+// attributed to every entry uniformly rather than per-call, which is exact
+// for today's one-axis-at-a-time configuration and an approximation the day
+// a second LLM-backed axis exists alongside this one.
+func (p *Pipeline) recordClassifierCalls(req *types.NormalizedRequest, sig types.Signals) {
+	for _, call := range sig.ClassifierCalls {
+		rationale := fmt.Sprintf("LLM classifier replied %q", call.RawReply)
+		if call.Error != "" {
+			rationale = fmt.Sprintf("LLM classifier failed (%s), fell back to heuristic", call.Error)
+		}
+		p.record(store.Event{
+			TraceID:          req.TraceID,
+			SessionKey:       req.SessionKey,
+			Kind:             "classifier",
+			Format:           req.OriginalFormat,
+			Provider:         call.Provider,
+			Model:            call.Model,
+			RoutingRationale: rationale,
+			Domain:           sig.Domain,
+			Usage:            call.Usage,
+			LatencyMs:        call.LatencyMs,
+			StatusCode:       call.StatusCode,
+			Error:            call.Error,
+		})
+	}
+}
+
 // recordRejected stores the captured content of a request that will never get
 // a requests row. It is a no-op when capture is off or nothing was captured,
 // so the error paths cost nothing in the default configuration.
@@ -592,6 +630,7 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 	if err != nil {
 		return types.Route{}, types.Signals{}, arbitererrors.NewClassificationError("classify request", err)
 	}
+	p.recordClassifierCalls(req, sig)
 	sig = p.applyForceAlias(req, sig)
 
 	routeStart := time.Now()

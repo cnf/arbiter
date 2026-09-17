@@ -36,6 +36,17 @@
 </section>
 {{end}}
 
+{{if .D.Headers}}
+<section class="panel">
+  <h2>Request headers</h2>
+  <dl class="facts">
+    {{range $k, $v := .D.Headers}}
+    <div><dt>{{$k}}</dt><dd>{{$v}}</dd></div>
+    {{end}}
+  </dl>
+</section>
+{{end}}
+
 {{if .D.Error}}
 <section class="panel bad">
   <h2>Error</h2>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -203,6 +204,11 @@ type RequestDetail struct {
 	CacheWriteTokens int64   `json:"cache_write_tokens"`
 	ToolCalls        string  `json:"tool_calls,omitempty"` // raw JSON array
 	ClientID         string  `json:"client_id,omitempty"`  // NULL until per-client keys land
+
+	// Headers is the inbound request's headers, credential-shaped values
+	// already redacted before storage (see store.Event.Headers). Nil when
+	// nothing was captured.
+	Headers map[string]string `json:"headers,omitempty"`
 
 	RequestText  string `json:"request_text,omitempty"`
 	ResponseText string `json:"response_text,omitempty"`
@@ -719,7 +725,7 @@ func (r *Reader) ListRequests(ctx context.Context, f RequestFilter) ([]RequestRo
 // caller reports as 404 — an unknown id is a normal outcome, not an error.
 func (r *Reader) GetRequest(ctx context.Context, id int64) (RequestDetail, bool, error) {
 	const q = `SELECT` + requestRowColumns + `,
-    confidence, cache_read_tokens, cache_write_tokens, tool_calls_json, client_id
+    confidence, cache_read_tokens, cache_write_tokens, tool_calls_json, client_id, headers_json
 FROM requests WHERE id = ?`
 
 	var (
@@ -735,12 +741,13 @@ FROM requests WHERE id = ?`
 		conf    sql.NullFloat64
 		tools   sql.NullString
 		client  sql.NullString
+		headers sql.NullString
 	)
 	err := r.db.QueryRowContext(ctx, q, id).Scan(
 		&d.ID, &d.TraceID, &tsRaw, &d.TsRaw, &session, &d.Format, &d.Provider, &d.Model, &alias,
 		&d.RoutingRationale, &domain, &effort, &costCl, &d.InputTokens, &d.OutputTokens,
 		&d.CostUSD, &d.LatencyMs, &d.StatusCode, &errText, &d.Stream, &epoch,
-		&conf, &d.CacheReadTokens, &d.CacheWriteTokens, &tools, &client)
+		&conf, &d.CacheReadTokens, &d.CacheWriteTokens, &tools, &client, &headers)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RequestDetail{}, false, nil
 	}
@@ -759,6 +766,12 @@ FROM requests WHERE id = ?`
 	d.Confidence = conf.Float64
 	d.ToolCalls = tools.String
 	d.ClientID = client.String
+	if headers.Valid {
+		// A malformed headers_json (there shouldn't be one — it's only ever
+		// written by headersJSON) degrades to "no headers shown" rather than
+		// failing the whole detail lookup.
+		_ = json.Unmarshal([]byte(headers.String), &d.Headers)
+	}
 	// RequestText/ResponseText stay empty: content is not captured. See the
 	// type's doc comment.
 	return d, true, nil

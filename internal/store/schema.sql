@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS requests (
     error                 TEXT,
     stream                BOOLEAN NOT NULL,
     tool_calls_json       TEXT,                -- JSON array of tool names used
-    config_epoch          TEXT
+    config_epoch          TEXT,
+    headers_json          TEXT                 -- JSON object of inbound headers, credentials redacted
 );
 
 CREATE INDEX IF NOT EXISTS idx_requests_trace ON requests(trace_id);

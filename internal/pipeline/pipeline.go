@@ -178,6 +178,27 @@ func (p *Pipeline) SetCaptureContent(on bool) {
 	p.captureContent = on
 }
 
+// headersContextKey is the context key WithHeaders/headersFromContext share.
+// Headers ride on ctx rather than as an Execute parameter because they are
+// pure observability metadata (attached to the stored row, like trace ID) —
+// they never influence routing, so they don't belong in the signature every
+// call site (including ~30 in tests) must pass.
+type headersContextKey struct{}
+
+// WithHeaders returns a derived context carrying the client's inbound
+// headers, already redacted by the caller (Arbiter's HTTP layer masks
+// credential-shaped values before this is called — the pipeline doesn't know
+// which header names are sensitive). Execute reads them back via
+// headersFromContext and attaches them to the stored request row.
+func WithHeaders(ctx context.Context, headers map[string]string) context.Context {
+	return context.WithValue(ctx, headersContextKey{}, headers)
+}
+
+func headersFromContext(ctx context.Context) map[string]string {
+	h, _ := ctx.Value(headersContextKey{}).(map[string]string)
+	return h
+}
+
 // Execute runs the full pipeline: normalize -> pre-guardrails -> classify ->
 // route -> upstream -> post-guardrails -> denormalize. format is the
 // caller's already-known wire format ("anthropic" or "openai") — the HTTP
@@ -188,6 +209,7 @@ func (p *Pipeline) SetCaptureContent(on bool) {
 func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, traceID string, sessionHint string) (interface{}, error) {
 	ctx = p.logger.WithTraceID(ctx, traceID)
 	start := time.Now()
+	headers := headersFromContext(ctx)
 
 	req, err := p.normalizer.ToNormalized(payload, format)
 	if err != nil {
@@ -270,6 +292,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 			StatusCode:       status,
 			Error:            err.Error(),
 			Content:          contentOrNil(content),
+			Headers:          headers,
 		})
 		return nil, err
 	}
@@ -320,6 +343,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		LatencyMs:        time.Since(start).Milliseconds(),
 		StatusCode:       http.StatusOK,
 		ToolCalls:        toolCallNames(resp.Content),
+		Headers:          headers,
 	})
 	return out, nil
 }
@@ -659,6 +683,7 @@ func (p *Pipeline) cacheTTLFor(provider string) time.Duration {
 // executeStream handles streaming requests. It returns a channel of normalized
 // stream events that the HTTP handler will translate and send to the client.
 func (p *Pipeline) executeStream(ctx context.Context, traceID string, route types.Route, req *types.NormalizedRequest, sessionKey string, hasKey bool, sig types.Signals, start time.Time, content store.CapturedContent) (interface{}, error) {
+	headers := headersFromContext(ctx)
 	// Send the request upstream (with fallback/retry handling) and get the
 	// event channel. A 429/5xx fails SendStream synchronously — the HTTP
 	// status is known before any SSE bytes flow — so fallback works exactly
@@ -687,6 +712,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 			Error:            err.Error(),
 			Stream:           true,
 			Content:          contentOrNil(content),
+			Headers:          headers,
 		})
 		return nil, err
 	}
@@ -795,6 +821,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 			Error:            errMsg,
 			Stream:           true,
 			Content:          contentOrNil(respContent),
+			Headers:          headers,
 		})
 	}()
 

@@ -516,8 +516,16 @@ requests with no session key) and `?limit=<n>` (default and maximum 500) narrow
 it; a malformed `status` or `limit` is a **400**, not a silently ignored filter. Ordering is `ts DESC, id DESC` — the id tiebreaker matters
 because rows written within one timestamp tick would otherwise come back in an
 arbitrary order. `/admin/requests/{id}` takes the `id` the list returns and
-adds the fields a list row omits (confidence, cache token counts, tool calls);
-`404` for an unknown id, `400` for a malformed one.
+adds the fields a list row omits (confidence, cache token counts, tool calls,
+inbound headers); `404` for an unknown id, `400` for a malformed one.
+
+Every request's inbound headers are captured and shown on its detail page —
+`User-Agent` is what tells two otherwise-identical requests apart by client.
+Anything credential-shaped (`Authorization`, `Cookie`, any header with `token`,
+`secret`, `api-key`, or `password` in its name) is masked to `[REDACTED]`
+before it ever reaches the store; this is a single-operator tool (see
+REQUIREMENTS.md), so the bar is not persisting secrets into the db file, not
+hiding headers from the person running Arbiter.
 
 `status_code` records what the *client* was told, so a request whose upstream
 could not be reached at all — no response, no status — is stored as **502**, not

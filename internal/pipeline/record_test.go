@@ -97,6 +97,33 @@ func TestExecuteRecordsCompletedRequest(t *testing.T) {
 	}
 }
 
+// TestExecuteRecordsHeadersFromContext proves headers attached via
+// WithHeaders reach the recorded event — the HTTP layer sets these on ctx
+// rather than as an Execute parameter (see WithHeaders' doc comment), so this
+// is the only thing proving the plumbing actually connects end to end.
+func TestExecuteRecordsHeadersFromContext(t *testing.T) {
+	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
+	w := &capturingWriter{}
+	p := NewPipeline(
+		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
+		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
+		fakeLogger{}, time.Minute, nil, w, nil,
+	)
+
+	ctx := WithHeaders(context.Background(), map[string]string{"User-Agent": "opencode/1.0"})
+	if _, err := p.Execute(ctx, []byte("hello"), "openai", "t1", ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	ev, ok := w.last()
+	if !ok {
+		t.Fatal("no event recorded")
+	}
+	if ev.Headers["User-Agent"] != "opencode/1.0" {
+		t.Errorf("Headers[User-Agent] = %q, want opencode/1.0", ev.Headers["User-Agent"])
+	}
+}
+
 // TestRecordStampsConfigEpoch proves every recorded event carries the config
 // epoch the pipeline was told about — this is what makes per-epoch cost
 // comparison possible at all. The epoch must reach the event without any

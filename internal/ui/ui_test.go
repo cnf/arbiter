@@ -417,6 +417,23 @@ func TestErrorTextIsAHoverTooltipNotAnInlineRow(t *testing.T) {
 	}
 }
 
+// The request detail page shows captured headers, User-Agent included — the
+// whole point of capturing them — and the credential redaction already done
+// by the HTTP layer before the event reached the store passes through as-is.
+func TestRequestDetailShowsHeaders(t *testing.T) {
+	h, _ := newSeededHandler(t, store.Event{
+		TraceID: "t", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
+		Headers: map[string]string{"User-Agent": "opencode/1.0", "Authorization": "[REDACTED]"},
+	})
+	body := serve(t, h, "GET", "/admin/ui/requests/1", false).Body.String()
+	if !strings.Contains(body, "opencode/1.0") {
+		t.Errorf("User-Agent missing from detail page; body = %s", firstLine(body))
+	}
+	if !strings.Contains(body, "[REDACTED]") {
+		t.Errorf("redacted header value missing from detail page; body = %s", firstLine(body))
+	}
+}
+
 // Content that was stored hash-only (an image, a streamed tool call) must be
 // shown as such rather than omitted: "not capturable" and "nothing to capture"
 // are different answers.

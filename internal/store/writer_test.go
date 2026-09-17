@@ -111,6 +111,49 @@ func TestRecordPersistsFullEvent(t *testing.T) {
 	}
 }
 
+// TestRecordPersistsHeaders proves a recorded event's Headers round-trip
+// through GetRequest (the detail query — headers are a detail-only field,
+// like tool calls, not on the list projection).
+func TestRecordPersistsHeaders(t *testing.T) {
+	w, path := newTestWriter(t)
+
+	w.Record(Event{
+		TraceID:    "trace-headers",
+		Format:     "openai",
+		Provider:   "claude",
+		Model:      "m",
+		StatusCode: 200,
+		Headers:    map[string]string{"User-Agent": "opencode/1.0", "Authorization": "[REDACTED]"},
+	})
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	r := &Reader{db: reopenReads(t, path)}
+	rows, err := r.ListRequests(context.Background(), RequestFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+
+	d, ok, err := r.GetRequest(context.Background(), rows[0].ID)
+	if err != nil {
+		t.Fatalf("GetRequest: %v", err)
+	}
+	if !ok {
+		t.Fatalf("GetRequest: not found")
+	}
+	if d.Headers["User-Agent"] != "opencode/1.0" {
+		t.Errorf("Headers[User-Agent] = %q, want opencode/1.0", d.Headers["User-Agent"])
+	}
+	if d.Headers["Authorization"] != "[REDACTED]" {
+		t.Errorf("Headers[Authorization] = %q, want [REDACTED]", d.Headers["Authorization"])
+	}
+}
+
 // TestZeroTimestampFilledIn proves Record stamps a time when the caller
 // leaves Ts zero, so a row can never be inserted with a nonsense timestamp.
 func TestZeroTimestampFilledIn(t *testing.T) {

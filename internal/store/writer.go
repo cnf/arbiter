@@ -66,6 +66,12 @@ type Event struct {
 	Stream     bool
 	ToolCalls  []string
 
+	// Headers is the inbound request's headers, already redacted by the
+	// caller (credential-shaped values masked before this struct is built —
+	// the store does not know which header names are sensitive). Nil means
+	// nothing was captured.
+	Headers map[string]string
+
 	// Content is the request/response body capture (see content.go). Nil when
 	// nothing was captured, so the common case costs the writer no extra work.
 	// It rides on the Event deliberately: the blobs, their references and the
@@ -155,7 +161,7 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 	// added to schema.sql after a database was first created never appears on
 	// it. Add the ones we know about explicitly; an insert referencing a
 	// missing column fails every time, which would silently lose events.
-	for _, col := range []string{"config_epoch TEXT"} {
+	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT"} {
 		if err := addColumnIfMissing(db, "requests", col); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate event store schema: %w", err)
@@ -358,12 +364,13 @@ INSERT INTO requests (
     alias_used, routing_rationale, domain, effort, cost_class, confidence,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
     cost_usd, latency_ms, status_code, error, stream, tool_calls_json,
-    config_epoch
+    config_epoch, headers_json
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?,
+    ?
 )`
 
 	res, err := db.ExecContext(ctx, q,
@@ -390,7 +397,8 @@ INSERT INTO requests (
 		nullStr(ev.Error),
 		ev.Stream,
 		toolCallsJSON(ev.ToolCalls),
-		nullStr(ev.ConfigEpoch))
+		nullStr(ev.ConfigEpoch),
+		headersJSON(ev.Headers))
 	if err != nil {
 		return 0, fmt.Errorf("insert request: %w", err)
 	}
@@ -413,6 +421,18 @@ func toolCallsJSON(names []string) *string {
 		return nil
 	}
 	b, err := json.Marshal(names)
+	if err != nil {
+		return nil
+	}
+	s := string(b)
+	return &s
+}
+
+func headersJSON(h map[string]string) *string {
+	if len(h) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(h)
 	if err != nil {
 		return nil
 	}

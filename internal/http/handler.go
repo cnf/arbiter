@@ -97,7 +97,7 @@ func (h *Handler) CompletionsHandler(w http.ResponseWriter, r *http.Request) {
 // write. The only difference between the two ingress points is which wire
 // format they declare up front, so Execute never has to sniff it.
 func (h *Handler) handle(w http.ResponseWriter, r *http.Request, format string) {
-	ctx := r.Context()
+	ctx := pipeline.WithHeaders(r.Context(), captureHeaders(r.Header))
 	traceID := traceIDFor(r)
 
 	// Read the runtime once, at request entry: a reload during this request
@@ -230,6 +230,47 @@ func requestPath(r *http.Request) string {
 		return r.URL.Path
 	}
 	return strings.TrimRight(prefix, "/") + r.URL.Path
+}
+
+// sensitiveHeaderSubstrings marks a header for redaction if its lowercased
+// name contains any of these. Substring, not an exact deny-list: a future
+// per-client API key header (REQUIREMENTS §4) is exactly the kind of thing
+// this must catch without needing its name enumerated here first.
+var sensitiveHeaderSubstrings = []string{
+	"authorization", "cookie", "token", "secret", "api-key", "apikey",
+	"password", "credential",
+}
+
+// captureHeaders converts the inbound header set into the flat map the event
+// store records, masking anything that looks like a credential — this is a
+// single-operator tool (REQUIREMENTS.md), so the concern is not exposing
+// headers to the operator, only not persisting secrets into the db file.
+// Multi-value headers are joined with ", "; Arbiter has no header it expects
+// to see twice, so collapsing is simpler than modeling http.Header's list
+// shape all the way into storage.
+func captureHeaders(h http.Header) map[string]string {
+	if len(h) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(h))
+	for name, values := range h {
+		v := strings.Join(values, ", ")
+		if isSensitiveHeader(name) {
+			v = "[REDACTED]"
+		}
+		out[name] = v
+	}
+	return out
+}
+
+func isSensitiveHeader(name string) bool {
+	lower := strings.ToLower(name)
+	for _, s := range sensitiveHeaderSubstrings {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // writeError writes a plain JSON error body.

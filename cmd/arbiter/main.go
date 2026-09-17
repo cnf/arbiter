@@ -169,8 +169,13 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	r.HandleFunc("/", func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
 		stdhttp.Redirect(w, req, "/admin/ui/", stdhttp.StatusFound)
 	}).Methods("GET")
+	// Both chat endpoints are registered plain and /v1-prefixed, matching
+	// /models below: a client's base_url convention (whether it already
+	// includes /v1) shouldn't decide whether Arbiter has a route.
 	r.HandleFunc("/v1/messages", handler.MessagesHandler).Methods("POST")
+	r.HandleFunc("/messages", handler.MessagesHandler).Methods("POST")
 	r.HandleFunc("/chat/completions", handler.CompletionsHandler).Methods("POST")
+	r.HandleFunc("/v1/chat/completions", handler.CompletionsHandler).Methods("POST")
 	r.HandleFunc("/models", handler.ModelsHandler).Methods("GET")
 	r.HandleFunc("/v1/models", handler.ModelsHandler).Methods("GET")
 	r.HandleFunc("/health", func(w stdhttp.ResponseWriter, req *stdhttp.Request) {

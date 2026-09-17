@@ -38,8 +38,8 @@ overrides both. Loopback is the default on purpose — see
 
 | Path                 | Purpose                              |
 |----------------------|--------------------------------------|
-| `POST /v1/messages`  | Anthropic Messages API               |
-| `POST /chat/completions` | OpenAI Chat Completions          |
+| `POST /v1/messages`, `POST /messages` | Anthropic Messages API   |
+| `POST /chat/completions`, `POST /v1/chat/completions` | OpenAI Chat Completions |
 | `GET /models`, `GET /v1/models` | model list (OpenAI shape), provider models and aliases |
 | `GET /health`        | liveness                             |
 | `GET /`              | 302 to `/admin/ui/`                  |

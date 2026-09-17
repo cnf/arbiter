@@ -165,6 +165,10 @@ func main() {
 // configured admin gate header ("" = ungated).
 func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, stats *arbiterhttp.StatsHandler, adminUI *ui.Handler, forwardAuthHeader string) *mux.Router {
 	r := mux.NewRouter()
+	r.NotFoundHandler = stdhttp.HandlerFunc(notFoundJSON)
+	r.HandleFunc("/", func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
+		stdhttp.Redirect(w, req, "/admin/ui/", stdhttp.StatusFound)
+	}).Methods("GET")
 	r.HandleFunc("/v1/messages", handler.MessagesHandler).Methods("POST")
 	r.HandleFunc("/chat/completions", handler.CompletionsHandler).Methods("POST")
 	r.HandleFunc("/models", handler.ModelsHandler).Methods("GET")
@@ -252,6 +256,16 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	// method value rather than as an http.Handler.
 	r.PathPrefix("/admin/ui/static/").HandlerFunc(arbiterhttp.Gate(forwardAuthHeader, adminUI.StaticHandler)).Methods("GET")
 	return r
+}
+
+// notFoundJSON answers an unmatched route with a JSON body instead of Go's
+// default plain-text "404 page not found", so a client parsing every
+// response as JSON (the common case for an API proxy) doesn't choke on one
+// that isn't.
+func notFoundJSON(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(stdhttp.StatusNotFound)
+	_, _ = w.Write([]byte(`{"code":404,"detail":"Not Found"}`))
 }
 
 // listen opens the server's listener: a unix socket when socketPath is set

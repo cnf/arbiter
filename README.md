@@ -42,6 +42,7 @@ overrides both. Loopback is the default on purpose — see
 | `POST /chat/completions` | OpenAI Chat Completions          |
 | `GET /models`, `GET /v1/models` | model list (OpenAI shape), provider models and aliases |
 | `GET /health`        | liveness                             |
+| `GET /`              | 302 to `/admin/ui/`                  |
 | `POST /admin/reload` | reload config + catalog              |
 | `GET /admin/stats`   | overall requests/tokens/cost/errors  |
 | `GET /admin/stats/providers` | spend by provider/model         |
@@ -61,6 +62,10 @@ overrides both. Loopback is the default on purpose — see
 | `GET /admin/ui/overview/series.json` | the chart's data (UI-internal, unstable) |
 | `GET /admin/ui/content/repeated` | blocks of content that recur across requests |
 | `GET /admin/ui/content/block?hash=…` | the requests containing one block |
+
+An unmatched path returns `{"code":404,"detail":"Not Found"}` rather than Go's
+default plain-text 404, so a client that parses every response as JSON doesn't
+choke on the one response that isn't.
 
 Both chat endpoints accept `stream: true` and respond with SSE in the same
 wire format as the request (formats are never mixed). Every response —

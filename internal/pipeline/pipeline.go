@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cnf/arbiter/internal/classifier"
 	"github.com/cnf/arbiter/internal/guardrail"
@@ -396,6 +397,15 @@ func (p *Pipeline) recordClassifierCalls(req *types.NormalizedRequest, sig types
 		if call.Error != "" {
 			rationale = fmt.Sprintf("LLM classifier failed (%s), fell back to heuristic", call.Error)
 		}
+		// The verdict alone doesn't say what was judged, and the rationale is
+		// what the request list shows before anyone opens the captured content
+		// — so the classified text rides here too. Without it, "replied
+		// code_generation" is unreadable as evidence: you cannot tell a clear
+		// message the model misjudged from a rubric that failed to describe
+		// the category.
+		if input := ellipsize(call.Input, rationalePreview); input != "" {
+			rationale += fmt.Sprintf(" — input %q", input)
+		}
 		p.record(store.Event{
 			TraceID:          req.TraceID,
 			SessionKey:       req.SessionKey,
@@ -409,8 +419,66 @@ func (p *Pipeline) recordClassifierCalls(req *types.NormalizedRequest, sig types
 			LatencyMs:        call.LatencyMs,
 			StatusCode:       call.StatusCode,
 			Error:            call.Error,
+			Content:          p.classifierContent(call),
 		})
 	}
+}
+
+// rationalePreview bounds how much of a classifier's input is echoed into the
+// routing rationale. The rationale is rendered in a list row (and again in the
+// detail page's <pre>), so this is sized to be recognisable at a glance rather
+// than to carry the whole message — the full text is in the captured content.
+const rationalePreview = 120
+
+// ellipsize shortens s to at most max bytes on a rune boundary, marking that it
+// was cut. Byte-truncating alone would split a multi-byte rune and put invalid
+// UTF-8 into the store and onto the page; the cut is marked with "…" so a
+// truncated preview is never mistaken for the whole message.
+func ellipsize(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	// Walk back to the start of the rune straddling the boundary.
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
+// classifierContent builds the captured content for one classifier call: the
+// text it classified, plus the prompt it was given as a system block.
+//
+// The input is byte-identical to a block of the client's own request that
+// capture already stored, so it addresses to the same content row and costs one
+// reference, not a second body — and the classifier row is then joinable to the
+// client request that triggered it. The prompt block is constant across calls
+// for a given config, so it addresses to a single row forever and makes the
+// classifier's row self-contained: "which rubric produced this verdict" is
+// answerable without reconstructing a config from its epoch.
+//
+// Gated on the same storage.capture_content switch as everything else that
+// writes conversation text to disk — a second switch for derived calls is a
+// switch nobody keeps in sync. nil means nothing captured, so the store's
+// no-content fast path still applies when capture is off.
+func (p *Pipeline) classifierContent(call *types.ClassifierCallInfo) *store.CapturedContent {
+	if !p.captureContent {
+		return nil
+	}
+	var c store.CapturedContent
+	if call.SystemPrompt != "" {
+		c.Request = append(c.Request, store.Block{
+			Kind: "text", Body: []byte(call.SystemPrompt), Role: "system",
+		})
+	}
+	if call.Input != "" {
+		// msg_index 1 so it sits after the prompt block, mirroring how
+		// CaptureRequest indexes the system prompt ahead of the messages.
+		c.Request = append(c.Request, store.Block{
+			Kind: "text", Body: []byte(call.Input), Role: "user", MsgIndex: 1,
+		})
+	}
+	return contentOrNil(c)
 }
 
 // recordRejected stores the captured content of a request that will never get

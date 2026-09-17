@@ -916,16 +916,43 @@ rejected at config load — no chained LLM fallbacks.
 Every call — success or failure — is recorded as its own request row, tagged
 `kind: "classifier"` (see above): visible on the request detail page and its
 triggering session's trajectory, excluded from the default request list and
-every cost/latency aggregate. This makes the store double as a training-data
-source for a future locally-trained classifier: `domain` and (with
-`storage.capture_content` on) the classified text are both already captured,
-for free, as a side effect of routing.
+every cost/latency aggregate. Its `routing_rationale` carries both the verdict
+and a preview of the text that produced it (`LLM classifier replied
+"code_generation" — input "please fix this bug..."`), because the rationale is
+what the list shows before anyone loads captured content — a verdict alone
+cannot distinguish a clear message the model misjudged from a rubric that failed
+to describe the category. The preview is cut at 120 bytes on a rune boundary,
+so a multi-byte character is never split into invalid UTF-8; the full text is in
+the captured content. This makes the store double as a training-data source for
+a future locally-trained classifier: `domain` and the classified text are both
+already captured, for free, as a side effect of routing.
+
+With `storage.capture_content` on, the classifier's own row carries what it
+**saw**: the text it classified, plus the prompt it was given as a system block.
+That is what makes a wrong verdict debuggable — the recorded reply shows the
+decision, not the evidence, so without the input there is no way to tell a model
+that misjudged a clear message from a rubric that failed to describe the
+category. It costs nothing extra to store: the input is byte-identical to a
+block of the client's own request that capture already holds, so it addresses to
+the same content row and adds one reference, not a second body — which also
+makes the classifier row joinable to the request that triggered it. The prompt
+block is constant for a given config, so it addresses to a single row forever.
+Both ride the one `capture_content` switch; there is no separate switch for
+derived calls.
+
+Note that a classifier row is a `requests` row, so the content queries that join
+`content_refs` to `requests` (repeated content, the per-hash drill-down) filter
+to `kind = 'client'` — otherwise every classifier call would count as a second
+request "containing" the text it was asked to classify, and a client's
+boilerplate preamble would read as twice as widespread as it is.
 
 Session affinity does the caching here for free: once a session is pinned,
 `classify()` never runs again for that conversation, so an LLM classifier
 call happens once per session, not once per turn — no separate mechanism
 needed. A session with no derivable key (no header, too-short opener)
-classifies fresh every turn, same as any other classifier.
+classifies fresh every turn, same as any other classifier. The pin is
+in-memory, though, so a config reload rebuilds the pipeline and clears it: the
+next turn after a reload re-classifies even mid-conversation.
 
 Provider notes:
 

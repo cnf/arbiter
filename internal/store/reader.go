@@ -626,7 +626,7 @@ SELECT cr.hash,
 FROM content_refs cr
 JOIN requests r ON r.id = cr.owner_id AND cr.owner_kind = 'request'
 LEFT JOIN content c ON c.hash = cr.hash
-WHERE r.ts >= ?
+WHERE r.ts >= ? AND r.kind = 'client'
 GROUP BY cr.hash
 HAVING COUNT(DISTINCT cr.owner_id) >= ?
    AND COUNT(DISTINCT r.session_key) >= ?

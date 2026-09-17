@@ -37,17 +37,26 @@ type Signals struct {
 // while producing a Signals value. Provider/Model/Usage/LatencyMs/StatusCode
 // describe the call that was actually attempted (the one that determined the
 // outcome — the last one tried, on either success or exhausted failure).
-// Error is empty on success. RawReply is the model's literal text reply,
-// kept for debugging "why did it pick this domain" without needing full
-// content capture.
+// Error is empty on success.
+//
+// RawReply is the model's literal text reply and Input/SystemPrompt are what it
+// was asked — the whole prompt, not just the text classified. The reply alone
+// shows what the classifier decided, not what it saw, which is exactly what a
+// wrong verdict needs: without the input there is no way to tell a model that
+// misjudged a clear message from a rubric that failed to describe the category.
+// The pipeline stores the input as captured content (see recordClassifierCalls),
+// gated on storage.capture_content like every other path that writes
+// conversation text to disk.
 type ClassifierCallInfo struct {
-	Provider   string
-	Model      string
-	LatencyMs  int64
-	Usage      Usage
-	StatusCode int
-	Error      string
-	RawReply   string
+	Provider     string
+	Model        string
+	LatencyMs    int64
+	Usage        Usage
+	StatusCode   int
+	Error        string
+	RawReply     string
+	Input        string
+	SystemPrompt string
 }
 
 // KnownAxes lists the axis names a force-alias may target. Keys are the

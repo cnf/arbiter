@@ -223,6 +223,54 @@ func TestRejectedContentIsInvisibleToRequestQueries(t *testing.T) {
 	}
 }
 
+// TestClassifierRowsDoNotInflateRepeatedContent is the regression for a
+// classifier call's own captured input. A classifier row IS a requests row, and
+// its input is byte-identical to a block of the client request that triggered
+// it — so without a kind filter on the join, every classifier call would count
+// as a second "request" containing that block, and the boilerplate page would
+// report a client's preamble as twice as widespread as it is.
+func TestClassifierRowsDoNotInflateRepeatedContent(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	preamble := textBlock("system", 0, 0, "You are an AI assistant. Always respond in Markdown.")
+
+	// One real client request carrying the preamble.
+	w.Record(Event{
+		TraceID: "t1", SessionKey: "session-a", Format: "openai", Provider: "p", Model: "m",
+		StatusCode: 200, Kind: "client",
+		Content: &CapturedContent{Request: []Block{preamble}},
+	})
+	// A classifier call whose input is that same text, recorded as its own row.
+	w.Record(Event{
+		TraceID: "t1", SessionKey: "session-a", Format: "openai", Provider: "cls", Model: "cls-m",
+		StatusCode: 200, Kind: "classifier",
+		Content: &CapturedContent{Request: []Block{textBlock("user", 1, 0, "You are an AI assistant. Always respond in Markdown.")}},
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// min_requests=2: only the classifier row could satisfy this, so the
+	// preamble must not appear at all.
+	repeated, err := r.RepeatedContent(ctx, WindowFrom(time.Hour), 2, 0, 50)
+	if err != nil {
+		t.Fatalf("RepeatedContent: %v", err)
+	}
+	if len(repeated) != 0 {
+		t.Errorf("repeated content = %+v, want none (the classifier row must not count as a second request)", repeated)
+	}
+
+	// The drill-down must not list the classifier row either.
+	rows, err := r.RequestsForContent(ctx, ContentHashHex(preamble.Hash()), 50)
+	if err != nil {
+		t.Fatalf("RequestsForContent: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Kind != "client" {
+		t.Errorf("RequestsForContent = %+v, want exactly the one client row", rows)
+	}
+}
+
 // TestRepeatedContentFindsCrossSessionBoilerplate is the payoff query: the text
 // a client prepends to every request shows up as a block seen across many
 // sessions, which is how an injected prompt is found without knowing it in

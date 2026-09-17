@@ -161,9 +161,14 @@ func (c *LLMClassifier) tryClassify(ctx context.Context, req *types.NormalizedRe
 		return &types.ClassifierCallInfo{Error: errString(err, "no route for classifier alias")}, nil, false
 	}
 
+	// The input and the prompt are carried on every call record, success or
+	// failure: a wrong verdict is only debuggable against the text that
+	// produced it, and a failed call's prompt is how you tell "the rubric is
+	// ambiguous" from "the provider was down".
 	text := types.LastUserText(req)
+	prompt := c.systemPrompt()
 	classifyReq := &types.NormalizedRequest{
-		SystemPrompt: c.systemPrompt(),
+		SystemPrompt: prompt,
 		Messages:     []types.Message{{Role: "user", Content: []types.ContentBlock{types.TextBlock(text)}}},
 		MaxTokens:    16,
 	}
@@ -182,6 +187,7 @@ func (c *LLMClassifier) tryClassify(ctx context.Context, req *types.NormalizedRe
 			lastCall = &types.ClassifierCallInfo{
 				Provider: route.Provider, Model: route.Model, LatencyMs: latency,
 				StatusCode: upstreamErrorStatus(err), Error: err.Error(),
+				Input: text, SystemPrompt: prompt,
 			}
 			continue
 		}
@@ -191,6 +197,7 @@ func (c *LLMClassifier) tryClassify(ctx context.Context, req *types.NormalizedRe
 		lastCall = &types.ClassifierCallInfo{
 			Provider: route.Provider, Model: route.Model, LatencyMs: latency,
 			Usage: resp.Usage, StatusCode: 200, RawReply: reply,
+			Input: text, SystemPrompt: prompt,
 		}
 		if !isLabel {
 			lastCall.Error = fmt.Sprintf("reply %q did not match any configured label", reply)

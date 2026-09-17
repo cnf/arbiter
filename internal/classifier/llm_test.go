@@ -342,3 +342,51 @@ func TestLLMClassifierNoEscapeConfiguredStillFallsBack(t *testing.T) {
 		t.Errorf("Domain = %q, want chat (fallback: no escape label is configured)", sig.Domain)
 	}
 }
+
+// TestLLMClassifierRecordsInputAndPrompt is the debuggability fix: the call
+// record carries the text that was classified AND the prompt it was given, so a
+// wrong verdict can be read against what produced it. Without the input there is
+// no way to tell a model that misjudged a clear message from a rubric that
+// failed to describe the category.
+func TestLLMClassifierRecordsInputAndPrompt(t *testing.T) {
+	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("code_generation")}}
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), rubricLabels, "", "", fakeHeuristic{}, time.Second)
+
+	sig, err := c.Classify(context.Background(), testReq())
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(sig.ClassifierCalls) != 1 {
+		t.Fatalf("ClassifierCalls = %v, want 1", sig.ClassifierCalls)
+	}
+	call := sig.ClassifierCalls[0]
+	if call.Input != "please fix this bug" {
+		t.Errorf("Input = %q, want the classified text", call.Input)
+	}
+	if !strings.Contains(call.SystemPrompt, "the user wants code written") {
+		t.Errorf("SystemPrompt = %q, want the rubric actually sent", call.SystemPrompt)
+	}
+}
+
+// TestLLMClassifierRecordsInputOnFailureToo proves the input rides a failed call
+// as well: "the rubric is ambiguous" and "the provider was down" are different
+// diagnoses, and only the failed call's own prompt separates them.
+func TestLLMClassifierRecordsInputOnFailureToo(t *testing.T) {
+	u := &fakeUpstream{errs: map[string]error{"primary": arbitererrors.NewUpstreamError("primary", 503, "down", nil)}}
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), rubricLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
+
+	sig, err := c.Classify(context.Background(), testReq())
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(sig.ClassifierCalls) != 1 {
+		t.Fatalf("ClassifierCalls = %v, want 1", sig.ClassifierCalls)
+	}
+	call := sig.ClassifierCalls[0]
+	if call.Input != "please fix this bug" {
+		t.Errorf("Input = %q on a failed call, want the classified text", call.Input)
+	}
+	if call.SystemPrompt == "" {
+		t.Error("SystemPrompt is empty on a failed call; the prompt that failed is what distinguishes a bad rubric from a dead provider")
+	}
+}

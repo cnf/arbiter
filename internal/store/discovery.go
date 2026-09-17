@@ -43,7 +43,7 @@ func (r *Reader) RequestsForContent(ctx context.Context, hash string, limit int)
 	}
 
 	q := "SELECT" + requestRowColumns + ` FROM requests
-WHERE id IN (
+WHERE kind = 'client' AND id IN (
     SELECT cr.owner_id FROM content_refs cr
     WHERE cr.owner_kind = 'request' AND cr.hash = ?
 )
@@ -156,7 +156,7 @@ FROM (
            COUNT(DISTINCT r.session_key) AS sessions
     FROM content_refs cr
     JOIN requests r ON r.id = cr.owner_id AND cr.owner_kind = 'request'
-    WHERE r.ts >= ?
+    WHERE r.ts >= ? AND r.kind = 'client'
     GROUP BY cr.hash
 )`
 

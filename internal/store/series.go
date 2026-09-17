@@ -117,14 +117,14 @@ func (r *Reader) PivotSeries(ctx context.Context, w Window, d Dimension, m Metri
 WITH top AS (
     SELECT ` + dimExpr + ` AS k
     FROM requests
-    WHERE ts >= ?
+    WHERE ts >= ? AND kind = 'client'
     GROUP BY k
     ORDER BY ` + metricExpr + ` DESC, k ASC
     LIMIT ?
 )
 SELECT ` + bucketExpr + ` AS b, ` + dimExpr + ` AS k, ` + metricExpr + ` AS v
 FROM requests
-WHERE ts >= ? AND ` + dimExpr + ` IN (SELECT k FROM top)
+WHERE ts >= ? AND kind = 'client' AND ` + dimExpr + ` IN (SELECT k FROM top)
 GROUP BY b, k
 ORDER BY b ASC, k ASC`
 

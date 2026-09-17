@@ -448,6 +448,35 @@ func TestActualModelHiddenWhenAbsent(t *testing.T) {
 	}
 }
 
+// The request list defaults to client traffic only, and a non-client row
+// gets a visible tag when explicitly shown — same contract as the JSON
+// surface, exercised here against the actual rendered HTML.
+func TestRequestListDefaultsToClientKindAndTagsOthers(t *testing.T) {
+	h, _ := newSeededHandler(t,
+		store.Event{TraceID: "client-row", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1},
+		store.Event{TraceID: "classifier-row", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1, Kind: "classifier"},
+	)
+
+	// data-id is the row's rowid — 1 for the client row (inserted first), 2
+	// for the classifier row — since the row markup carries no other field
+	// that identifies which event produced it.
+	def := serve(t, h, "GET", "/admin/ui/requests", false).Body.String()
+	if strings.Contains(def, `data-id="2"`) {
+		t.Errorf("default view included the classifier row; body = %s", firstLine(def))
+	}
+	if !strings.Contains(def, `data-id="1"`) {
+		t.Errorf("default view is missing the client row; body = %s", firstLine(def))
+	}
+
+	all := serve(t, h, "GET", "/admin/ui/requests?kind=all", false).Body.String()
+	if !strings.Contains(all, `data-id="2"`) {
+		t.Errorf("?kind=all is missing the classifier row; body = %s", firstLine(all))
+	}
+	if !strings.Contains(all, `class="tag kind"`) {
+		t.Errorf("classifier row has no kind tag; body = %s", firstLine(all))
+	}
+}
+
 // The request detail page shows captured headers, User-Agent included — the
 // whole point of capturing them — and the credential redaction already done
 // by the HTTP layer before the event reached the store passes through as-is.

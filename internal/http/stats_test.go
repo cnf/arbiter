@@ -222,6 +222,42 @@ func TestRequestsHandlerFiltersAndOrders(t *testing.T) {
 	}
 }
 
+// TestRequestsHandlerDefaultsToClientKind proves the request list defaults to
+// real client traffic only — a classifier call (or, later, title-gen/subagent)
+// must not clutter the view nobody asked to widen. An explicit ?kind= narrows
+// or (via "all") removes the default.
+func TestRequestsHandlerDefaultsToClientKind(t *testing.T) {
+	h := newTestStatsHandler(t,
+		store.Event{TraceID: "client-row", Format: "openai", Provider: "a", Model: "m"},
+		store.Event{TraceID: "classifier-row", Format: "openai", Provider: "a", Model: "m", Kind: "classifier"},
+	)
+
+	cases := []struct {
+		query string
+		want  int
+	}{
+		{"/admin/requests", 1},                 // default: client only
+		{"/admin/requests?kind=classifier", 1}, // explicit narrow
+		{"/admin/requests?kind=all", 2},        // explicit "everything"
+	}
+	for _, tc := range cases {
+		resp := httptest.NewRecorder()
+		h.RequestsHandler(resp, httptest.NewRequest(http.MethodGet, tc.query, nil))
+		if resp.Code != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200", tc.query, resp.Code)
+			continue
+		}
+		var got []store.RequestRow
+		if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
+			t.Errorf("%s: decode: %v", tc.query, err)
+			continue
+		}
+		if len(got) != tc.want {
+			t.Errorf("%s returned %d rows, want %d", tc.query, len(got), tc.want)
+		}
+	}
+}
+
 // TestRequestsHandlerRejectsBadParams proves a malformed status/limit is a 400
 // naming the parameter, not a silent fallback to "no filter" — which would
 // answer a broken query with plausible-looking unfiltered data.

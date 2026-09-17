@@ -105,6 +105,10 @@ type SessionRequest struct {
 	Stream           bool    `json:"stream"`
 	ToolCalls        string  `json:"tool_calls,omitempty"` // raw JSON array
 	ConfigEpoch      string  `json:"config_epoch,omitempty"`
+	// Kind is "client" or one of Arbiter's own internal kinds (see
+	// store.Event.Kind) — shown on the session view so a classifier call is
+	// visible in context, not hidden, just distinguishable.
+	Kind string `json:"kind"`
 }
 
 // ToolStat is how many times one tool name appeared across a window.
@@ -126,6 +130,15 @@ type RequestFilter struct {
 	StatusCode int
 	ErrorsOnly bool // status_code >= 400
 	Limit      int  // clamped to [1, maxRequestListLimit]; 0 means the default
+
+	// Kind filters to an exact requests.kind value ("client", "classifier",
+	// ...). Empty means no filter — every other field's zero-value
+	// convention, unlike the presentation-layer default of "client only"
+	// applied by the HTTP/UI handlers before a filter reaches here (see
+	// stats.RequestsHandler and ui.RequestsHandler): this type has no
+	// opinion on what "no kind specified" should mean, it just filters or
+	// doesn't.
+	Kind string
 
 	// SessionKeyless selects the requests that have *no* session key —
 	// `session_key IS NULL OR session_key = ''`. It exists because the zero
@@ -166,11 +179,11 @@ type RequestRow struct {
 	// cursor must carry to compare correctly (see RequestFilter.BeforeTs).
 	// Unmarshalled off the wire: it is a handle for the next page, not a
 	// second rendering of the same instant.
-	TsRaw            string  `json:"-"`
-	SessionKey       string  `json:"session_key,omitempty"`
-	Format           string  `json:"format"`
-	Provider         string  `json:"provider"`
-	Model            string  `json:"model"`
+	TsRaw      string `json:"-"`
+	SessionKey string `json:"session_key,omitempty"`
+	Format     string `json:"format"`
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
 	// ActualModel is the upstream-reported model, present only when it
 	// differs from Model (a meta-router alias like OpenRouter's
 	// "openrouter/auto" picked something concrete) — see store.Event.ActualModel.
@@ -188,6 +201,10 @@ type RequestRow struct {
 	Error            string  `json:"error,omitempty"`
 	Stream           bool    `json:"stream"`
 	ConfigEpoch      string  `json:"config_epoch,omitempty"`
+	// Kind is "client" (real traffic, the default) or one of Arbiter's own
+	// internal request kinds ("classifier", and later "title_gen"/"subagent")
+	// — see store.Event.Kind.
+	Kind string `json:"kind"`
 }
 
 // RequestDetail is the full record for one request. Unlike RequestRow it
@@ -236,7 +253,7 @@ SELECT
     CAST(COALESCE(AVG(latency_ms), 0)    AS INTEGER),
     CAST(COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS INTEGER)
 FROM requests
-WHERE ts >= ?`
+WHERE ts >= ? AND kind = 'client'`
 
 	var s OverallStats
 	err := r.db.QueryRowContext(ctx, q, w.Since).Scan(
@@ -260,7 +277,7 @@ SELECT
     COALESCE(SUM(cost_usd), 0),
     CAST(COALESCE(AVG(latency_ms), 0)    AS INTEGER)
 FROM requests
-WHERE ts >= ?
+WHERE ts >= ? AND kind = 'client'
 GROUP BY provider, model
 ORDER BY COALESCE(SUM(cost_usd), 0) DESC, COUNT(*) DESC`
 
@@ -300,7 +317,7 @@ SELECT
     MIN(ts),
     MAX(ts)
 FROM requests
-WHERE ts >= ?
+WHERE ts >= ? AND kind = 'client'
 GROUP BY COALESCE(config_epoch, '')
 ORDER BY MIN(ts) DESC`
 
@@ -334,7 +351,7 @@ func (r *Reader) Session(ctx context.Context, key string, limit int) ([]SessionR
 SELECT
     id, trace_id, ts, provider, model, alias_used, routing_rationale,
     input_tokens, output_tokens, cost_usd, latency_ms, status_code, error, stream,
-    tool_calls_json, config_epoch
+    tool_calls_json, config_epoch, kind
 FROM requests
 WHERE session_key = ?
 ORDER BY ts ASC
@@ -358,7 +375,7 @@ LIMIT ?`
 		)
 		if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &s.Provider, &s.Model, &alias,
 			&s.RoutingRationale, &s.InputTokens, &s.OutputTokens, &s.CostUSD,
-			&s.LatencyMs, &s.StatusCode, &errTx, &s.Stream, &tools, &epoch); err != nil {
+			&s.LatencyMs, &s.StatusCode, &errTx, &s.Stream, &tools, &epoch, &s.Kind); err != nil {
 			return nil, fmt.Errorf("scan session row: %w", err)
 		}
 		s.Ts = formatTime(tsRaw)
@@ -379,7 +396,7 @@ func (r *Reader) Tools(ctx context.Context, w Window) ([]ToolStat, error) {
 	const q = `
 SELECT json_each.value, COUNT(*)
 FROM requests, json_each(requests.tool_calls_json)
-WHERE requests.ts >= ? AND requests.tool_calls_json IS NOT NULL
+WHERE requests.ts >= ? AND requests.tool_calls_json IS NOT NULL AND requests.kind = 'client'
 GROUP BY json_each.value
 ORDER BY COUNT(*) DESC`
 
@@ -449,7 +466,7 @@ SELECT session_key,
     COALESCE(group_concat(DISTINCT provider), ''),
     COUNT(DISTINCT provider || '/' || model)
 FROM requests
-WHERE ts >= ? AND session_key IS NOT NULL AND session_key <> ''
+WHERE ts >= ? AND session_key IS NOT NULL AND session_key <> '' AND kind = 'client'
 GROUP BY session_key
 ORDER BY MAX(ts) DESC
 LIMIT ?`
@@ -482,7 +499,7 @@ LIMIT ?`
 // rather than silently absent from it.
 func (r *Reader) SessionlessRequestCount(ctx context.Context, w Window) (int64, error) {
 	const q = `SELECT COUNT(*) FROM requests
-WHERE ts >= ? AND (session_key IS NULL OR session_key = '')`
+WHERE ts >= ? AND (session_key IS NULL OR session_key = '') AND kind = 'client'`
 
 	var n int64
 	if err := r.db.QueryRowContext(ctx, q, w.Since).Scan(&n); err != nil {
@@ -646,7 +663,7 @@ LIMIT ?`
 const requestRowColumns = `
     id, trace_id, ts, CAST(ts AS TEXT), session_key, format, provider, model, actual_model, alias_used,
     routing_rationale, domain, effort, cost_class, input_tokens, output_tokens,
-    cost_usd, latency_ms, status_code, error, stream, config_epoch`
+    cost_usd, latency_ms, status_code, error, stream, config_epoch, kind`
 
 // ListRequests returns requests newest first, narrowed by f.
 //
@@ -682,6 +699,10 @@ func (r *Reader) ListRequests(ctx context.Context, f RequestFilter) ([]RequestRo
 	}
 	if f.ErrorsOnly {
 		where = append(where, "status_code >= 400")
+	}
+	if f.Kind != "" {
+		where = append(where, "kind = ?")
+		args = append(args, f.Kind)
 	}
 	// Keyset continuation. The row-value comparison matches the ordering below
 	// exactly, which is what makes paging stable: an id-only cursor would skip
@@ -751,7 +772,7 @@ FROM requests WHERE id = ?`
 	err := r.db.QueryRowContext(ctx, q, id).Scan(
 		&d.ID, &d.TraceID, &tsRaw, &d.TsRaw, &session, &d.Format, &d.Provider, &d.Model, &actual, &alias,
 		&d.RoutingRationale, &domain, &effort, &costCl, &d.InputTokens, &d.OutputTokens,
-		&d.CostUSD, &d.LatencyMs, &d.StatusCode, &errText, &d.Stream, &epoch,
+		&d.CostUSD, &d.LatencyMs, &d.StatusCode, &errText, &d.Stream, &epoch, &d.Kind,
 		&conf, &d.CacheReadTokens, &d.CacheWriteTokens, &tools, &client, &headers)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RequestDetail{}, false, nil
@@ -803,7 +824,7 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 	if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &s.TsRaw, &session, &s.Format, &s.Provider,
 		&s.Model, &actual, &alias, &s.RoutingRationale, &domain, &effort, &costCl,
 		&s.InputTokens, &s.OutputTokens, &s.CostUSD, &s.LatencyMs, &s.StatusCode,
-		&errText, &s.Stream, &epoch); err != nil {
+		&errText, &s.Stream, &epoch, &s.Kind); err != nil {
 		return RequestRow{}, fmt.Errorf("scan request row: %w", err)
 	}
 	s.Ts = formatTime(tsRaw)

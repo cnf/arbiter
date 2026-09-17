@@ -20,6 +20,23 @@ import (
 // exception rather than the normal case.
 const defaultListLimit = 100
 
+// requestKindFilter turns the optional ?kind= query parameter into a
+// store.RequestFilter.Kind value. Absent means "client" — the default view
+// is real traffic only, not Arbiter's own internal requests (classifier
+// calls today; title-gen/subagent calls later, same column). The literal
+// value "all" means no filter at all; anything else is used verbatim as an
+// exact match.
+func requestKindFilter(raw string) string {
+	switch raw {
+	case "":
+		return "client"
+	case "all":
+		return ""
+	default:
+		return raw
+	}
+}
+
 // requestFilterView is the filter form's state. Raw strings are kept for the
 // fields the operator types, so an invalid value is echoed back into the form
 // beside the error instead of being silently normalised away.
@@ -32,6 +49,13 @@ type requestFilterView struct {
 	SessionKeyless bool
 	ErrorsOnly     bool
 	LimitRaw       string
+
+	// KindRaw is the query param exactly as given ("" for the default
+	// "client"-only view, "all", or an explicit kind) — not the resolved
+	// filter value, which collapses "" and "all" to the same "no filter"
+	// meaning and would make the form unable to tell them apart when
+	// re-rendering which option is selected.
+	KindRaw string
 
 	// Any records whether any filter is set, so the empty state can offer
 	// "widen" only when there is something to widen.
@@ -114,6 +138,7 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 		StatusRaw:  q.Get("status"),
 		SessionKey: q.Get("session"),
 		LimitRaw:   q.Get("limit"),
+		KindRaw:    q.Get("kind"),
 	}
 
 	f := store.RequestFilter{
@@ -123,6 +148,7 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 		SessionKeyless: q.Has("no_session"),
 		ErrorsOnly:     q.Has("errors"),
 		Limit:          defaultListLimit,
+		Kind:           requestKindFilter(q.Get("kind")),
 	}
 	// since: a Go duration, matching the JSON surface's own parameter so the
 	// two read surfaces describe one window the same way.
@@ -165,7 +191,7 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 	// shows it; but it *is* part of "is anything filtered", because a cursor
 	// means this is a later page rather than the first.
 	fv.Any = f.Provider != "" || f.Alias != "" || f.SessionKey != "" || f.StatusCode != 0 ||
-		f.ErrorsOnly || f.SessionKeyless || !f.Since.IsZero()
+		f.ErrorsOnly || f.SessionKeyless || !f.Since.IsZero() || fv.KindRaw != ""
 
 	view := requestsView{viewBase: h.base("Requests"), rowsView: rowsView{F: fv}}
 
@@ -224,7 +250,7 @@ func tailFor(q url.Values, rows []store.RequestRow) tailView {
 // the window so the tail's `since` does not drift away from the list's.
 func tailFilterQuery(q url.Values) string {
 	out := url.Values{}
-	for _, k := range []string{"since", "provider", "alias", "status", "session", "no_session", "errors"} {
+	for _, k := range []string{"since", "provider", "alias", "status", "session", "no_session", "errors", "kind"} {
 		if v := q.Get(k); v != "" || (k == "errors" || k == "no_session") && q.Has(k) {
 			out.Set(k, v)
 		}

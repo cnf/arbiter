@@ -77,6 +77,7 @@ func (h *Handler) TailHandler(w http.ResponseWriter, r *http.Request) {
 		SessionKeyless: q.Has("no_session"),
 		ErrorsOnly:     q.Has("errors"),
 		Limit:          store.MaxTailLimit,
+		Kind:           requestKindFilter(q.Get("kind")),
 	}
 	if raw := q.Get("since"); raw != "" {
 		d, err := time.ParseDuration(raw)

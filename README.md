@@ -527,12 +527,28 @@ last 7 days, and `/admin/stats/session` takes the session key as `?key=`.
 cannot answer "what just happened", so this returns the requests themselves,
 newest first. `?since`, `?provider`, `?session`, `?alias`, `?status=<code>`,
 `?errors` (presence only: status ≥ 400), `?no_session` (presence only: only the
-requests with no session key) and `?limit=<n>` (default and maximum 500) narrow
-it; a malformed `status` or `limit` is a **400**, not a silently ignored filter. Ordering is `ts DESC, id DESC` — the id tiebreaker matters
+requests with no session key), `?kind=<kind>` (see below) and `?limit=<n>`
+(default and maximum 500) narrow it; a malformed `status` or `limit` is a
+**400**, not a silently ignored filter. Ordering is `ts DESC, id DESC` — the id tiebreaker matters
 because rows written within one timestamp tick would otherwise come back in an
 arbitrary order. `/admin/requests/{id}` takes the `id` the list returns and
 adds the fields a list row omits (confidence, cache token counts, tool calls,
 inbound headers); `404` for an unknown id, `400` for a malformed one.
+
+Every row carries a `kind`: `"client"` for real traffic (the default and, so
+far, the only kind that exists in practice — `"classifier"` lands with the
+LLM-backed domain classifier), and later `"title_gen"`/`"subagent"` will reuse
+the same column rather than each inventing their own flag. A non-client
+request is never hidden from the store or the detail/session views — the
+point is debuggability, not opacity — but it *is* excluded by default from
+`/admin/requests` (omit `?kind=` for client-only, pass `?kind=all` to see
+everything, or `?kind=<kind>` for an exact match) and unconditionally from
+every aggregate (`/admin/stats*`, the pivot table, the sessions index): a
+classifier call's own tokens/cost/latency must not skew numbers meant to
+describe what a client actually asked for. The per-session trajectory
+(`/admin/ui/session?key=`) and a single request's own detail page are the
+exception — they show every kind, tagged, because a classifier call is most
+useful to see *in the context of the turn it informed*.
 
 Every request's inbound headers are captured and shown on its detail page —
 `User-Agent` is what tells two otherwise-identical requests apart by client.

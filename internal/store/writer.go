@@ -92,6 +92,14 @@ type Event struct {
 	// (see ContentRecorder). The drain path then stores Content under
 	// owner_kind="rejected" and skips the request insert entirely.
 	RejectedID int64
+
+	// Kind distinguishes real client traffic ("client", the default when
+	// empty) from Arbiter's own internal requests ("classifier", and later
+	// "title_gen"/"subagent"). Every kind gets a full row — fully visible for
+	// debugging on the request detail and session trajectory views — but the
+	// default request-list view and the cost/latency aggregates filter to
+	// "client" so a classifier call's own spend doesn't skew them.
+	Kind string
 }
 
 // Writer records completed requests. Record must be non-blocking in the
@@ -170,7 +178,7 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 	// added to schema.sql after a database was first created never appears on
 	// it. Add the ones we know about explicitly; an insert referencing a
 	// missing column fails every time, which would silently lose events.
-	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT", "actual_model TEXT"} {
+	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT", "actual_model TEXT", "kind TEXT NOT NULL DEFAULT 'client'"} {
 		if err := addColumnIfMissing(db, "requests", col); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate event store schema: %w", err)
@@ -373,14 +381,24 @@ INSERT INTO requests (
     alias_used, routing_rationale, domain, effort, cost_class, confidence,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
     cost_usd, latency_ms, status_code, error, stream, tool_calls_json,
-    config_epoch, headers_json
+    config_epoch, headers_json, kind
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?,
-    ?
+    ?, ?
 )`
+
+	// kind is NOT NULL with a schema default, but this INSERT always binds it
+	// explicitly, so SQLite's column default never kicks in (that only
+	// applies when a column is omitted from the statement entirely) — a
+	// direct Writer.Record call that bypasses Pipeline.record's own
+	// defaulting would otherwise insert an empty string instead of "client".
+	kind := ev.Kind
+	if kind == "" {
+		kind = "client"
+	}
 
 	res, err := db.ExecContext(ctx, q,
 		ev.TraceID,
@@ -408,7 +426,8 @@ INSERT INTO requests (
 		ev.Stream,
 		toolCallsJSON(ev.ToolCalls),
 		nullStr(ev.ConfigEpoch),
-		headersJSON(ev.Headers))
+		headersJSON(ev.Headers),
+		kind)
 	if err != nil {
 		return 0, fmt.Errorf("insert request: %w", err)
 	}

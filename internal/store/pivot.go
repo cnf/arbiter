@@ -151,7 +151,7 @@ SELECT ` + dimExpr + ` AS k,
     COALESCE(CAST(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(*), 0), 0),
     CAST(COUNT(DISTINCT provider || '/' || model) AS REAL)
 FROM requests
-WHERE ts >= ?
+WHERE ts >= ? AND kind = 'client'
 GROUP BY k
 ORDER BY ` + metricExpr + ` DESC, k ASC
 LIMIT ?`

@@ -33,6 +33,25 @@ func NewStatsHandler(reader *store.Reader, l logging.Logger) *StatsHandler {
 	return &StatsHandler{reader: reader, logger: l}
 }
 
+// requestKindFilter turns the optional ?kind= query parameter into a
+// store.RequestFilter.Kind value. Absent means "client" — the default view
+// is real traffic only, not Arbiter's own internal requests (classifier
+// calls today; title-gen/subagent calls later, same column). The literal
+// value "all" means no filter at all; anything else is used verbatim as an
+// exact match. This defaulting lives at the HTTP layer, not in
+// RequestFilter itself, which keeps its own empty-means-any convention
+// uniform with every other field.
+func requestKindFilter(raw string) string {
+	switch raw {
+	case "":
+		return "client"
+	case "all":
+		return ""
+	default:
+		return raw
+	}
+}
+
 // window parses the optional ?since=<Go duration> query parameter (e.g.
 // "24h", "168h"), falling back to defaultStatsWindow when absent or invalid.
 func window(r *http.Request) store.Window {
@@ -142,6 +161,8 @@ func (h *StatsHandler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 		// for ?session, so "any", "none" and a literal empty string stay three
 		// different things.
 		SessionKeyless: q.Has("no_session"),
+
+		Kind: requestKindFilter(q.Get("kind")),
 	}
 	if raw := q.Get("status"); raw != "" {
 		n, err := strconv.Atoi(raw)

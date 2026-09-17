@@ -366,6 +366,12 @@ func (p *Pipeline) record(ev store.Event) {
 	// of the pipeline, not of any one request, and every recorded event must
 	// carry it for the per-epoch cost comparison to be complete.
 	ev.ConfigEpoch = p.configEpoch
+	// "client" is the default kind — real traffic — so every existing call
+	// site (all of them client requests) needs no change. Non-client kinds
+	// (e.g. "classifier") set Kind explicitly before calling record.
+	if ev.Kind == "" {
+		ev.Kind = "client"
+	}
 	p.store.Record(ev)
 }
 

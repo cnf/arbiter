@@ -244,6 +244,7 @@ td.axes { white-space: nowrap; }
   border-radius: 10px;
   color: var(--muted);
 }
+.tag.kind { color: var(--note); border-color: color-mix(in srgb, var(--note) 40%, transparent); }
 
 .empty { padding: 1rem; border: 1px dashed var(--line); border-radius: 4px; color: var(--muted); }
 .fail h1 { font-size: 2rem; margin: 2rem 1rem 0; }

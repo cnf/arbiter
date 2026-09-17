@@ -31,6 +31,7 @@ Bodies are untrusted text and are never marked safe. */}}
     <span class="num" title="cost">{{usd .Request.CostUSD}}</span>
     <span class="num" title="latency">{{dur .Request.LatencyMs}}</span>
     {{if .Request.Stream}}<span class="tag">stream</span>{{end}}
+    {{if ne .Request.Kind "client"}}<span class="tag kind" title="not real client traffic — Arbiter's own {{.Request.Kind}} request">{{.Request.Kind}}</span>{{end}}
     {{if .ReplayChars}}<span class="muted replaynote" title="context this turn re-sent in full; shown once, at the turn that introduced it">{{chars .ReplayChars}} replayed</span>{{end}}
     <a class="openreq" href="/admin/ui/requests/{{.Request.ID}}">open request {{.Request.ID}}</a>
   </header>

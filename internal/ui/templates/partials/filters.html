@@ -19,6 +19,13 @@ honest, so a filter state can be reloaded, shared or bookmarked. */}}
   <label>session
     <input type="text" name="session" value="{{.F.SessionKey}}" size="10">
   </label>
+  <label>kind
+    <select name="kind">
+      <option value=""{{if eq .F.KindRaw ""}} selected{{end}}>client</option>
+      <option value="classifier"{{if eq .F.KindRaw "classifier"}} selected{{end}}>classifier</option>
+      <option value="all"{{if eq .F.KindRaw "all"}} selected{{end}}>all</option>
+    </select>
+  </label>
   {{if .F.SessionKeyless}}<input type="hidden" name="no_session" value="1">{{end}}
   <label class="check"><input type="checkbox" name="errors" value="1"{{if .F.ErrorsOnly}} checked{{end}}> errors only</label>
   <label>limit

@@ -2,11 +2,13 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/cnf/arbiter/internal/classifier"
 	"github.com/cnf/arbiter/internal/router"
+	arbitererrors "github.com/cnf/arbiter/pkg/errors"
 	"github.com/cnf/arbiter/pkg/types"
 )
 
@@ -44,11 +46,24 @@ func (r *recordingRouter) Route(context.Context, *types.NormalizedRequest, types
 	return r.route, types.Metadata{}, nil
 }
 
+// affinityTestResolver configures "auto" and "manual" as force aliases (force
+// nothing, like the README's full-auto example) so these tests can use
+// non-literal model names as affinity-pin placeholders without tripping the
+// unknown-model rejection — REQUIREMENTS.md §1 only allows a real declared
+// model or a configured alias in req.Model, and an arbitrary unconfigured
+// string is neither.
+func affinityTestResolver() *router.AliasResolver {
+	return router.NewAliasResolver(map[string]router.Alias{
+		"auto":   {Name: "auto", Force: map[string][]string{}},
+		"manual": {Name: "manual", Force: map[string][]string{}},
+	}, testProviders(), nil, nil)
+}
+
 func newAffinityPipeline(rr *recordingRouter, fu *fakeUpstream, n fakeNormalizer, fallbacks []string, ttl time.Duration) *Pipeline {
 	return NewPipeline(
 		nil, n, fakeDenormalizer{},
 		nil, rr, fu,
-		testProviders(), fallbacks, nil, nil, fakeLogger{}, ttl, nil, nil, nil,
+		testProviders(), fallbacks, nil, nil, fakeLogger{}, ttl, affinityTestResolver(), nil, nil,
 	)
 }
 
@@ -148,7 +163,7 @@ func TestAffinityDifferentRequestedModelDiscardsPin(t *testing.T) {
 
 	// Turn 3, same conversation but now explicitly requesting another model:
 	// the pin must be discarded and routing must run.
-	other := newAffinityPipeline(rr, fu, fakeNormalizer{model: "gpt-4o"}, nil, time.Minute)
+	other := newAffinityPipeline(rr, fu, fakeNormalizer{model: "manual"}, nil, time.Minute)
 	other.affinity = p.affinity
 	if _, err := other.Execute(context.Background(), msg, "openai", "t3", ""); err != nil {
 		t.Fatalf("turn 3: %v", err)
@@ -244,16 +259,24 @@ func TestExplicitModelPrecedenceOverAffinityPin(t *testing.T) {
 		"claude": {Name: "claude", Type: "anthropic", Models: []string{"claude-3-opus"}},
 		"gpt4":   {Name: "gpt4", Type: "openai", Models: []string{"gpt-4o"}},
 	}
+	// "auto" must be a configured alias (the README's own full-auto example:
+	// force nothing, classify + rules) — an arbitrary unconfigured string in
+	// req.Model is not valid client input (REQUIREMENTS.md §1), so this test
+	// exercises the real full-auto path rather than a typo/garbage model.
+	resolver := router.NewAliasResolver(map[string]router.Alias{
+		"auto": {Name: "auto", Force: map[string][]string{}},
+	}, provs, nil, nil)
 	policy := router.NewPolicyRouter("test", []router.PolicyRule{
 		{When: router.PolicyCondition{}, Provider: "claude"},
-	}, provs, nil)
+	}, provs, resolver)
 
 	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
 	msg := []byte("explain how the custom parser handles nesting")
 
-	// Turn 1: model "auto" (not a literal configured model) routes via the
-	// policy router and pins the conversation to claude under "auto".
-	pAuto := NewPipeline(nil, fakeNormalizer{model: "auto"}, fakeDenormalizer{}, nil, policy, fu, provs, nil, nil, nil, fakeLogger{}, time.Minute, nil, nil, nil)
+	// Turn 1: model "auto" (the full-auto alias, not a literal configured
+	// model) routes via the policy router and pins the conversation to claude
+	// under "auto".
+	pAuto := NewPipeline(nil, fakeNormalizer{model: "auto"}, fakeDenormalizer{}, nil, policy, fu, provs, nil, nil, nil, fakeLogger{}, time.Minute, resolver, nil, nil)
 	if _, err := pAuto.Execute(context.Background(), msg, "openai", "t1", ""); err != nil {
 		t.Fatalf("turn 1: %v", err)
 	}
@@ -274,5 +297,34 @@ func TestExplicitModelPrecedenceOverAffinityPin(t *testing.T) {
 	}
 	if fu.models[1] != "gpt-4o" {
 		t.Fatalf("turn 2 model = %q, want gpt-4o", fu.models[1])
+	}
+}
+
+// TestUnknownModelRejected verifies that a model the client sent which
+// matches no configured provider's declared Models and no configured alias
+// (a typo, a stale name, or outright garbage) is rejected outright rather
+// than classified/routed as if it meant something. REQUIREMENTS.md §1 makes
+// the model field's two valid shapes exhaustive — a real declared model or a
+// configured alias — so anything else is invalid client input, not a signal
+// to route around.
+func TestUnknownModelRejected(t *testing.T) {
+	provs := map[string]types.ProviderConfig{
+		"claude": {Name: "claude", Type: "anthropic", Models: []string{"claude-3-opus"}},
+	}
+	policy := router.NewPolicyRouter("test", []router.PolicyRule{
+		{When: router.PolicyCondition{}, Provider: "claude"},
+	}, provs, nil)
+
+	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
+	n := fakeNormalizer{model: "anthropic/booboo"}
+	p := NewPipeline(nil, n, fakeDenormalizer{}, nil, policy, fu, provs, nil, nil, nil, fakeLogger{}, time.Minute, nil, nil, nil)
+
+	_, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", "")
+	var unknownModelErr *arbitererrors.UnknownModelError
+	if !errors.As(err, &unknownModelErr) {
+		t.Fatalf("execute error = %v, want *UnknownModelError", err)
+	}
+	if len(fu.calls) != 0 {
+		t.Fatalf("upstream calls = %v, want none: a rejected request must never reach upstream", fu.calls)
 	}
 }

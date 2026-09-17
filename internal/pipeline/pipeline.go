@@ -535,6 +535,19 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 		return route, types.Signals{}, nil
 	}
 
+	// REQUIREMENTS.md §1: the model field is either a real model name or a
+	// configured alias — the two categories /models lists. req.Model already
+	// failed the literal-model check above; a force alias is the only other
+	// legitimate reason to reach here with req.Model still set (it resolves
+	// to no route by design, see above). Anything else is a typo or a stale
+	// name the operator never declared, and must not be classified and routed
+	// as if it were meaningful — reject rather than silently routing it
+	// somewhere on the operator's dime.
+	if req.Model != "" && (p.aliasResolver == nil || !p.aliasResolver.Has(req.Model)) {
+		return types.Route{}, types.Signals{}, arbitererrors.NewUnknownModelError(
+			fmt.Sprintf("model %q is not a configured provider model or alias", req.Model))
+	}
+
 	sig, err := p.classify(ctx, req)
 	if err != nil {
 		return types.Route{}, types.Signals{}, arbitererrors.NewClassificationError("classify request", err)

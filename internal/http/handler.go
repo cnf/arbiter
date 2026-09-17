@@ -248,10 +248,13 @@ func writeArbiterError(w http.ResponseWriter, err error) {
 	var guardrailErr *arbitererrors.GuardrailError
 	var upstreamErr *arbitererrors.UpstreamError
 	var translationErr *arbitererrors.TranslationError
+	var unknownModelErr *arbitererrors.UnknownModelError
 
 	switch {
 	case errors.As(err, &guardrailErr):
 		writeError(w, guardrailErr.StatusCode, guardrailErr.Message)
+	case errors.As(err, &unknownModelErr):
+		writeError(w, unknownModelErr.StatusCode, unknownModelErr.Message)
 	case errors.As(err, &upstreamErr):
 		status := upstreamErr.StatusCode
 		if status < 400 || status > 599 {

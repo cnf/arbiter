@@ -41,6 +41,28 @@ func NewRoutingError(msg string, cause error) *RoutingError {
 	}
 }
 
+// UnknownModelError is raised when a client's requested model is neither a
+// real model any configured provider declares nor a configured alias — the
+// two categories REQUIREMENTS.md §1 allows in the `model` field. Unlike
+// RoutingError (Arbiter's own routing/config failure), this is a client
+// mistake, so it maps to 400 rather than 500.
+type UnknownModelError struct {
+	*ArbiterError
+	StatusCode int
+}
+
+// NewUnknownModelError creates a new unknown-model error.
+func NewUnknownModelError(msg string) *UnknownModelError {
+	return &UnknownModelError{
+		ArbiterError: &ArbiterError{
+			Code:       "UNKNOWN_MODEL",
+			Message:    msg,
+			Attributes: make(map[string]interface{}),
+		},
+		StatusCode: 400,
+	}
+}
+
 // ClassificationError is raised when classification fails.
 type ClassificationError struct {
 	*ArbiterError

@@ -126,6 +126,15 @@ func (pr *PolicyRouter) routeFor(rule PolicyRule, req *types.NormalizedRequest, 
 	model := rule.Model
 	if model == "" {
 		model = req.Model
+		// Unlike rule.Model (the operator's own config, trusted as-is), this
+		// came from the client and was neither a literal-model match nor an
+		// alias/pin — an opaque routing signal, not necessarily a model this
+		// provider declares. Forwarding it verbatim would send an undeclared
+		// model upstream, so drop it and fall through to the provider default
+		// below, same as an empty model.
+		if model != "" && len(cfg.Models) > 0 && !containsModel(cfg.Models, model) {
+			model = ""
+		}
 	}
 	if model == "" && len(cfg.Models) > 0 {
 		model = cfg.Models[0]

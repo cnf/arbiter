@@ -8,6 +8,16 @@ import (
 	"github.com/cnf/arbiter/pkg/types"
 )
 
+// containsModel reports whether models declares model exactly.
+func containsModel(models []string, model string) bool {
+	for _, m := range models {
+		if m == model {
+			return true
+		}
+	}
+	return false
+}
+
 // Router determines which upstream provider handles a request.
 type Router interface {
 	Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, types.Metadata, error)
@@ -100,6 +110,16 @@ func (sr *SimpleRouter) Route(ctx context.Context, req *types.NormalizedRequest,
 	rationale := fmt.Sprintf("simple router %q: default provider", sr.name)
 	if providerName == sr.fallbackProvider {
 		rationale = fmt.Sprintf("simple router %q: default provider %q unavailable, used fallback", sr.name, sr.defaultProvider)
+	}
+	// req.Model reaching this router was neither a literal match (that
+	// precedence step already ran) nor an alias/pin, so it's an opaque
+	// routing signal at best (a force-alias name, a client convention) —
+	// never a real model this provider declared. Forwarding it verbatim
+	// would send an undeclared model upstream, so it's dropped in favor of
+	// the provider's own declared model, same as an empty model.
+	if model != "" && len(cfg.Models) > 0 && !containsModel(cfg.Models, model) {
+		rationale = fmt.Sprintf("%s (requested model %q not declared by %q, using provider default)", rationale, model, providerName)
+		model = ""
 	}
 	if model == "" && len(cfg.Models) > 0 {
 		model = cfg.Models[0]

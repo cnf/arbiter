@@ -34,7 +34,7 @@ func TestReadmeExampleConfigLoads(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "lanes.yaml")
+	path := filepath.Join(dir, "arbiter.yaml")
 	if err := os.WriteFile(path, []byte(example), 0o600); err != nil {
 		t.Fatal(err)
 	}

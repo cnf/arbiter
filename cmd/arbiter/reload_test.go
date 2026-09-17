@@ -67,7 +67,7 @@ func modelIDs(t *testing.T, h *arbiterhttp.Handler) []string {
 // A valid config change must swap the served model list.
 func TestWatchConfigReloads(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "lanes.yaml")
+	path := filepath.Join(dir, "arbiter.yaml")
 	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestWatchConfigReloads(t *testing.T) {
 // A reload that fails to parse must leave the previous runtime serving.
 func TestWatchConfigRejectsInvalidReload(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "lanes.yaml")
+	path := filepath.Join(dir, "arbiter.yaml")
 	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
 		t.Fatal(err)
 	}

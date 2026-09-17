@@ -46,7 +46,7 @@ func newTestRouter(t *testing.T, configPath, forwardAuthHeader string) (*arbiter
 // and only the stylesheet and the script would 401.
 func TestAdminUIRoutesAreGated(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "lanes.yaml")
+	path := filepath.Join(dir, "arbiter.yaml")
 	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestAdminUIRoutesAreGated(t *testing.T) {
 // reported as a failure.
 func TestAdminUIReachableWithHeaderAndNoStore(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "lanes.yaml")
+	path := filepath.Join(dir, "arbiter.yaml")
 	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestAdminUIReachableWithHeaderAndNoStore(t *testing.T) {
 // with a header configured, an ungated POST to /admin/reload must 401.
 func TestAdminReloadRouteIsGated(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "lanes.yaml")
+	path := filepath.Join(dir, "arbiter.yaml")
 	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestAdminReloadRouteIsGated(t *testing.T) {
 // the real one, so a config change on disk is picked up by the call.
 func TestAdminReloadRouteSwapsRuntime(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "lanes.yaml")
+	path := filepath.Join(dir, "arbiter.yaml")
 	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestAdminReloadRouteSwapsRuntime(t *testing.T) {
 // A rejected reload must be reported (500) and leave the old runtime serving.
 func TestAdminReloadRouteRejectsInvalidConfig(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "lanes.yaml")
+	path := filepath.Join(dir, "arbiter.yaml")
 	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestAdminReloadRouteRejectsInvalidConfig(t *testing.T) {
 // The reload endpoint is POST-only; a GET must not match the route.
 func TestAdminReloadRejectsGet(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "lanes.yaml")
+	path := filepath.Join(dir, "arbiter.yaml")
 	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
 		t.Fatal(err)
 	}

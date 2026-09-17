@@ -26,7 +26,7 @@ type litellmEntry struct {
 // list: which litellm_provider they're filed under, and the namespace prefix
 // (if any) LiteLLM keys them with. There is deliberately no per-model list —
 // every chat-mode entry under LitellmProvider becomes a catalog row. Rows for
-// models the operator hasn't declared in lanes.yaml are simply unused
+// models the operator hasn't declared in arbiter.yaml are simply unused
 // (config.go treats a generated-file row naming an undeclared model as inert,
 // not a config error) — see the "catalog is a superset" note in README.md.
 type providerMap struct {
@@ -97,7 +97,7 @@ func perMTok(perToken float64) float64 {
 //
 // There is no per-model allow-list: pulling everything under a
 // litellm_provider is what removes the old mapping file's maintenance burden
-// (keeping a model list in sync with lanes.yaml by hand). An emitted row for
+// (keeping a model list in sync with arbiter.yaml by hand). An emitted row for
 // a model the operator hasn't declared is simply unused — see README.md's
 // "Model pricing catalog" section.
 func buildCatalog(entries map[string]litellmEntry, m mapping, providerNames []string) ([]config.ModelCatalogEntry, []string) {

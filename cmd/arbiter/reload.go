@@ -22,7 +22,7 @@ import (
 // one save to one reload.
 const reloadDebounce = 150 * time.Millisecond
 
-// watchConfig reloads lanes.yaml whenever it changes on disk, swapping the
+// watchConfig reloads arbiter.yaml whenever it changes on disk, swapping the
 // handler's runtime in place. It watches the *directory* rather than the file
 // itself: editors commonly save by writing a temp file and renaming it over the
 // target (and some remove-then-recreate), which replaces the inode and would

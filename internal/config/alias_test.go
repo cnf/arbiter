@@ -29,7 +29,7 @@ logging:
 
 func loadConfig(t *testing.T, contents string) error {
 	t.Helper()
-	path := t.TempDir() + "/lanes.yaml"
+	path := t.TempDir() + "/arbiter.yaml"
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -41,7 +41,7 @@ func loadConfig(t *testing.T, contents string) error {
 // returns the resolved Config.
 func loadConfigOK(t *testing.T, contents string) *Config {
 	t.Helper()
-	path := t.TempDir() + "/lanes.yaml"
+	path := t.TempDir() + "/arbiter.yaml"
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -190,12 +190,12 @@ aliases:
 	}
 }
 
-// TestShippedLanesYAMLLoads keeps the committed lanes.yaml honest against the
+// TestShippedArbiterYAMLLoads keeps the committed arbiter.yaml honest against the
 // code that parses it — a rename or validation change that breaks the shipped
 // example should fail here rather than only at process start.
-func TestShippedLanesYAMLLoads(t *testing.T) {
-	if _, err := Load("../../lanes.yaml"); err != nil {
-		t.Fatalf("Load(../../lanes.yaml): %v", err)
+func TestShippedArbiterYAMLLoads(t *testing.T) {
+	if _, err := Load("../../arbiter.yaml"); err != nil {
+		t.Fatalf("Load(../../arbiter.yaml): %v", err)
 	}
 }
 
@@ -295,18 +295,18 @@ aliases:
 	}
 }
 
-// loadConfigWithFile writes lanes.yaml plus a sibling catalog file in the same
+// loadConfigWithFile writes arbiter.yaml plus a sibling catalog file in the same
 // temp dir, so relative resolution of model_catalog_file is exercised.
 func loadConfigWithFile(t *testing.T, mainYAML, catalogYAML string) (*Config, error) {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(dir+"/lanes.yaml", []byte(mainYAML), 0o600); err != nil {
+	if err := os.WriteFile(dir+"/arbiter.yaml", []byte(mainYAML), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	if err := os.WriteFile(dir+"/catalog.yaml", []byte(catalogYAML), 0o600); err != nil {
 		t.Fatalf("write catalog: %v", err)
 	}
-	return Load(dir + "/lanes.yaml")
+	return Load(dir + "/arbiter.yaml")
 }
 
 func TestModelCatalogFileMergesRows(t *testing.T) {
@@ -392,7 +392,7 @@ model_catalog_file: "nope.yaml"
 
 // A generated file is expected to be a superset of what this config declares
 // (catalog-convert pulls every model under a litellm_provider, not just the
-// ones lanes.yaml happens to list) — so a file row naming an undeclared
+// ones arbiter.yaml happens to list) — so a file row naming an undeclared
 // provider/model is dropped rather than failing config load. The inline block
 // gets no such leniency: see TestModelCatalogRejectsUndeclaredModel.
 func TestModelCatalogFileRowForUndeclaredModelIsDroppedNotRejected(t *testing.T) {

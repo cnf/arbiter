@@ -14,7 +14,7 @@ import (
 // there is nothing else to serve at "/".
 func TestRootRedirectsToAdminUI(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "lanes.yaml")
+	path := filepath.Join(dir, "arbiter.yaml")
 	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestRootRedirectsToAdminUI(t *testing.T) {
 // response as JSON doesn't choke on the one response that isn't.
 func TestUnknownRouteReturnsJSON404(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "lanes.yaml")
+	path := filepath.Join(dir, "arbiter.yaml")
 	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestUnknownRouteReturnsJSON404(t *testing.T) {
 // identically), not about a specific pipeline outcome.
 func TestChatEndpointsRegisteredBothPlainAndV1(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "lanes.yaml")
+	path := filepath.Join(dir, "arbiter.yaml")
 	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
 		t.Fatal(err)
 	}

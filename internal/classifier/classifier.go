@@ -36,7 +36,7 @@ const (
 
 // HeuristicClassifier uses keyword matching against the last user message
 // to guess one axis. It's deliberately dumb — a starting point, not a final
-// answer. The multi-axis split in lanes.yaml is handled by running several
+// answer. The multi-axis split in arbiter.yaml is handled by running several
 // instances of this same type with different keyword maps and axis settings,
 // merged via MergedClassifier, rather than baking each axis into the type.
 type HeuristicClassifier struct {

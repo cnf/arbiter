@@ -6,7 +6,7 @@ import (
 )
 
 func TestLoadAcceptsOllamaProvider(t *testing.T) {
-	path := t.TempDir() + "/lanes.yaml"
+	path := t.TempDir() + "/arbiter.yaml"
 	contents := `
 version: "1.0"
 providers:
@@ -36,7 +36,7 @@ logging:
 }
 
 func TestLoadExpandsEnvironmentVariables(t *testing.T) {
-	path := t.TempDir() + "/lanes.yaml"
+	path := t.TempDir() + "/arbiter.yaml"
 	contents := `
 version: "1.0"
 providers:
@@ -71,7 +71,7 @@ logging:
 }
 
 func TestLoadRejectsUnknownFields(t *testing.T) {
-	path := t.TempDir() + "/lanes.yaml"
+	path := t.TempDir() + "/arbiter.yaml"
 	contents := `
 version: "1.0"
 providers:
@@ -98,7 +98,7 @@ logging:
 }
 
 func TestLoadStripsTrailingSlashFromEndpoint(t *testing.T) {
-	path := t.TempDir() + "/lanes.yaml"
+	path := t.TempDir() + "/arbiter.yaml"
 	contents := `
 version: "1.0"
 providers:
@@ -129,7 +129,7 @@ logging:
 }
 
 func TestLoadSessionAffinityAndCacheTTL(t *testing.T) {
-	path := t.TempDir() + "/lanes.yaml"
+	path := t.TempDir() + "/arbiter.yaml"
 	contents := `
 version: "1.0"
 providers:
@@ -169,7 +169,7 @@ logging:
 }
 
 func TestLoadRejectsInvalidCacheTTL(t *testing.T) {
-	path := t.TempDir() + "/lanes.yaml"
+	path := t.TempDir() + "/arbiter.yaml"
 	contents := `
 version: "1.0"
 providers:
@@ -196,7 +196,7 @@ logging:
 }
 
 func TestLoadRejectsInvalidSessionAffinityTTL(t *testing.T) {
-	path := t.TempDir() + "/lanes.yaml"
+	path := t.TempDir() + "/arbiter.yaml"
 	contents := `
 version: "1.0"
 providers:

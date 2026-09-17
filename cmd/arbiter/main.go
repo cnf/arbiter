@@ -31,7 +31,7 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "lanes.yaml", "Path to lanes.yaml config file")
+	configPath := flag.String("config", "arbiter.yaml", "Path to arbiter.yaml config file")
 	port := flag.String("port", "8080", "Port to listen on (TCP)")
 	bind := flag.String("bind", "127.0.0.1", "Interface to bind for TCP (e.g. 0.0.0.0 to expose)")
 	socket := flag.String("socket", "", "Unix socket path to listen on instead of TCP; overrides --bind/--port")
@@ -131,7 +131,7 @@ func main() {
 		}
 	}()
 
-	// Hot-reload lanes.yaml for the life of the process; errors are logged and
+	// Hot-reload arbiter.yaml for the life of the process; errors are logged and
 	// a failed reload leaves the running config in place, but a watcher that
 	// can't start at all is loud enough to be worth noticing.
 	watchCtx, stopWatch := context.WithCancel(context.Background())
@@ -696,7 +696,7 @@ func buildGuardrail(gc config.GuardrailConfig) (guardrail.Guardrail, error) {
 }
 
 // stringListMap pulls a map[string][]string out of a classifier config
-// block, trying each of the given keys in turn (lanes.yaml uses "keywords"
+// block, trying each of the given keys in turn (arbiter.yaml uses "keywords"
 // for the domain classifier and "detectors" for the capability classifier —
 // same shape, different name).
 func stringListMap(cfg map[string]interface{}, keys ...string) (map[string][]string, error) {

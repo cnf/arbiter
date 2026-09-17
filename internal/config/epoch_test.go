@@ -129,7 +129,7 @@ logging:
 }
 
 // A regenerated catalog file is a real change to what routing reads, so it
-// must start a new epoch even though lanes.yaml itself is untouched.
+// must start a new epoch even though arbiter.yaml itself is untouched.
 func TestEpochReflectsMergedCatalogFile(t *testing.T) {
 	main := baseConfig + `
 model_catalog_file: "catalog.yaml"

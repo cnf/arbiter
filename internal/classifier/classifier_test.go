@@ -63,7 +63,7 @@ func TestHeuristicClassifierEffortAxis(t *testing.T) {
 }
 
 func TestMergedClassifierUnionsCapabilities(t *testing.T) {
-	// Two independent capability-axis instances, as lanes.yaml might declare
+	// Two independent capability-axis instances, as arbiter.yaml might declare
 	// for different detector groups — their hits must union, not overwrite.
 	vision := NewHeuristicClassifier("vision", AxisCapabilities, map[string][]string{"vision": {"screenshot"}})
 	tools := NewHeuristicClassifier("tools", AxisCapabilities, map[string][]string{"tool_use": {"function"}})

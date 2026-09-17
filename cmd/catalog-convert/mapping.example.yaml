@@ -3,12 +3,12 @@
 #
 #   devenv shell -- go run ./cmd/catalog-convert \
 #     -mapping cmd/catalog-convert/mapping.example.yaml \
-#     -config lanes.yaml \
+#     -config arbiter.yaml \
 #     -out catalog.yaml \
 #     model_prices_and_context_window.json
 #
 # There is no per-model list to maintain: every chat-mode entry LiteLLM files
-# under a mapped litellm_provider becomes a catalog row. `-config lanes.yaml`
+# under a mapped litellm_provider becomes a catalog row. `-config arbiter.yaml`
 # limits generation to the providers it actually declares (skipping any
 # mapping entry with no match there); omit -config and every provider listed
 # below is used instead.
@@ -16,11 +16,11 @@
 # `key_prefix` strips a namespacing prefix LiteLLM uses for some providers
 # (e.g. "openrouter/anthropic/claude-3.5-sonnet") before the remainder becomes
 # the catalog row's `model` — which is exactly the string you'd write under
-# that provider's `models:` in lanes.yaml, so no further translation is
+# that provider's `models:` in arbiter.yaml, so no further translation is
 # needed. A litellm_provider entry whose key doesn't start with the configured
 # prefix is reported on stderr rather than guessed at.
 #
-# Rows for models you haven't declared in lanes.yaml are simply unused — see
+# Rows for models you haven't declared in arbiter.yaml are simply unused — see
 # README.md's "Group selection strategies" section for why that's fine.
 #
 # Latency is NOT in LiteLLM's price list. `latency_ms_p50` sets a per-provider

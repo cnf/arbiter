@@ -115,7 +115,7 @@ Explicitly out of scope:
   — solid, no requirement conflicts with this.
 - **429/5xx fallback + cooldown** (`internal/pipeline/pipeline.go`) — fine,
   keep.
-- **Hot-reload of `lanes.yaml`** — fine, keep.
+- **Hot-reload of `arbiter.yaml`** — fine, keep.
 - **`system_prompt` guardrail** (`internal/guardrail/guardrail.go`) —
   matches "system prompt injection" requirement, keep as-is.
 - **`rate_limit` guardrail mechanism** (counters, per-minute/per-day

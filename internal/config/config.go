@@ -1,4 +1,4 @@
-// Package config loads and validates lanes.yaml, Arbiter's single
+// Package config loads and validates arbiter.yaml, Arbiter's single
 // configuration file. Provider API keys are written as ${ENV_VAR}
 // placeholders in the YAML and substituted from the process environment at
 // load time, so secrets never live in the config file itself.
@@ -681,7 +681,7 @@ func (c *Config) mergeModelCatalogFile(configPath string) error {
 			continue // an inline row replaces this one wholesale
 		}
 		// A generated file (catalog-convert) is expected to be a superset of
-		// what lanes.yaml declares — it pulls every model under a
+		// what arbiter.yaml declares — it pulls every model under a
 		// litellm_provider, not just the ones this config happens to list —
 		// so a row naming an undeclared provider/model is not the config bug
 		// an inline typo would be; it's simply unused, exactly like a missing

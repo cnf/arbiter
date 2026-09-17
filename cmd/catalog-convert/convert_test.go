@@ -385,7 +385,7 @@ latency_ms_p50:
 
 // TestRunWithConfigLimitsToDeclaredProviders proves -config drives which
 // providers get catalog rows: mapping.yaml can name more providers than
-// lanes.yaml declares (e.g. a shared mapping reused across deployments), and
+// arbiter.yaml declares (e.g. a shared mapping reused across deployments), and
 // only the declared ones are generated for.
 func TestRunWithConfigLimitsToDeclaredProviders(t *testing.T) {
 	dir := t.TempDir()
@@ -400,11 +400,11 @@ providers:
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// lanes.yaml declares only "claude" — "litellm" exists in the mapping but
-	// not here, so it must not contribute rows, and no other lanes.yaml field
+	// arbiter.yaml declares only "claude" — "litellm" exists in the mapping but
+	// not here, so it must not contribute rows, and no other arbiter.yaml field
 	// needs to be valid (this is a minimal fixture, not a loadable config).
-	lanesPath := dir + "/lanes.yaml"
-	if err := os.WriteFile(lanesPath, []byte(`
+	configFilePath := dir + "/arbiter.yaml"
+	if err := os.WriteFile(configFilePath, []byte(`
 providers:
   claude:
     type: "anthropic"
@@ -419,11 +419,11 @@ providers:
 	}
 
 	var stdout, stderr bytes.Buffer
-	if err := run([]string{"-mapping", mapPath, "-config", lanesPath, jsonPath}, &stdout, &stderr); err != nil {
+	if err := run([]string{"-mapping", mapPath, "-config", configFilePath, jsonPath}, &stdout, &stderr); err != nil {
 		t.Fatalf("run: %v\nstderr:\n%s", err, stderr.String())
 	}
 	if strings.Contains(stdout.String(), "provider: litellm") {
-		t.Errorf("litellm should not appear (not declared in lanes.yaml):\n%s", stdout.String())
+		t.Errorf("litellm should not appear (not declared in arbiter.yaml):\n%s", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "claude-3-haiku-20250307") {
 		t.Errorf("claude's rows missing:\n%s", stdout.String())
@@ -575,13 +575,13 @@ func TestResolveProviderNamesFallsBackToMapping(t *testing.T) {
 }
 
 // TestProviderNamesFromConfigIgnoresRestOfFile proves this reads bare
-// provider names without needing the rest of lanes.yaml (routers, aliases,
+// provider names without needing the rest of arbiter.yaml (routers, aliases,
 // env vars) to be valid — including a model_catalog_file that doesn't exist
 // yet, the exact chicken-and-egg case a full config.Load would hit on a first
 // run.
 func TestProviderNamesFromConfigIgnoresRestOfFile(t *testing.T) {
 	dir := t.TempDir()
-	path := dir + "/lanes.yaml"
+	path := dir + "/arbiter.yaml"
 	if err := os.WriteFile(path, []byte(`
 model_catalog_file: "does-not-exist-yet.yaml"
 providers:

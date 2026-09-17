@@ -97,6 +97,61 @@ func TestExecuteRecordsCompletedRequest(t *testing.T) {
 	}
 }
 
+// TestExecuteRecordsActualModelWhenItDiverges proves a meta-router alias
+// (OpenRouter's "openrouter/auto" being the motivating case) that reports a
+// different model than Arbiter routed to gets that divergence captured —
+// served.Model is what Arbiter asked for, ActualModel is what the upstream's
+// own response body said it used.
+func TestExecuteRecordsActualModelWhenItDiverges(t *testing.T) {
+	fu := &fakeUpstream{resp: &types.NormalizedResponse{Model: "anthropic/claude-3.5-sonnet"}}
+	w := &capturingWriter{}
+	p := NewPipeline(
+		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
+		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
+		fakeLogger{}, time.Minute, nil, w, nil,
+	)
+
+	if _, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	ev, ok := w.last()
+	if !ok {
+		t.Fatal("no event recorded")
+	}
+	if ev.Model != "m-primary" {
+		t.Errorf("Model = %q, want the routed model m-primary", ev.Model)
+	}
+	if ev.ActualModel != "anthropic/claude-3.5-sonnet" {
+		t.Errorf("ActualModel = %q, want the upstream-reported model", ev.ActualModel)
+	}
+}
+
+// TestExecuteLeavesActualModelEmptyWhenItMatches proves the common case (a
+// plain provider that just echoes back the requested model) doesn't produce
+// redundant noise — ActualModel stays empty rather than duplicating Model.
+func TestExecuteLeavesActualModelEmptyWhenItMatches(t *testing.T) {
+	fu := &fakeUpstream{resp: &types.NormalizedResponse{Model: "m-primary"}}
+	w := &capturingWriter{}
+	p := NewPipeline(
+		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
+		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
+		fakeLogger{}, time.Minute, nil, w, nil,
+	)
+
+	if _, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	ev, ok := w.last()
+	if !ok {
+		t.Fatal("no event recorded")
+	}
+	if ev.ActualModel != "" {
+		t.Errorf("ActualModel = %q, want empty when it matches the routed model", ev.ActualModel)
+	}
+}
+
 // TestExecuteRecordsHeadersFromContext proves headers attached via
 // WithHeaders reach the recorded event — the HTTP layer sets these on ctx
 // rather than as an Execute parameter (see WithHeaders' doc comment), so this

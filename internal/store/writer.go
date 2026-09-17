@@ -50,6 +50,15 @@ type Event struct {
 	AliasUsed        string
 	RoutingRationale string
 
+	// ActualModel is the upstream-reported model, when the upstream actually
+	// told us and it differs from Model — the case a meta-router alias (e.g.
+	// OpenRouter's "openrouter/auto") exists for: Model is what Arbiter asked
+	// for, ActualModel is what the upstream says it used. Empty when the
+	// upstream didn't report one, or reported the same thing Arbiter asked
+	// for — the common case, which is why this is a separate nullable column
+	// rather than replacing Model.
+	ActualModel string
+
 	// ConfigEpoch identifies the resolved config that served this request
 	// (config.Config.Epoch). Empty is written as NULL.
 	ConfigEpoch string
@@ -161,7 +170,7 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 	// added to schema.sql after a database was first created never appears on
 	// it. Add the ones we know about explicitly; an insert referencing a
 	// missing column fails every time, which would silently lose events.
-	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT"} {
+	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT", "actual_model TEXT"} {
 		if err := addColumnIfMissing(db, "requests", col); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate event store schema: %w", err)
@@ -360,13 +369,13 @@ type execer interface {
 func insertRequestTx(ctx context.Context, db execer, ev Event) (int64, error) {
 	const q = `
 INSERT INTO requests (
-    trace_id, session_key, client_id, ts, format, provider, model,
+    trace_id, session_key, client_id, ts, format, provider, model, actual_model,
     alias_used, routing_rationale, domain, effort, cost_class, confidence,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
     cost_usd, latency_ms, status_code, error, stream, tool_calls_json,
     config_epoch, headers_json
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?,
@@ -381,6 +390,7 @@ INSERT INTO requests (
 		ev.Format,
 		ev.Provider,
 		ev.Model,
+		nullStr(ev.ActualModel),
 		nullStr(ev.AliasUsed),
 		ev.RoutingRationale,
 		nullStr(ev.Domain),

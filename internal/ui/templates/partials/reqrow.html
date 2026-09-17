@@ -40,7 +40,8 @@ skip a row it already has. */}}
         <span class="sub">{{ago .Ts}}</span></td>
       <td><span class="status {{statusClass .StatusCode}}"{{if .Error}} title="{{.Error}}"{{end}}>{{.StatusCode}}</span>
         {{if .Stream}}<span class="tag">stream</span>{{end}}</td>
-      <td><span class="prov">{{.Provider}}</span><span class="sub">{{.Model}}</span></td>
+      <td><span class="prov">{{.Provider}}</span><span class="sub">{{.Model}}</span>
+        {{if .ActualModel}}<span class="sub" title="upstream-reported model">→ {{.ActualModel}}</span>{{end}}</td>
       <td>{{if .AliasUsed}}{{.AliasUsed}}{{else}}<span class="muted">literal</span>{{end}}</td>
       <td class="num">{{tokens .InputTokens}} <span class="muted">→</span> {{tokens .OutputTokens}}</td>
       <td class="num">{{usd .CostUSD}}</td>

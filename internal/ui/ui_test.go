@@ -417,6 +417,37 @@ func TestErrorTextIsAHoverTooltipNotAnInlineRow(t *testing.T) {
 	}
 }
 
+// The actual upstream-reported model (a meta-router alias like OpenRouter's
+// "openrouter/auto" picking something concrete) shows on both the request
+// list row and the detail page, distinct from the routed model.
+func TestActualModelShownOnListAndDetail(t *testing.T) {
+	h, _ := newSeededHandler(t, store.Event{
+		TraceID: "t", Provider: "litellm", Model: "openrouter/auto", ActualModel: "anthropic/claude-3.5-sonnet",
+		StatusCode: 200, LatencyMs: 1,
+	})
+	list := serve(t, h, "GET", "/admin/ui/requests", false).Body.String()
+	if !strings.Contains(list, "anthropic/claude-3.5-sonnet") {
+		t.Errorf("actual model missing from request list; body = %s", firstLine(list))
+	}
+
+	detail := serve(t, h, "GET", "/admin/ui/requests/1", false).Body.String()
+	if !strings.Contains(detail, "anthropic/claude-3.5-sonnet") {
+		t.Errorf("actual model missing from request detail; body = %s", firstLine(detail))
+	}
+}
+
+// The common case — a plain provider that doesn't diverge — must not show a
+// redundant "actually X" when X equals the routed model.
+func TestActualModelHiddenWhenAbsent(t *testing.T) {
+	h, _ := newSeededHandler(t, store.Event{
+		TraceID: "t", Provider: "claude", Model: "claude-3-haiku", StatusCode: 200, LatencyMs: 1,
+	})
+	list := serve(t, h, "GET", "/admin/ui/requests", false).Body.String()
+	if strings.Contains(list, "actually") || strings.Contains(list, "upstream-reported model") {
+		t.Errorf("actual-model UI leaked with no divergence; body = %s", firstLine(list))
+	}
+}
+
 // The request detail page shows captured headers, User-Agent included — the
 // whole point of capturing them — and the credential redaction already done
 // by the HTTP layer before the event reached the store passes through as-is.

@@ -154,6 +154,48 @@ func TestRecordPersistsHeaders(t *testing.T) {
 	}
 }
 
+// TestRecordPersistsActualModel proves ActualModel round-trips through both
+// the list projection and the detail query, since a meta-router divergence
+// (OpenRouter's "openrouter/auto" picking a concrete model) is exactly the
+// kind of thing worth scanning for across many rows, not just on one
+// request's detail page.
+func TestRecordPersistsActualModel(t *testing.T) {
+	w, path := newTestWriter(t)
+
+	w.Record(Event{
+		TraceID:     "trace-actual-model",
+		Format:      "openai",
+		Provider:    "litellm",
+		Model:       "openrouter/auto",
+		ActualModel: "anthropic/claude-3.5-sonnet",
+		StatusCode:  200,
+	})
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	r := &Reader{db: reopenReads(t, path)}
+	rows, err := r.ListRequests(context.Background(), RequestFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ActualModel != "anthropic/claude-3.5-sonnet" {
+		t.Fatalf("ListRequests ActualModel = %q, want anthropic/claude-3.5-sonnet (rows: %+v)", rows[0].ActualModel, rows)
+	}
+
+	d, ok, err := r.GetRequest(context.Background(), rows[0].ID)
+	if err != nil {
+		t.Fatalf("GetRequest: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetRequest: not found")
+	}
+	if d.ActualModel != "anthropic/claude-3.5-sonnet" {
+		t.Errorf("GetRequest ActualModel = %q, want anthropic/claude-3.5-sonnet", d.ActualModel)
+	}
+}
+
 // TestZeroTimestampFilledIn proves Record stamps a time when the caller
 // leaves Ts zero, so a row can never be inserted with a nonsense timestamp.
 func TestZeroTimestampFilledIn(t *testing.T) {

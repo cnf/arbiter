@@ -299,6 +299,15 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 	if hasKey {
 		p.affinity.pin(sessionKey, req.Model, served.Provider, served.Model, p.cacheTTLFor(served.Provider))
 	}
+	// Captured before any post-guardrail can touch resp: this is what the
+	// upstream itself reported, which is what a meta-router alias (e.g.
+	// OpenRouter's "openrouter/auto") exists to obscure from Arbiter's own
+	// routing decision — served.Model is what Arbiter asked for, this is what
+	// the upstream says it actually used.
+	actualModel := ""
+	if resp.Model != "" && resp.Model != served.Model {
+		actualModel = resp.Model
+	}
 	resp.TraceID = traceID
 	resp.RoutingDecision = served.Rationale
 
@@ -332,6 +341,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		Format:           format,
 		Provider:         served.Provider,
 		Model:            served.Model,
+		ActualModel:      actualModel,
 		AliasUsed:        p.aliasName(req.Model),
 		RoutingRationale: served.Rationale,
 		Domain:           sig.Domain,
@@ -737,12 +747,19 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 		defer close(out)
 		streamStart := time.Now()
 		var usage types.Usage
+		// actualModel captures the upstream's own reported model before the
+		// fallback below overwrites an absent one with served.Model — same
+		// reasoning as the non-streaming path's actualModel.
+		var actualModel string
 		// orderedText accumulates text deltas per block index so the streamed
 		// response body can be captured after the fact. A slice indexed by
 		// BlockIndex preserves the block order the client saw.
 		var orderedText []string
 		for evt := range eventChan {
 			evt.TraceID = traceID
+			if evt.MessageModel != "" && evt.MessageModel != served.Model && actualModel == "" {
+				actualModel = evt.MessageModel
+			}
 			if evt.MessageModel == "" {
 				evt.MessageModel = served.Model
 			}
@@ -809,6 +826,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 			Format:           req.OriginalFormat,
 			Provider:         served.Provider,
 			Model:            served.Model,
+			ActualModel:      actualModel,
 			AliasUsed:        p.aliasName(req.Model),
 			RoutingRationale: served.Rationale,
 			Domain:           sig.Domain,

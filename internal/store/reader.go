@@ -171,6 +171,10 @@ type RequestRow struct {
 	Format           string  `json:"format"`
 	Provider         string  `json:"provider"`
 	Model            string  `json:"model"`
+	// ActualModel is the upstream-reported model, present only when it
+	// differs from Model (a meta-router alias like OpenRouter's
+	// "openrouter/auto" picked something concrete) — see store.Event.ActualModel.
+	ActualModel      string  `json:"actual_model,omitempty"`
 	AliasUsed        string  `json:"alias_used,omitempty"`
 	RoutingRationale string  `json:"routing_rationale"`
 	Domain           string  `json:"domain,omitempty"`
@@ -640,7 +644,7 @@ LIMIT ?`
 // requestRowColumns is the list projection, shared by ListRequests and
 // GetRequest so the two cannot drift into returning differently-shaped rows.
 const requestRowColumns = `
-    id, trace_id, ts, CAST(ts AS TEXT), session_key, format, provider, model, alias_used,
+    id, trace_id, ts, CAST(ts AS TEXT), session_key, format, provider, model, actual_model, alias_used,
     routing_rationale, domain, effort, cost_class, input_tokens, output_tokens,
     cost_usd, latency_ms, status_code, error, stream, config_epoch`
 
@@ -732,6 +736,7 @@ FROM requests WHERE id = ?`
 		d       RequestDetail
 		tsRaw   interface{}
 		session sql.NullString
+		actual  sql.NullString
 		alias   sql.NullString
 		domain  sql.NullString
 		effort  sql.NullString
@@ -744,7 +749,7 @@ FROM requests WHERE id = ?`
 		headers sql.NullString
 	)
 	err := r.db.QueryRowContext(ctx, q, id).Scan(
-		&d.ID, &d.TraceID, &tsRaw, &d.TsRaw, &session, &d.Format, &d.Provider, &d.Model, &alias,
+		&d.ID, &d.TraceID, &tsRaw, &d.TsRaw, &session, &d.Format, &d.Provider, &d.Model, &actual, &alias,
 		&d.RoutingRationale, &domain, &effort, &costCl, &d.InputTokens, &d.OutputTokens,
 		&d.CostUSD, &d.LatencyMs, &d.StatusCode, &errText, &d.Stream, &epoch,
 		&conf, &d.CacheReadTokens, &d.CacheWriteTokens, &tools, &client, &headers)
@@ -757,6 +762,7 @@ FROM requests WHERE id = ?`
 
 	d.Ts = formatTime(tsRaw)
 	d.SessionKey = session.String
+	d.ActualModel = actual.String
 	d.AliasUsed = alias.String
 	d.Domain = domain.String
 	d.Effort = effort.String
@@ -786,6 +792,7 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 		s       RequestRow
 		tsRaw   interface{}
 		session sql.NullString
+		actual  sql.NullString
 		alias   sql.NullString
 		domain  sql.NullString
 		effort  sql.NullString
@@ -794,13 +801,14 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 		epoch   sql.NullString
 	)
 	if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &s.TsRaw, &session, &s.Format, &s.Provider,
-		&s.Model, &alias, &s.RoutingRationale, &domain, &effort, &costCl,
+		&s.Model, &actual, &alias, &s.RoutingRationale, &domain, &effort, &costCl,
 		&s.InputTokens, &s.OutputTokens, &s.CostUSD, &s.LatencyMs, &s.StatusCode,
 		&errText, &s.Stream, &epoch); err != nil {
 		return RequestRow{}, fmt.Errorf("scan request row: %w", err)
 	}
 	s.Ts = formatTime(tsRaw)
 	s.SessionKey = session.String
+	s.ActualModel = actual.String
 	s.AliasUsed = alias.String
 	s.Domain = domain.String
 	s.Effort = effort.String

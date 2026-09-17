@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS requests (
     format                TEXT NOT NULL,       -- "anthropic" | "openai"
     provider              TEXT NOT NULL,
     model                 TEXT NOT NULL,
+    actual_model          TEXT,                -- upstream-reported model, when it differs from `model` (e.g. openrouter/auto)
     alias_used            TEXT,                -- NULL if req.Model was literal
     routing_rationale     TEXT NOT NULL,
     domain                TEXT,

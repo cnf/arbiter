@@ -5,6 +5,7 @@
 <p class="lede">
   <span class="status {{statusClass .D.StatusCode}}">{{.D.StatusCode}}</span>
   <span class="mono">{{.D.Provider}}</span> / <span class="mono">{{.D.Model}}</span>
+  {{if .D.ActualModel}}<span class="tag" title="the upstream's response reported this model, not the one Arbiter routed to">actually {{.D.ActualModel}}</span>{{end}}
   {{if .D.AliasUsed}}<span class="tag">alias {{.D.AliasUsed}}</span>{{end}}
   <span class="muted">{{clock .D.Ts}} UTC · {{ago .D.Ts}}</span>
 </p>

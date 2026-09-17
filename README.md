@@ -542,6 +542,19 @@ before it ever reaches the store; this is a single-operator tool (see
 REQUIREMENTS.md), so the bar is not persisting secrets into the db file, not
 hiding headers from the person running Arbiter.
 
+`model` is what Arbiter asked the upstream for — the routed model. A
+meta-router alias (OpenRouter's `openrouter/auto` being the motivating case)
+can pick something else entirely and say so in its own response body; when
+the upstream's reported model differs from what was requested, that's
+captured as `actual_model` and shown on both the request list and detail
+pages (`→ <model>` inline, and a labelled tag on the detail page). It's `null`
+in the common case — a plain provider that just serves the model it was
+asked for — so the column stays sparse rather than duplicating `model` on
+every row. The client already sees the real model too, in its own response
+body's `model` field (unaffected by this — Arbiter never rewrites it); this
+is what makes that same information visible in Arbiter's own admin surface
+without reading raw responses.
+
 `status_code` records what the *client* was told, so a request whose upstream
 could not be reached at all — no response, no status — is stored as **502**, not
 0. That matters for `?errors` and for the error counts in `/admin/stats`: both

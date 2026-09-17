@@ -400,6 +400,23 @@ func TestStoreErrorTextIsEscaped(t *testing.T) {
 	}
 }
 
+// The error text for a failed request sits in the status code's hover
+// tooltip, not as its own visible row — a separate row per error cluttered
+// the list with text nobody asked to see yet.
+func TestErrorTextIsAHoverTooltipNotAnInlineRow(t *testing.T) {
+	h, _ := newSeededHandler(t, store.Event{
+		TraceID: "t", Provider: "p", Model: "m", LatencyMs: 1, StatusCode: 502,
+		Error: "upstream unreachable",
+	})
+	body := serve(t, h, "GET", "/admin/ui/requests", false).Body.String()
+	if !strings.Contains(body, `title="upstream unreachable"`) {
+		t.Errorf("error text is not on the status code's title attribute; body = %s", firstLine(body))
+	}
+	if strings.Contains(body, `class="errrow"`) {
+		t.Errorf("error is still rendered as its own row; body = %s", firstLine(body))
+	}
+}
+
 // Content that was stored hash-only (an image, a streamed tool call) must be
 // shown as such rather than omitted: "not capturable" and "nothing to capture"
 // are different answers.

@@ -48,7 +48,7 @@ uses so the two cannot show a request differently. */}}
     <tr>
       <td class="when"><a href="/admin/ui/requests/{{.ID}}">{{clock .Ts}}</a>
         <span class="sub">{{ago .Ts}}</span></td>
-      <td><span class="status {{statusClass .StatusCode}}">{{.StatusCode}}</span>
+      <td><span class="status {{statusClass .StatusCode}}"{{if .Error}} title="{{.Error}}"{{end}}>{{.StatusCode}}</span>
         {{if .Stream}}<span class="tag">stream</span>{{end}}</td>
       <td><span class="prov">{{.Provider}}</span><span class="sub">{{.Model}}</span></td>
       <td>{{if .AliasUsed}}{{.AliasUsed}}{{else}}<span class="muted">literal</span>{{end}}</td>
@@ -64,7 +64,6 @@ uses so the two cannot show a request differently. */}}
           {{else}}<span class="muted">none</span>{{end}}</td>
       <td class="why">{{.RoutingRationale}}</td>
     </tr>
-    {{if .Error}}<tr class="errrow"><td colspan="10">{{.Error}}</td></tr>{{end}}
   {{end}}
   </tbody>
 </table>

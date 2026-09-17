@@ -216,8 +216,6 @@ td.when .sub, td .sub { display: block; color: var(--muted); font-size: 11px; fo
 td.why { color: var(--muted); font-size: 12px; max-width: 34ch; }
 td.axes { white-space: nowrap; }
 
-tr.errrow td { color: var(--err); font-size: 12px; font-family: var(--mono); }
-
 .pager { display: flex; align-items: center; gap: 0.75rem; margin: 0.6rem 0 0; color: var(--muted); font-size: 12px; }
 
 .status {
@@ -235,6 +233,7 @@ tr.errrow td { color: var(--err); font-size: 12px; font-family: var(--mono); }
 .s-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
 .s-err  { color: var(--err);  border-color: color-mix(in srgb, var(--err) 40%, transparent); }
 .s-none { color: var(--muted); }
+.status[title] { cursor: help; }
 
 .tag {
   display: inline-block;

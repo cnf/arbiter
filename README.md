@@ -162,7 +162,7 @@ arbiter/
 │   ├── pipeline/         # request lifecycle: normalize -> guardrails -> classify -> force -> route -> upstream
 │   ├── router/           # routing: policy rules, simple default/fallback, alias resolution
 │   ├── classifier/       # per-axis routing signals (domain, effort, cost class, capabilities)
-│   ├── guardrail/        # composable pre/post hooks (system prompt, rate limit)
+│   ├── guardrail/        # composable pre/post hooks (system prompt, rate limit, prompt rewrite)
 │   ├── translator/       # Anthropic <-> OpenAI <-> Normalized conversions (incl. SSE events)
 │   ├── upstream/         # provider HTTP calls, SSE reading, response parsing
 │   ├── logging/          # single structured logging path (JSON, trace-correlated)
@@ -376,7 +376,7 @@ routers:
       # fallback_provider: "gpt4"
 
 guardrails:
-  pre: []                              # system_prompt, rate_limit
+  pre: []                              # system_prompt, rate_limit, prompt_rewrite
   post: []
 
 routing:
@@ -1227,6 +1227,68 @@ same streaming request at both to compare:
 devenv shell
 mock
 ```
+
+## Prompt rewriting (client-injected prompts)
+
+Client apps (opencode, Claude Code, …) prepend their own system prompts — prompts
+you didn't write and often can't see. They're re-sent on every request, so they
+inflate token counts, defeat prompt caching across clients, and can silently
+override your own instructions. The `prompt_rewrite` guardrail matches and
+strips, replaces, or blocks that text.
+
+```yaml
+guardrails:
+  pre:
+    - name: "strip-opencode-preamble"
+      type: "prompt_rewrite"
+      config:
+        match: "You are opencode, the best coding agent"
+        mode: "prefix"          # exact | prefix | regex
+        action: "strip"         # strip | replace | block | strip_paragraph
+        where: ["system"]       # system | messages | all
+```
+
+**Matching is on the text, not on a client identity.** A per-client key would let
+you write "this client injects X"; matching X directly is simpler and survives a
+client renaming itself. Per-client attribution is a separate concern (see the
+Access section) and isn't needed here.
+
+| `mode` | Matches when |
+|---|---|
+| `exact` | the searched text **is** the pattern (ignoring case and surrounding whitespace) |
+| `prefix` | the searched text **starts with** the pattern (default) |
+| `regex` | a Go regular expression matches anywhere |
+
+| `action` | Effect |
+|---|---|
+| `strip` | removes the matched span, leaving surrounding text |
+| `replace` | substitutes `replacement:` for the matched span |
+| `block` | refuses the request with `block_status:` (default 403) |
+| `strip_paragraph` | removes the **whole paragraph** containing the match |
+
+`strip_paragraph` exists because a pattern matching part of a sentence leaves a
+dangling fragment under plain `strip`. The smallest unit removed is one
+paragraph, split on `paragraph_boundary:` (default newline), and the seam is
+tidied so removing a middle paragraph doesn't leave a blank-line crater.
+
+`where` selects what's searched: `system` (default), `messages`, or `all`. Only
+**text** blocks are rewritten — a `tool_use` or `attachment` block isn't free
+text, and rewriting it would corrupt the request.
+
+`exact` and `prefix` are case-insensitive and ignore leading/trailing whitespace,
+because different clients and wire formats re-serialize the same preamble
+differently and a case difference isn't a different prompt. `regex` is used
+verbatim — write `(?i)` yourself if you want case-insensitivity. **Watch the
+character class**: `\w` excludes `-`, so `you are \w+` does not match
+`claude-code`; use `[\w-]+`.
+
+A typo'd `mode`, `action`, or `where` is a **config-load error**, not a silent
+no-op — a guardrail that quietly rewrites nothing would leave you believing
+injected text is stripped while every request still carries it.
+
+**To find what to strip**, `/admin/content/repeated` (and the discovery page)
+lists blocks appearing across many requests and sessions — the client's own
+preamble shows up there, with a preview, before you write a rule for it.
 
 ## Design Principles
 

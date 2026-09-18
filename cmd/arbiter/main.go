@@ -816,9 +816,46 @@ func buildGuardrail(gc config.GuardrailConfig) (guardrail.Guardrail, error) {
 		perMinute := intFromConfig(gc.Config, "per_minute")
 		perDay := intFromConfig(gc.Config, "per_day")
 		return guardrail.NewRateLimitGuardrail(gc.Name, perMinute, perDay), nil
+	case "prompt_rewrite":
+		// Every value is read here and validated in the constructor, so a typo'd
+		// mode or action is a config-load error rather than a guardrail that
+		// silently rewrites nothing while the operator believes it strips.
+		match, _ := gc.Config["match"].(string)
+		mode, _ := gc.Config["mode"].(string)
+		action, _ := gc.Config["action"].(string)
+		replacement, _ := gc.Config["replacement"].(string)
+		paragraphBoundary, _ := gc.Config["paragraph_boundary"].(string)
+		blockStatus := intFromConfig(gc.Config, "block_status")
+		where, err := stringList(gc.Config, "where")
+		if err != nil {
+			return nil, err
+		}
+		return guardrail.NewPromptRewriteGuardrail(
+			gc.Name, match, mode, action, replacement, paragraphBoundary, blockStatus, where)
 	default:
 		return nil, fmt.Errorf("unknown guardrail type %q", gc.Type)
 	}
+}
+
+// stringList pulls an optional list-of-strings out of a guardrail config block.
+func stringList(cfg map[string]interface{}, key string) ([]string, error) {
+	raw, ok := cfg[key]
+	if !ok {
+		return nil, nil
+	}
+	items, ok := raw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%s must be a list of strings", key)
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s must be a list of strings", key)
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 // stringListMap pulls a map[string][]string out of a classifier config

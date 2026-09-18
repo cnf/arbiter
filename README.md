@@ -464,6 +464,25 @@ Note that changing the key derivation (denoising, a different anchor, a
 different gate) invalidates every existing pin at once, which shows up as one
 burst of re-routing across all live conversations.
 
+**A conversation that opens with too little text is never pinned** — not on its
+opening turn, and not later either: the key is derived from that *first*
+message every time, so a chat that opens "hi" has the same too-short prefix on
+turn 40 as on turn 1. Such a conversation routes fresh on every turn and
+records a NULL `session_key` for its whole life. The gate exists because
+pinning two unrelated chats together (both opening "hi") is worse than not
+pinning at all — but note that is a multi-tenant instinct in a single-user
+tool, and the fix, if it is wanted, belongs in the derivation (hash a stable
+prefix of the whole conversation once it is long enough, rather than only the
+first user turn) not here. Sending `X-Session-Id` sidesteps the issue entirely
+and is the supported path for a client that cares.
+
+The pin overrides classification for as long as the client keeps requesting
+the **same `model` value**. A client that explicitly switches models means
+it, so the pin is discarded and routing runs fresh. The pin is recorded from
+the route that *actually served* the request, so it follows a fallback to
+another provider; a pinned provider currently in 429 cooldown is treated as a
+miss (fresh routing runs).
+
 **Pins are persisted** (the `affinity_pins` table) when a store is configured,
 so a conversation stays pinned across a **config reload** and a **restart**.
 Both used to lose every pin: a reload rebuilds the whole pipeline, and the pins
@@ -716,6 +735,160 @@ A rejected conversion is the safe failure: the generated catalog is inert on
 write, so nothing changes in the running config until you call
 `POST /admin/reload`.
 
+### Routing on what a model can do
+
+A rule may demand that its **target** accept certain input modalities:
+
+```yaml
+- when: { requires_input_modalities: ["image"] }
+  provider: "claude"
+```
+
+This is deliberately a different key from `capabilities`, which matches the
+*request's* own requirements. The two vocabularies are different things:
+`capabilities` says what a request **needs** (`vision`, `tool_use`,
+`long_context`), while `requires_input_modalities` says what a model
+**accepts** (`text`, `image`, `file`). Folding them together would silently
+change the meaning of every existing `capabilities` rule.
+
+A rule whose target cannot satisfy the requirement is **skipped**, and matching
+continues to the next rule. That is what makes a chain read as "send image
+traffic to the vision model, everything else here" without the operator writing
+the negative case:
+
+```yaml
+rules:
+  - when: { requires_input_modalities: ["image"] }
+    provider: "vision-model"     # used only if it accepts images
+  - when: {}                     # catch-all
+    provider: "text-model"
+```
+
+Modalities come from the cost/latency catalog (`input_modalities` on a
+`model_catalog` row). A model with **no catalog row, or a row that states
+nothing about modalities, does not satisfy the requirement** — unknown is not
+permission, and routing image traffic to a model whose support is simply
+unstated is the guess this exists to prevent. The same applies when no catalog
+is configured at all: an unverifiable guard never passes.
+
+If every rule is skipped the router reports its usual no-match error, so a
+router chained after it (a `simple` router, say) still takes over.
+
+### LLM-backed classification
+
+A `type: "llm"` classifier asks an upstream model to classify a request
+instead of guessing from keywords — real semantic understanding, at the cost
+of a real upstream call:
+
+```yaml
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write", "refactor"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"                      # only "domain" is built today
+    config:
+      alias: "cheap-classifier"         # routes the classification call — any pinned or group alias
+      labels:                           # bare names, or name -> rubric description
+        code_generation: >-
+          the user wants code written, modified, refactored, or reviewed —
+          an implementation task with a concrete code artifact as the answer.
+        reasoning: >-
+          the user wants something explained, analyzed or debugged — an
+          answer in prose, with no code artifact as the deliverable.
+        chat: "greeting or small talk with no artifact expected."
+        none: "none of the other categories apply."
+      escape: "none"                    # this label's verdict fills no axis
+      instructions: "Pick the category that best describes the request."  # optional
+      fallback: "domain-heuristic"      # another classifier, declared anywhere in this list
+      timeout: "5s"                     # optional, defaults to 10s
+```
+
+`labels` accepts either shape and both may be mixed freely in one list: a plain
+list of names (`labels: ["code_generation", "chat"]`, unchanged from before
+rubrics existed) or a map of name to description. The description is where a
+category's *boundary* lives — a bare name tells the model nothing about where
+`code_generation` ends and `reasoning` begins — so a rubric is the single
+biggest lever on classification accuracy.
+
+The prompt is assembled from three parts, in this order: the framing sentence
+(`instructions`, or a fixed default), the label list with its descriptions, and
+the reply contract. Only the first two are configurable — the contract
+("reply with the single matching word and nothing else") is always appended
+last, because a single-word reply is what makes a half-parsed answer impossible
+and a configurable reply format would let a rubric edit break the parser. Labels
+are sorted into the prompt, so the same config always produces byte-identical
+prompt text and one call's prompt can be diffed against the next. (That is for
+comparability only: a prompt this short is below every provider's minimum
+cacheable length, so it is never cached either way.)
+
+`escape` names the label meaning "no category fits" and **fills no axis at
+all** — the axis is left empty, so a policy router's `when: {domain: ...}` rules
+simply don't match and a chained router takes over. That is the point: without
+an escape label, "nothing fits" can only be expressed as a wrong category or an
+off-list reply, and an off-list reply counts as a *failure* that falls back to
+the heuristic — so the model's honest uncertainty is indistinguishable from a
+broken call. The verdict is still recorded as a successful call with confidence
+1.0; it just carries no value. A bare `none` reply is also accepted as escape
+whenever an escape label is configured.
+
+`alias` is resolved exactly the way a client-named alias is — a group alias's
+member selection and its unselected siblings (tried in order on failure) work
+the same way here as they do for real traffic. `fallback` names another
+configured classifier (built first regardless of declaration order) that
+takes over completely whenever the LLM call fails outright: a timeout, an
+upstream error, or a reply that doesn't match any configured label exactly
+(never guessed at — the same "surface ambiguity, don't guess" rule
+`literalModelRoute` follows). `Classify` therefore never returns an error
+itself; `MergedClassifier` aborts its *entire* merge on any sub-classifier
+error, so a bubbled failure here would silently kill every other axis being
+classified alongside it, not just this one — the fallback exists precisely so
+that never happens. A `fallback` naming another `"llm"` classifier is
+rejected at config load — no chained LLM fallbacks.
+
+Every call — success or failure — is recorded as its own request row, tagged
+`kind: "classifier"` (see Admin surface and access): visible on the request detail page and its
+triggering session's trajectory, excluded from the default request list and
+every cost/latency aggregate. Its `routing_rationale` carries both the verdict
+and a preview of the text that produced it (`LLM classifier replied
+"code_generation" — input "please fix this bug..."`), because the rationale is
+what the list shows before anyone loads captured content — a verdict alone
+cannot distinguish a clear message the model misjudged from a rubric that failed
+to describe the category. The preview is cut at 120 bytes on a rune boundary,
+so a multi-byte character is never split into invalid UTF-8; the full text is in
+the captured content. This makes the store double as a training-data source for
+a future locally-trained classifier: `domain` and the classified text are both
+already captured, for free, as a side effect of routing.
+
+With `storage.capture_content` on, the classifier's own row carries what it
+**saw**: the text it classified, plus the prompt it was given as a system block.
+That is what makes a wrong verdict debuggable — the recorded reply shows the
+decision, not the evidence, so without the input there is no way to tell a model
+that misjudged a clear message from a rubric that failed to describe the
+category. It costs nothing extra to store: the input is byte-identical to a
+block of the client's own request that capture already holds, so it addresses to
+the same content row and adds one reference, not a second body — which also
+makes the classifier row joinable to the request that triggered it. The prompt
+block is constant for a given config, so it addresses to a single row forever.
+Both ride the one `capture_content` switch; there is no separate switch for
+derived calls.
+
+Note that a classifier row is a `requests` row, so the content queries that join
+`content_refs` to `requests` (repeated content, the per-hash drill-down) filter
+to `kind = 'client'` — otherwise every classifier call would count as a second
+request "containing" the text it was asked to classify, and a client's
+boilerplate preamble would read as twice as widespread as it is.
+
+Session affinity does the caching here for free: once a session is pinned,
+`classify()` never runs again for that conversation, so an LLM classifier
+call happens once per session, not once per turn — no separate mechanism
+needed. A session with no derivable key (no header, too-short opener)
+classifies fresh every turn, same as any other classifier. Pins are persisted,
+so a config reload no longer re-classifies a pinned conversation: the pin
+survives it (see the Session affinity section under Configuration).
+
 ### Admin surface and access
 
 `POST /admin/reload` re-reads the config and the `model_catalog_file` on
@@ -924,6 +1097,33 @@ Three details of the chart are worth knowing:
   the line, not a claim that the group was idle by design — which matters for a
   cost or latency metric.
 
+Provider notes:
+
+- `type` selects the wire format/transport, independent of the provider's name
+  — a `type: openai` provider covers OpenAI, OpenRouter, LiteLLM, and
+  Ollama's `/v1` alike.
+- `endpoint` is normalized (trailing `/` stripped) at load time.
+- Per-provider `timeout` defaults to 60s if unset. On non-streaming requests
+  it is a total deadline. On streams it is an *idle* timeout instead: it
+  bounds how long the upstream may go silent, and each event received resets
+  it, so a long generation is never cut just for taking a while. Set it to `0`
+  to disable the idle watchdog entirely.
+- Per-provider `retry_max` bounds how many times a 5xx from that provider is
+  retried before falling through to the fallback list. It defaults to `0`,
+  which means *no* retries — set it explicitly to enable them.
+- Optional per-provider `cache_ttl` overrides `session_affinity.default_ttl`
+  for conversations pinned to that provider (e.g. to match its prompt-cache
+  expiry).
+
+
+That is why Arbiter **binds loopback by default** (`--bind`, default
+`127.0.0.1`) and can bind a unix socket instead (`--socket /path`, overriding
+`--bind`/`--port`). Anything that can reach the listener directly can forge the
+gate header, so the binding — plus tailnet membership — is the actual control,
+exactly the "further control via `reverse_proxy` config" the deployment
+assumes. Set `--bind 0.0.0.0` only when something else (Caddy, a tailnet ACL)
+is enforcing reachability.
+
 ## The live tail
 
 `/admin/ui/requests` has a **live** control above the table: while it is on and
@@ -1015,14 +1215,20 @@ The system prompt is kept as its own block rather than folded into the first
 user turn, and text blocks are hashed over their raw text rather than JSON. Both
 choices exist so one specific question is answerable:
 
-**`GET /admin/content/repeated?since=…&min_requests=2&min_sessions=2`** returns
-blocks seen across multiple requests, with how many requests and how many
-distinct sessions contain each. That is the post-hoc detection mechanism for
-client-injected boilerplate: the preamble a client prepends to every request
-shows up as a block spanning many sessions, without anyone having to know the
-prompt in advance. `min_sessions` is what separates it from mere repetition —
-a block in every request of one long conversation is unremarkable; the same
-block across many sessions is the client's own text.
+**`GET /admin/content/repeated`** returns blocks seen across multiple requests,
+with how many requests and how many distinct sessions contain each. That is the
+post-hoc detection mechanism for client-injected boilerplate: the preamble a
+client prepends to every request shows up as a block spanning many sessions,
+without anyone having to know the prompt in advance. `min_sessions` is what
+separates it from mere repetition — a block in every request of one long
+conversation is unremarkable; the same block across many sessions is the
+client's own text.
+
+All parameters are optional: `since` (default `7d`), `min_requests` (default 2),
+`min_sessions` (default 0 — the **discovery page** defaults it to 2, which is
+the useful setting), and `limit` (default 50, max 200). A malformed value is a
+**400**, not a silently ignored filter. The page at `/admin/ui/content/repeated`
+is the same query with the thresholds exposed as controls.
 
 Retention is two independent clocks, and only one of them applies here. Captured
 bodies expire on `storage.content_ttl` (a Go duration — `72h`, not `3d`);
@@ -1045,14 +1251,6 @@ rows is an insert plus an update, not a rewrite of the read queries. Rejected
 content is deliberately invisible to every query that joins `requests`, so it
 cannot leak into the aggregates.
 
-That is why Arbiter **binds loopback by default** (`--bind`, default
-`127.0.0.1`) and can bind a unix socket instead (`--socket /path`, overriding
-`--bind`/`--port`). Anything that can reach the listener directly can forge the
-gate header, so the binding — plus tailnet membership — is the actual control,
-exactly the "further control via `reverse_proxy` config" the deployment
-assumes. Set `--bind 0.0.0.0` only when something else (Caddy, a tailnet ACL)
-is enforcing reachability.
-
 Classifier note: `axis` is optional on a `heuristic` classifier (defaults to
 `domain`, as before this field existed). The legacy `capability_detector` type
 always fills `capabilities` and rejects an explicit `axis`. In a policy rule's
@@ -1060,225 +1258,84 @@ always fills `capabilities` and rejects an explicit `axis`. In a policy rule's
 `cost_sensitivity` (for `cost_class`) are still accepted, but setting a key and
 its replacement on the same rule is an error rather than a silent pick.
 
-### Routing on what a model can do
 
-A rule may demand that its **target** accept certain input modalities:
+## Guardrails
 
-```yaml
-- when: { requires_input_modalities: ["image"] }
-  provider: "claude"
-```
-
-This is deliberately a different key from `capabilities`, which matches the
-*request's* own requirements. The two vocabularies are different things:
-`capabilities` says what a request **needs** (`vision`, `tool_use`,
-`long_context`), while `requires_input_modalities` says what a model
-**accepts** (`text`, `image`, `file`). Folding them together would silently
-change the meaning of every existing `capabilities` rule.
-
-A rule whose target cannot satisfy the requirement is **skipped**, and matching
-continues to the next rule. That is what makes a chain read as "send image
-traffic to the vision model, everything else here" without the operator writing
-the negative case:
+Guardrails are pre/post hooks that run on every request: pre-hooks on the
+`NormalizedRequest` before routing and the upstream call, post-hooks on the
+`NormalizedResponse` after it. Everything from prompt injection to rate
+limiting is a guardrail — there is no special-cased path for any of it, and a
+new behaviour is a new type rather than a branch in the pipeline.
 
 ```yaml
-rules:
-  - when: { requires_input_modalities: ["image"] }
-    provider: "vision-model"     # used only if it accepts images
-  - when: {}                     # catch-all
-    provider: "text-model"
+guardrails:
+  pre:
+    - name: "baseline"
+      type: "system_prompt"            # inject/override a system prompt
+      config:
+        prompt: "You are a helpful assistant."
+        override: false                # false prepends; true replaces
+    - name: "rl"
+      type: "rate_limit"
+      config:
+        per_minute: 60                 # 0 means unlimited
+        per_day: 1000
+  post: []
 ```
 
-Modalities come from the cost/latency catalog (`input_modalities` on a
-`model_catalog` row). A model with **no catalog row, or a row that states
-nothing about modalities, does not satisfy the requirement** — unknown is not
-permission, and routing image traffic to a model whose support is simply
-unstated is the guess this exists to prevent. The same applies when no catalog
-is configured at all: an unverifiable guard never passes.
+Types, in the order you are likely to reach for them:
 
-If every rule is skipped the router reports its usual no-match error, so a
-router chained after it (a `simple` router, say) still takes over.
+| `type` | What it does |
+|---|---|
+| `system_prompt` | prepends (or with `override: true`, replaces) the system prompt |
+| `rate_limit` | per-minute / per-day request caps |
+| `prompt_rewrite` | matches client-injected prompt text and strips, replaces or blocks it (see Prompt rewriting) |
 
-### LLM-backed classification
+### System prompt injection
 
-A `type: "llm"` classifier asks an upstream model to classify a request
-instead of guessing from keywords — real semantic understanding, at the cost
-of a real upstream call:
+`system_prompt` is the oldest guardrail and the one that runs first in the
+common case. With `override: false` — the default, and the useful one — the
+configured prompt is **prepended** ahead of whatever the client sent, so
+Arbiter's baseline instructions always apply while the client's own are still
+there. With `override: true` the client's system prompt is discarded entirely,
+which is occasionally what you want for a fixed-purpose deployment and is
+otherwise a good way to break a coding agent.
 
-```yaml
-classifiers:
-  - name: "domain-heuristic"
-    type: "heuristic"
-    config:
-      keywords: { code_generation: ["write", "refactor"] }
-  - name: "domain-llm"
-    type: "llm"
-    axis: "domain"                      # only "domain" is built today
-    config:
-      alias: "cheap-classifier"         # routes the classification call — any pinned or group alias
-      labels:                           # bare names, or name -> rubric description
-        code_generation: >-
-          the user wants code written, modified, refactored, or reviewed —
-          an implementation task with a concrete code artifact as the answer.
-        reasoning: >-
-          the user wants something explained, analyzed or debugged — an
-          answer in prose, with no code artifact as the deliverable.
-        chat: "greeting or small talk with no artifact expected."
-        none: "none of the other categories apply."
-      escape: "none"                    # this label's verdict fills no axis
-      instructions: "Pick the category that best describes the request."  # optional
-      fallback: "domain-heuristic"      # another classifier, declared anywhere in this list
-      timeout: "5s"                     # optional, defaults to 10s
-```
+It has one load-bearing interaction: capture runs **before** pre-guardrails, so
+what the store holds is the request as the client sent it, and the session key
+is hashed before this guardrail runs. Otherwise Arbiter's own injected text
+would be stored as though the client had sent it, and every live pin would be
+invalidated the moment this prompt was edited. Both are covered under
+Content store and Session affinity.
 
-`labels` accepts either shape and both may be mixed freely in one list: a plain
-list of names (`labels: ["code_generation", "chat"]`, unchanged from before
-rubrics existed) or a map of name to description. The description is where a
-category's *boundary* lives — a bare name tells the model nothing about where
-`code_generation` ends and `reasoning` begins — so a rubric is the single
-biggest lever on classification accuracy.
+### Rate limiting
 
-The prompt is assembled from three parts, in this order: the framing sentence
-(`instructions`, or a fixed default), the label list with its descriptions, and
-the reply contract. Only the first two are configurable — the contract
-("reply with the single matching word and nothing else") is always appended
-last, because a single-word reply is what makes a half-parsed answer impossible
-and a configurable reply format would let a rubric edit break the parser. Labels
-are sorted into the prompt, so the same config always produces byte-identical
-prompt text and one call's prompt can be diffed against the next. (That is for
-comparability only: a prompt this short is below every provider's minimum
-cacheable length, so it is never cached either way.)
+`rate_limit` caps how many requests Arbiter makes, per minute and per day.
+`0` means unlimited, and a `0` window is not even queried.
 
-`escape` names the label meaning "no category fits" and **fills no axis at
-all** — the axis is left empty, so a policy router's `when: {domain: ...}` rules
-simply don't match and a chained router takes over. That is the point: without
-an escape label, "nothing fits" can only be expressed as a wrong category or an
-off-list reply, and an off-list reply counts as a *failure* that falls back to
-the heuristic — so the model's honest uncertainty is indistinguishable from a
-broken call. The verdict is still recorded as a successful call with confidence
-1.0; it just carries no value. A bare `none` reply is also accepted as escape
-whenever an escape label is configured.
+The counters are **seeded from the event store** when one is configured, which
+is what makes a cap mean anything: a purely in-memory counter is thrown away
+every time the pipeline is rebuilt, so a per-day cap of 1000 became 1000 again
+after each config save. Seeding also carries a cap across a restart, which is
+closer to what the number is for than the original behaviour was. With no store
+configured the caps count only what this process has seen — the behaviour
+before seeding existed, and the correct degradation.
 
-`alias` is resolved exactly the way a client-named alias is — a group alias's
-member selection and its unselected siblings (tried in order on failure) work
-the same way here as they do for real traffic. `fallback` names another
-configured classifier (built first regardless of declaration order) that
-takes over completely whenever the LLM call fails outright: a timeout, an
-upstream error, or a reply that doesn't match any configured label exactly
-(never guessed at — the same "surface ambiguity, don't guess" rule
-`literalModelRoute` follows). `Classify` therefore never returns an error
-itself; `MergedClassifier` aborts its *entire* merge on any sub-classifier
-error, so a bubbled failure here would silently kill every other axis being
-classified alongside it, not just this one — the fallback exists precisely so
-that never happens. A `fallback` naming another `"llm"` classifier is
-rejected at config load — no chained LLM fallbacks.
+Counting deliberately includes Arbiter's **own internal requests** (classifier
+and title-generation calls). Those are real upstream requests, and a cap that
+mirrors an upstream's own published limit has to see them; the spend
+aggregates filter them out for the opposite reason.
 
-Every call — success or failure — is recorded as its own request row, tagged
-`kind: "classifier"` (see above): visible on the request detail page and its
-triggering session's trajectory, excluded from the default request list and
-every cost/latency aggregate. Its `routing_rationale` carries both the verdict
-and a preview of the text that produced it (`LLM classifier replied
-"code_generation" — input "please fix this bug..."`), because the rationale is
-what the list shows before anyone loads captured content — a verdict alone
-cannot distinguish a clear message the model misjudged from a rubric that failed
-to describe the category. The preview is cut at 120 bytes on a rune boundary,
-so a multi-byte character is never split into invalid UTF-8; the full text is in
-the captured content. This makes the store double as a training-data source for
-a future locally-trained classifier: `domain` and the classified text are both
-already captured, for free, as a side effect of routing.
+The store is queried once, lazily, on first use, and requests since are counted
+locally — so the hot path carries no query, at the cost of the count being
+approximate if another process wrote to the same store (which cannot happen:
+Arbiter is one binary per deployment). A store error degrades to local counting
+rather than failing every request; under-counting is the safer failure for a
+limit.
 
-With `storage.capture_content` on, the classifier's own row carries what it
-**saw**: the text it classified, plus the prompt it was given as a system block.
-That is what makes a wrong verdict debuggable — the recorded reply shows the
-decision, not the evidence, so without the input there is no way to tell a model
-that misjudged a clear message from a rubric that failed to describe the
-category. It costs nothing extra to store: the input is byte-identical to a
-block of the client's own request that capture already holds, so it addresses to
-the same content row and adds one reference, not a second body — which also
-makes the classifier row joinable to the request that triggered it. The prompt
-block is constant for a given config, so it addresses to a single row forever.
-Both ride the one `capture_content` switch; there is no separate switch for
-derived calls.
-
-Note that a classifier row is a `requests` row, so the content queries that join
-`content_refs` to `requests` (repeated content, the per-hash drill-down) filter
-to `kind = 'client'` — otherwise every classifier call would count as a second
-request "containing" the text it was asked to classify, and a client's
-boilerplate preamble would read as twice as widespread as it is.
-
-Session affinity does the caching here for free: once a session is pinned,
-`classify()` never runs again for that conversation, so an LLM classifier
-call happens once per session, not once per turn — no separate mechanism
-needed. A session with no derivable key (no header, too-short opener)
-classifies fresh every turn, same as any other classifier. The pin is
-in-memory, though, so a config reload rebuilds the pipeline and clears it: the
-next turn after a reload re-classifies even mid-conversation.
-
-Provider notes:
-
-- `type` selects the wire format/transport, independent of the provider's name
-  — a `type: openai` provider covers OpenAI, OpenRouter, LiteLLM, and
-  Ollama's `/v1` alike.
-- `endpoint` is normalized (trailing `/` stripped) at load time.
-- Per-provider `timeout` defaults to 60s if unset. On non-streaming requests
-  it is a total deadline. On streams it is an *idle* timeout instead: it
-  bounds how long the upstream may go silent, and each event received resets
-  it, so a long generation is never cut just for taking a while. Set it to `0`
-  to disable the idle watchdog entirely.
-- Per-provider `retry_max` bounds how many times a 5xx from that provider is
-  retried before falling through to the fallback list. It defaults to `0`,
-  which means *no* retries — set it explicitly to enable them.
-- Optional per-provider `cache_ttl` overrides `session_affinity.default_ttl`
-  for conversations pinned to that provider (e.g. to match its prompt-cache
-  expiry).
-
-### Session affinity
-
-Once a request has been routed, Arbiter pins the conversation to whichever
-provider/model actually served it, so later turns skip classification and
-routing entirely and stay on the same upstream — preserving prompt-cache
-reuse and avoiding cost churn from turn-to-turn re-routing. The session key
-is the `X-Session-Id` header (configurable via `session_affinity.header`)
-when present; otherwise it's a hash of the system prompt plus the first
-text-bearing user message.
-
-**A conversation that opens with too little text is never pinned** — not on its
-opening turn, and not later either: the key is derived from that *first*
-message every time, so a chat that opens "hi" has the same too-short prefix on
-turn 40 as on turn 1. Such a conversation routes fresh on every turn and
-records a NULL `session_key` for its whole life. The gate exists because
-pinning two unrelated chats together (both opening "hi") is worse than not
-pinning at all — but note that is a multi-tenant instinct in a single-user
-tool, and the fix, if it is wanted, belongs in the derivation (hash a stable
-prefix of the whole conversation once it is long enough, rather than only the
-first user turn) not here. Sending `X-Session-Id` sidesteps the issue entirely
-and is the supported path for a client that cares.
-
-The pin overrides classification for as long as the client keeps requesting
-the **same `model` value**. A client that explicitly switches models means
-it, so the pin is discarded and routing runs fresh. The pin is recorded from
-the route that *actually served* the request, so it follows a fallback to
-another provider; a pinned provider currently in 429 cooldown is treated as a
-miss (fresh routing runs). Pins are persisted (see the Session affinity section
-under Configuration) — they survive a config reload and a restart, and expiry is
-enforced on read as well as by the sweep.
-
-## Testing
-
-```bash
-devenv shell
-test   # go test -race ./...
-```
-
-For live end-to-end checks, `devenv processes up` runs a fake LLM
-([fakellm](https://github.com/1dg618/fakellm), config at
-`support/fakellm.yaml`) alongside arbiter, and the `mock` script fires the
-same streaming request at both to compare:
-
-```bash
-devenv shell
-mock
-```
+`Reader.CountSinceByProvider` exists for a per-provider cap that mirrors an
+upstream's published limit, and its index is in place, but no config surface
+exposes it yet.
 
 ## Prompt rewriting (client-injected prompts)
 
@@ -1341,6 +1398,23 @@ injected text is stripped while every request still carries it.
 **To find what to strip**, `/admin/content/repeated` (and the discovery page)
 lists blocks appearing across many requests and sessions — the client's own
 preamble shows up there, with a preview, before you write a rule for it.
+
+## Testing
+
+```bash
+devenv shell
+test   # go test -race ./...
+```
+
+For live end-to-end checks, `devenv processes up` runs a fake LLM
+([fakellm](https://github.com/1dg618/fakellm), config at
+`support/fakellm.yaml`) alongside arbiter, and the `mock` script fires the
+same streaming request at both to compare:
+
+```bash
+devenv shell
+mock
+```
 
 ## Design Principles
 

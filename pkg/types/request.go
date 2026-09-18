@@ -33,7 +33,7 @@ type Message struct {
 // ContentBlock is a single piece of content in a message. Flattened (rather
 // than an interface{} union) so translators don't need type assertions.
 type ContentBlock struct {
-	Type string // "text", "tool_use", "tool_result", "thinking"
+	Type string // "text", "tool_use", "tool_result", "thinking", "attachment"
 
 	// type == "text" or "thinking"
 	Text string
@@ -47,6 +47,57 @@ type ContentBlock struct {
 	ToolResultForID string // references a prior tool_use ID
 	ToolResult      string
 	ToolIsError     bool
+
+	// type == "attachment": an image, PDF or other document the client
+	// attached.
+	//
+	// The two wire formats spell these very differently — OpenAI as
+	// image_url/file parts, Anthropic as image/document blocks with a
+	// source — but the substance is identical: a media type plus either
+	// inline bytes or a URL. One block type carries all of them and the
+	// translators own the spelling, so a new format is a translator change
+	// rather than a new internal concept.
+	//
+	// MediaType is the MIME type ("image/png", "application/pdf"). Data is the
+	// payload — base64 with no data: prefix when IsURL is false, otherwise the
+	// URL itself, which the upstream fetches on its own.
+	//
+	// Name is the filename, and only documents carry one: it is required on
+	// the wire for OpenAI documents, so losing it makes the attachment
+	// unemittable rather than merely unlabelled. Every image has an empty
+	// Name.
+	//
+	// Image is whether this was sent as an image part. It is recorded rather
+	// than derived from MediaType because a URL-sourced attachment has no MIME
+	// hint to derive from: "https://example.com/cat.png" is an image the
+	// client put in an image_url part, and guessing from a file extension
+	// would be wrong for every URL without one. The wire part type is the only
+	// reliable statement of intent, so it is carried.
+	MediaType string
+	Data      string
+	Name      string
+	IsURL     bool
+	Image     bool
+}
+
+// AttachmentBlock is a convenience constructor for an attachment content block.
+func AttachmentBlock(mediaType, data, name string, isURL bool) ContentBlock {
+	return ContentBlock{Type: "attachment", MediaType: mediaType, Data: data, Name: name, IsURL: isURL}
+}
+
+// AttachmentImageBlock is AttachmentBlock for a part the client sent as an
+// image, which is what decides whether it re-emits as an image or a document
+// when the media type cannot say (a bare URL).
+func AttachmentImageBlock(mediaType, data, name string, isURL bool) ContentBlock {
+	return ContentBlock{Type: "attachment", MediaType: mediaType, Data: data, Name: name, IsURL: isURL, Image: true}
+}
+
+// IsImage reports whether an attachment should be treated as an image, which
+// decides whether it goes out as an image part (OpenAI) or an `image` rather
+// than `document` block (Anthropic). The recorded part type wins; the media
+// type is the fallback for a block built without one.
+func (cb ContentBlock) IsImage() bool {
+	return cb.Image || strings.HasPrefix(cb.MediaType, "image/")
 }
 
 // Tool is a function/tool definition the model can call.
@@ -232,6 +283,16 @@ type AnthropicContent struct {
 	ToolUseID string      `json:"tool_use_id,omitempty"` // tool_result
 	Content   interface{} `json:"content,omitempty"`     // tool_result (string or blocks)
 	IsError   bool        `json:"is_error,omitempty"`    // tool_result
+
+	// Source and Title belong to image/document blocks: Source carries either
+	// inline base64 or a URL (the two forms Anthropic accepts), and Title is
+	// the document's name. Held as a map/string rather than a typed struct
+	// because nothing on the inbound side reads them yet — Anthropic
+	// client-facing is deliberately out of scope for now — so a shape that
+	// only has to survive marshalling is better than one that pretends to
+	// validate a payload nothing consumes.
+	Source map[string]interface{} `json:"source,omitempty"`
+	Title  string                 `json:"title,omitempty"`
 }
 
 // AnthropicTool is a tool definition in Anthropic wire format.
@@ -264,14 +325,208 @@ type OpenAIStreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
-// OpenAIMessage is a message in OpenAI wire format. Content may be a plain
-// string (simple case) or a list of parts (multimodal); tool calls live in
+// OpenAIMessage is a message in OpenAI wire format. Tool calls live in
 // ToolCalls on assistant messages, tool results are role="tool" messages.
 type OpenAIMessage struct {
-	Role       string           `json:"role"`
-	Content    string           `json:"content,omitempty"`
-	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"` // role == "tool"
+	Role       string               `json:"role"`
+	Content    OpenAIMessageContent `json:"content,omitempty"`
+	ToolCalls  []OpenAIToolCall     `json:"tool_calls,omitempty"`
+	ToolCallID string               `json:"tool_call_id,omitempty"` // role == "tool"
+}
+
+// OpenAIMessageContent is a message's content, which OpenAI lets a client send
+// either as a bare string (the simple case, and what hand-written curl and
+// every text-only client send) or as an array of typed parts (what any client
+// sending an image or a document must use).
+//
+// Declaring it as a plain `string` rejected the array form at *parse* time —
+// a 400 naming the field, thrown before routing, logging or any store row, so
+// the request was invisible and nothing explained it. That made Arbiter unable
+// to carry attachment traffic at all. This mirrors the fix already applied to
+// AnthropicSystem and AnthropicMessage for exactly the same reason on the
+// Anthropic side.
+//
+// Both shapes normalize to []ContentBlock, so nothing downstream sees two
+// forms and no handler has to branch on the shape.
+type OpenAIMessageContent []ContentBlock
+
+// UnmarshalJSON accepts a bare string or an array of parts.
+func (c *OpenAIMessageContent) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*c = nil
+		return nil
+	}
+
+	// A bare string: the whole content is one text block. An empty string
+	// yields no blocks rather than an empty text block, which would otherwise
+	// dedup against every other empty block in the content store.
+	if trimmed[0] == '"' {
+		var plain string
+		if err := json.Unmarshal(trimmed, &plain); err != nil {
+			return err
+		}
+		if plain == "" {
+			*c = nil
+			return nil
+		}
+		*c = []ContentBlock{TextBlock(plain)}
+		return nil
+	}
+
+	var parts []openAIContentPart
+	if err := json.Unmarshal(trimmed, &parts); err != nil {
+		return err
+	}
+	blocks := make([]ContentBlock, 0, len(parts))
+	for _, p := range parts {
+		if b, ok := p.toBlock(); ok {
+			blocks = append(blocks, b)
+		}
+	}
+	*c = blocks
+	return nil
+}
+
+// MarshalJSON emits a bare string when every block is text — so text-only
+// traffic produces a byte-identical body to before attachments existed, which
+// is what keeps prompt caching intact for the clients that never send one —
+// and the parts array only when it has to.
+func (c OpenAIMessageContent) MarshalJSON() ([]byte, error) {
+	if c.isAllText() {
+		return json.Marshal(c.text())
+	}
+	parts := make([]openAIContentPart, 0, len(c))
+	for _, b := range c {
+		parts = append(parts, blockToOpenAIPart(b))
+	}
+	return json.Marshal(parts)
+}
+
+// String returns the concatenated text of every text block, which is what a
+// caller that only understands text (the system-prompt join, the classifier's
+// signal extraction) wants. Attachment blocks contribute nothing — their
+// payload is not text and must never be folded into a prompt string.
+func (c OpenAIMessageContent) String() string { return c.text() }
+
+func (c OpenAIMessageContent) text() string {
+	var parts []string
+	for _, b := range c {
+		if b.Type == "text" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func (c OpenAIMessageContent) isAllText() bool {
+	for _, b := range c {
+		if b.Type != "text" {
+			return false
+		}
+	}
+	return true
+}
+
+// openAIContentPart is one element of an array-form `content`. The three shapes
+// a client actually sends: text, an image (a URL, usually a data: URL), and a
+// file (a document, with a filename and either a data: URL or an http one).
+type openAIContentPart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL *struct {
+		URL string `json:"url"`
+	} `json:"image_url,omitempty"`
+	File *struct {
+		Filename string `json:"filename"`
+		FileData string `json:"file_data"`
+	} `json:"file,omitempty"`
+}
+
+// toBlock converts a part to the internal block form. ok=false means the part
+// carried nothing usable (an unknown type, or an image/file with no payload),
+// which is skipped rather than turned into an empty text block.
+func (p openAIContentPart) toBlock() (ContentBlock, bool) {
+	switch p.Type {
+	case "text", "input_text":
+		if p.Text == "" {
+			return ContentBlock{}, false
+		}
+		return TextBlock(p.Text), true
+
+	case "image_url", "input_image":
+		if p.ImageURL == nil || p.ImageURL.URL == "" {
+			return ContentBlock{}, false
+		}
+		mediaType, data, isURL := splitDataURL(p.ImageURL.URL)
+		return AttachmentImageBlock(mediaType, data, "", isURL), true
+
+	case "file", "input_file":
+		if p.File == nil || p.File.FileData == "" {
+			return ContentBlock{}, false
+		}
+		mediaType, data, isURL := splitDataURL(p.File.FileData)
+		return AttachmentBlock(mediaType, data, p.File.Filename, isURL), true
+
+	default:
+		return ContentBlock{}, false
+	}
+}
+
+// blockToOpenAIPart renders an internal block back to a wire part.
+func blockToOpenAIPart(b ContentBlock) openAIContentPart {
+	switch b.Type {
+	case "attachment":
+		payload := joinDataURL(b)
+		if b.IsImage() {
+			return openAIContentPart{Type: "image_url", ImageURL: &struct {
+				URL string `json:"url"`
+			}{URL: payload}}
+		}
+		return openAIContentPart{Type: "file", File: &struct {
+			Filename string `json:"filename"`
+			FileData string `json:"file_data"`
+		}{Filename: b.Name, FileData: payload}}
+
+	default:
+		return openAIContentPart{Type: "text", Text: b.Text}
+	}
+}
+
+// splitDataURL separates a data: URL into its media type and base64 payload.
+// A plain http(s) URL is returned as-is with isURL=true — the upstream fetches
+// it itself, so there are no bytes for Arbiter to carry. An unparseable data
+// URL yields an empty media type rather than an error: the payload still
+// round-trips, and failing the whole request over a cosmetic header would be
+// worse than passing it through.
+func splitDataURL(raw string) (mediaType, data string, isURL bool) {
+	if !strings.HasPrefix(raw, "data:") {
+		return "", raw, true
+	}
+	rest := raw[len("data:"):]
+	comma := strings.IndexByte(rest, ',')
+	if comma < 0 {
+		return "", raw, false
+	}
+	header, payload := rest[:comma], rest[comma+1:]
+	mediaType = header
+	if semi := strings.IndexByte(mediaType, ';'); semi >= 0 {
+		mediaType = mediaType[:semi]
+	}
+	return mediaType, payload, false
+}
+
+// joinDataURL rebuilds the wire payload for an attachment: the data: URL form
+// for inline bytes, or the URL unchanged when the upstream is to fetch it.
+func joinDataURL(b ContentBlock) string {
+	if b.IsURL {
+		return b.Data
+	}
+	mediaType := b.MediaType
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	return "data:" + mediaType + ";base64," + b.Data
 }
 
 // OpenAIToolCall is a tool call requested by the assistant.

@@ -63,9 +63,57 @@ overrides both. Loopback is the default on purpose — see
 | `GET /admin/ui/content/repeated` | blocks of content that recur across requests |
 | `GET /admin/ui/content/block?hash=…` | the requests containing one block |
 
+### Attachments (images, PDFs, documents)
+
+Clients that send attachments use the array form of `content`:
+
+```json
+{"role": "user", "content": [
+  {"type": "text", "text": "what is in this image?"},
+  {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+]}
+```
+
+Both `image_url` and `file` parts are accepted, and both a `data:` URL (inline
+bytes) and an `http(s)` URL (which the upstream fetches itself). A document's
+`filename` is required by OpenAI's wire shape and is carried through, so
+`{"type":"file","file":{"filename":"report.pdf","file_data":"..."}}` survives
+the round trip intact.
+
+A message whose content is a bare string — every text-only client — still
+serializes as a bare string on the way out, byte-identical to before attachments
+existed. That is deliberate: emitting the array form unconditionally would
+change the bytes of every request and invalidate cached prompt prefixes for
+traffic that has nothing to do with attachments.
+
+Internally all of these are one `attachment` content block (media type, payload,
+filename, image flag); the translators own the per-format spelling. An
+attachment arriving from an OpenAI client can therefore reach an
+Anthropic-speaking upstream, where it goes out as an `image` or `document` block
+(by media type) with the filename as the document's `title`.
+
+**Attachment bytes are not stored.** The content store hashes an attachment over
+its *identity* — media type, name, and a hash of the payload — so the same file
+sent ten times deduplicates to one row and the row stays small, while
+`/admin/content/repeated` still shows what was sent. The payload itself is never
+written.
+
+**Anthropic client-facing parsing is not built** (a deliberate scope call:
+small market, and the Anthropic *upstream* direction works). An image or
+document block arriving on the Anthropic endpoint is still dropped by the
+translator.
+
 An unmatched path returns `{"code":404,"detail":"Not Found"}` rather than Go's
 default plain-text 404, so a client that parses every response as JSON doesn't
 choke on the one response that isn't.
+
+**Not served, deliberately:** `/v1/responses` (the OpenAI Responses API) — which
+Codex CLI v0.116+ uses *exclusively*, so Codex cannot currently use Arbiter as a
+backend; HTTP/SSE is sufficient to serve it, no WebSocket needed. Also
+`/v1/audio/*` (transcription/translation) and `/v1/embeddings`: the audio
+endpoints are multipart file uploads, a different ingress shape from this
+pipeline's JSON-in → JSON/SSE-out, and nothing in use calls them. See
+`REQUIREMENTS.md`'s known-gaps section for the scope of each.
 
 Both chat endpoints accept `stream: true` and respond with SSE in the same
 wire format as the request (formats are never mixed). Every response —

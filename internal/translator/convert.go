@@ -103,6 +103,30 @@ func blockToAnthropicContent(cb types.ContentBlock) types.AnthropicContent {
 		return types.AnthropicContent{Type: "tool_use", ID: cb.ToolUseID, Name: cb.ToolName, Input: cb.ToolInput}
 	case "tool_result":
 		return types.AnthropicContent{Type: "tool_result", ToolUseID: cb.ToolResultForID, Content: cb.ToolResult, IsError: cb.ToolIsError}
+	case "attachment":
+		// Outbound only for now: Anthropic's client-facing side is not a
+		// priority (small market), but an attachment arriving from an OpenAI
+		// client must still be able to reach an Anthropic-speaking upstream,
+		// or routing it there would silently drop it.
+		//
+		// The block type is decided by media type, not by whether a filename
+		// is present: `image` for image/*, `document` for everything else.
+		// Source is either inline base64 or a URL the upstream fetches.
+		source := map[string]interface{}{"type": "base64", "media_type": cb.MediaType, "data": cb.Data}
+		if cb.IsURL {
+			source = map[string]interface{}{"type": "url", "url": cb.Data}
+		}
+		blockType := "document"
+		if cb.IsImage() {
+			blockType = "image"
+		}
+		out := types.AnthropicContent{Type: blockType, Source: source}
+		if cb.Name != "" {
+			// Anthropic calls this a title; it is the closest thing to the
+			// OpenAI filename and is what keeps a document recognisable.
+			out.Title = cb.Name
+		}
+		return out
 	default:
 		return types.AnthropicContent{Type: "text", Text: cb.Text}
 	}
@@ -174,24 +198,29 @@ func openAIRequestToNormalized(req *types.OpenAIRequest) *types.NormalizedReques
 	for _, m := range req.Messages {
 		switch m.Role {
 		case "system":
-			if systemPrompt != "" {
-				systemPrompt += "\n\n"
+			// Only text reaches the system prompt: a system message carrying an
+			// attachment has no sensible place to put it, and silently dropping
+			// it is better than folding base64 into the prompt string.
+			if text := m.Content.String(); text != "" {
+				if systemPrompt != "" {
+					systemPrompt += "\n\n"
+				}
+				systemPrompt += text
 			}
-			systemPrompt += m.Content
 		case "tool":
 			messages = append(messages, types.Message{
 				Role: "user", // Anthropic carries tool_result blocks in a user-role message
 				Content: []types.ContentBlock{{
 					Type:            "tool_result",
 					ToolResultForID: m.ToolCallID,
-					ToolResult:      m.Content,
+					ToolResult:      m.Content.String(),
 				}},
 			})
 		default: // "user", "assistant"
-			var blocks []types.ContentBlock
-			if m.Content != "" {
-				blocks = append(blocks, types.TextBlock(m.Content))
-			}
+			// The content blocks carry attachments straight through — they are
+			// already in the internal form, so there is nothing to convert.
+			blocks := make([]types.ContentBlock, 0, len(m.Content)+len(m.ToolCalls))
+			blocks = append(blocks, m.Content...)
 			for _, tc := range m.ToolCalls {
 				var input map[string]interface{}
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &input) // best-effort; malformed args become a nil input map
@@ -225,17 +254,26 @@ func openAIRequestToNormalized(req *types.OpenAIRequest) *types.NormalizedReques
 func normalizedToOpenAIRequest(req *types.NormalizedRequest) *types.OpenAIRequest {
 	var messages []types.OpenAIMessage
 	if req.SystemPrompt != "" {
-		messages = append(messages, types.OpenAIMessage{Role: "system", Content: req.SystemPrompt})
+		messages = append(messages, types.OpenAIMessage{
+			Role:    "system",
+			Content: types.OpenAIMessageContent{types.TextBlock(req.SystemPrompt)},
+		})
 	}
 
 	for _, m := range req.Messages {
-		var textParts []string
+		var parts []types.ContentBlock
 		var toolCalls []types.OpenAIToolCall
 
 		for _, cb := range m.Content {
 			switch cb.Type {
 			case "text", "thinking":
-				textParts = append(textParts, cb.Text)
+				parts = append(parts, types.TextBlock(cb.Text))
+			case "attachment":
+				// Carried through as its own part. Dropping it here is what
+				// would make a vision or document request silently answer a
+				// different question, so it is appended even though the
+				// message may then serialize as the array form.
+				parts = append(parts, cb)
 			case "tool_use":
 				argsJSON, _ := json.Marshal(cb.ToolInput)
 				toolCalls = append(toolCalls, types.OpenAIToolCall{
@@ -255,18 +293,16 @@ func normalizedToOpenAIRequest(req *types.NormalizedRequest) *types.OpenAIReques
 				// pure) can come out reordered relative to the original.
 				messages = append(messages, types.OpenAIMessage{
 					Role:       "tool",
-					Content:    cb.ToolResult,
+					Content:    types.OpenAIMessageContent{types.TextBlock(cb.ToolResult)},
 					ToolCallID: cb.ToolResultForID,
 				})
-			default:
-				textParts = append(textParts, cb.Text)
 			}
 		}
 
-		if len(textParts) > 0 || len(toolCalls) > 0 {
+		if len(parts) > 0 || len(toolCalls) > 0 {
 			messages = append(messages, types.OpenAIMessage{
 				Role:      m.Role,
-				Content:   strings.Join(textParts, "\n"),
+				Content:   parts,
 				ToolCalls: toolCalls,
 			})
 		}
@@ -328,8 +364,10 @@ func openAIResponseToNormalized(resp *types.OpenAIResponse) *types.NormalizedRes
 	choice := resp.Choices[0]
 
 	var blocks []types.ContentBlock
-	if choice.Message.Content != "" {
-		blocks = append(blocks, types.TextBlock(choice.Message.Content))
+	// A response is text and tool calls; the response side never carries
+	// attachments, so its content string is the whole story.
+	if text := choice.Message.Content.String(); text != "" {
+		blocks = append(blocks, types.TextBlock(text))
 	}
 	for _, tc := range choice.Message.ToolCalls {
 		var input map[string]interface{}
@@ -415,7 +453,7 @@ func normalizedToOpenAIResponse(resp *types.NormalizedResponse) *types.OpenAIRes
 			Index: 0,
 			Message: types.OpenAIMessage{
 				Role:      "assistant",
-				Content:   content.String(),
+				Content:   types.OpenAIMessageContent{types.TextBlock(content.String())},
 				ToolCalls: toolCalls,
 			},
 			FinishReason: normalizedToOpenAIFinishReason(resp.StopReason),

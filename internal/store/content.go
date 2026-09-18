@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -166,6 +167,34 @@ func blockBody(cb types.ContentBlock) (kind string, body []byte, ok bool) {
 			return "", nil, false
 		}
 		return "tool_result", canonical, true
+
+	case "attachment":
+		// Attachments are hashed over their identity — media type, name and
+		// the payload's own hash — not over the payload. Two consequences,
+		// both wanted: the same PDF attached to ten requests hashes to one
+		// value and still dedups, and the row stays small, since a base64
+		// document can be megabytes and the body column would otherwise hold
+		// a copy of it.
+		//
+		// The payload itself is not stored, so a captured attachment
+		// reconstructs as its identity and not its bytes. Body stays nil,
+		// which is the hash-only shape the schema already describes.
+		//
+		// NOTE the hash is taken over the *base64* text, so a client that
+		// re-encodes the same file differently produces a new hash. That is
+		// the same best-effort dedup the rest of the store accepts, and its
+		// failure mode is more storage rather than wrong data.
+		sum := sha256.Sum256([]byte(cb.Data))
+		canonical, err := json.Marshal(struct {
+			MediaType string `json:"media_type"`
+			Name      string `json:"name,omitempty"`
+			IsURL     bool   `json:"is_url,omitempty"`
+			Payload   string `json:"payload_sha256"`
+		}{cb.MediaType, cb.Name, cb.IsURL, hex.EncodeToString(sum[:])})
+		if err != nil {
+			return "", nil, false
+		}
+		return "attachment", canonical, true
 
 	default:
 		// Any other block type (image and friends) is hash-only: the reference

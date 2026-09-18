@@ -372,3 +372,44 @@ step 3 + the 4a query surface is currently greenlit.
   caller changes.
 - **Cache-read/cache-write token pricing** is not modelled in the stored
   cost, so a stored `cost_usd` is not exact for a prompt-cached call.
+- **Attachments (images / PDFs / documents) — BUILT 2026-09-18** for the OpenAI
+  path, both directions, plus Anthropic *outbound*. `ContentBlock` gained an
+  `attachment` type (media type + payload + filename + image flag), and
+  `OpenAIMessage.Content` now accepts a bare string **or** an array of parts —
+  the latter had been a hard 400 at parse time, before routing or any store row,
+  so the request was invisible. `normalizedToOpenAIRequest` had to change too:
+  it was joining text into a single string and dropping everything else, so a
+  perfect parse could still never have emitted an attachment. Text-only traffic
+  still serializes as a bare string, which keeps prompt caching intact for
+  clients that never send one.
+  - **Still open:** Anthropic **client-facing** parsing (deliberately low
+    priority — small market; Anthropic *upstream* works). `AnthropicContent.Source`
+    is an untyped map since nothing reads it inbound yet, so it marshals but does
+    not validate — worth tightening when that side is built.
+  - **Client-side gating is a separate problem, and is why opencode still
+    refuses.** opencode decides whether a model accepts images from capability
+    metadata *before* sending, and `/models` advertises none — see the model
+    metadata item below. The translation path is not at fault.
+- **Model metadata & capabilities** — see the plan at
+  `~/.claude/plans/model-metadata-and-capabilities.md`. `/models` advertises only
+  `id`/`object`/`created`/`owned_by`, so a client gating on capabilities sees
+  nothing and assumes text-only. The litellm catalog Arbiter already converts
+  carries `supports_vision` (46% of 3,141 chat models),
+  `supports_function_calling` (73%), `supports_reasoning` (43%),
+  `supports_prompt_caching` (33%) and `supports_pdf_input` (15%), and
+  `catalog-convert` currently extracts **four** fields and discards all of it.
+  Capabilities ride the existing `model_catalog`; absence means unknown, never
+  false.
+- **`/v1/responses` (OpenAI Responses API) is missing entirely** — postponed
+  by the user (2026-09-17) but captured so it is not missed. **Codex CLI
+  v0.116+ uses it exclusively and no longer calls `/chat/completions` at all**,
+  so Codex cannot currently use Arbiter as a backend. HTTP/SSE suffices (no
+  WebSocket server needed); it is a real protocol adapter, not a thin alias —
+  own request shape (`input`), own typed event stream, and
+  `previous_response_id` for server-side continuity.
+- **Audio (`/v1/audio/transcriptions`, `/v1/audio/translations`) and
+  `/v1/embeddings` are deliberately out of scope, not gaps** (user,
+  2026-09-17). The audio endpoints are multipart file uploads — a different
+  ingress shape from this pipeline's JSON-in → normalize → route → JSON/SSE-out
+  — and no client in use calls them. Recorded here so a future reader does not
+  rediscover them as missing features.

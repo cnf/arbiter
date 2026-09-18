@@ -134,8 +134,8 @@ func TestOpenAIRequestSystemMessageExtraction(t *testing.T) {
 	req := &types.OpenAIRequest{
 		Model: "gpt-4o",
 		Messages: []types.OpenAIMessage{
-			{Role: "system", Content: "be concise"},
-			{Role: "user", Content: "hello"},
+			{Role: "system", Content: types.OpenAIMessageContent{types.TextBlock("be concise")}},
+			{Role: "user", Content: types.OpenAIMessageContent{types.TextBlock("hello")}},
 		},
 	}
 	norm := openAIRequestToNormalized(req)
@@ -184,7 +184,7 @@ func TestOpenAIResponseToNormalizedUsage(t *testing.T) {
 	resp := &types.OpenAIResponse{
 		Model: "gpt-4o",
 		Choices: []types.OpenAIChoice{{
-			Message:      types.OpenAIMessage{Role: "assistant", Content: "hi"},
+			Message:      types.OpenAIMessage{Role: "assistant", Content: types.OpenAIMessageContent{types.TextBlock("hi")}},
 			FinishReason: "stop",
 		}},
 		Usage: types.OpenAIUsage{

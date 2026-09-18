@@ -63,7 +63,7 @@ func newAffinityPipeline(rr *recordingRouter, fu *fakeUpstream, n fakeNormalizer
 	return NewPipeline(
 		nil, n, fakeDenormalizer{},
 		nil, rr, fu,
-		testProviders(), fallbacks, nil, nil, fakeLogger{}, ttl, affinityTestResolver(), nil, nil, nil)
+		testProviders(), fallbacks, nil, nil, fakeLogger{}, ttl, affinityTestResolver(), nil, nil, nil, nil)
 }
 
 func primaryRoute() types.Route {
@@ -201,7 +201,7 @@ func TestAffinityPinnedProviderInCooldownFallsThrough(t *testing.T) {
 func TestCacheTTLForUsesProviderOverride(t *testing.T) {
 	providers := testProviders()
 	providers["primary"] = types.ProviderConfig{Name: "primary", Models: []string{"m"}, CacheTTL: 30 * time.Second}
-	p := NewPipeline(nil, nil, nil, nil, nil, nil, providers, nil, nil, nil, fakeLogger{}, time.Minute, nil, nil, nil, nil)
+	p := NewPipeline(nil, nil, nil, nil, nil, nil, providers, nil, nil, nil, fakeLogger{}, time.Minute, nil, nil, nil, nil, nil)
 
 	if got := p.cacheTTLFor("primary"); got != 30*time.Second {
 		t.Fatalf("cacheTTLFor(primary) = %v, want the provider override 30s", got)
@@ -239,7 +239,7 @@ func TestForceAliasOverridesOnlyNamedAxes(t *testing.T) {
 
 	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
 	n := fakeNormalizer{model: "coding"}
-	p := NewPipeline(nil, n, fakeDenormalizer{}, []classifier.Classifier{effort}, policy, fu, provs, nil, nil, nil, fakeLogger{}, time.Minute, resolver, nil, nil, nil)
+	p := NewPipeline(nil, n, fakeDenormalizer{}, []classifier.Classifier{effort}, policy, fu, provs, nil, nil, nil, fakeLogger{}, time.Minute, resolver, nil, nil, nil, nil)
 
 	if _, err := p.Execute(context.Background(), []byte("please think about this problem"), "openai", "t1", ""); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -275,7 +275,7 @@ func TestExplicitModelPrecedenceOverAffinityPin(t *testing.T) {
 	// Turn 1: model "auto" (the full-auto alias, not a literal configured
 	// model) routes via the policy router and pins the conversation to claude
 	// under "auto".
-	pAuto := NewPipeline(nil, fakeNormalizer{model: "auto"}, fakeDenormalizer{}, nil, policy, fu, provs, nil, nil, nil, fakeLogger{}, time.Minute, resolver, nil, nil, nil)
+	pAuto := NewPipeline(nil, fakeNormalizer{model: "auto"}, fakeDenormalizer{}, nil, policy, fu, provs, nil, nil, nil, fakeLogger{}, time.Minute, resolver, nil, nil, nil, nil)
 	if _, err := pAuto.Execute(context.Background(), msg, "openai", "t1", ""); err != nil {
 		t.Fatalf("turn 1: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestExplicitModelPrecedenceOverAffinityPin(t *testing.T) {
 	// Turn 2: same conversation, but req.Model explicitly names gpt-4o — a
 	// declared model of a different provider. That must win over the pin,
 	// sending the request to gpt4.
-	pGPT := NewPipeline(nil, fakeNormalizer{model: "gpt-4o"}, fakeDenormalizer{}, nil, policy, fu, provs, nil, nil, nil, fakeLogger{}, time.Minute, nil, nil, nil, nil)
+	pGPT := NewPipeline(nil, fakeNormalizer{model: "gpt-4o"}, fakeDenormalizer{}, nil, policy, fu, provs, nil, nil, nil, fakeLogger{}, time.Minute, nil, nil, nil, nil, nil)
 	pGPT.affinity = pAuto.affinity
 	if _, err := pGPT.Execute(context.Background(), msg, "openai", "t2", ""); err != nil {
 		t.Fatalf("turn 2: %v", err)
@@ -316,7 +316,7 @@ func TestUnknownModelRejected(t *testing.T) {
 
 	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
 	n := fakeNormalizer{model: "anthropic/booboo"}
-	p := NewPipeline(nil, n, fakeDenormalizer{}, nil, policy, fu, provs, nil, nil, nil, fakeLogger{}, time.Minute, nil, nil, nil, nil)
+	p := NewPipeline(nil, n, fakeDenormalizer{}, nil, policy, fu, provs, nil, nil, nil, fakeLogger{}, time.Minute, nil, nil, nil, nil, nil)
 
 	_, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", "")
 	var unknownModelErr *arbitererrors.UnknownModelError

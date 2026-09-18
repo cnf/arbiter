@@ -12,6 +12,7 @@ import (
 	"github.com/cnf/arbiter/internal/config"
 	arbiterhttp "github.com/cnf/arbiter/internal/http"
 	"github.com/cnf/arbiter/internal/logging"
+	"github.com/cnf/arbiter/internal/pipeline"
 	"github.com/cnf/arbiter/internal/store"
 )
 
@@ -33,7 +34,7 @@ const reloadDebounce = 150 * time.Millisecond
 // built. Anything short of that — a syntax error mid-save, an invalid router,
 // an unset ${ENV_VAR} — logs and leaves the current runtime serving, so a bad
 // edit never takes Arbiter down.
-func watchConfig(ctx context.Context, path string, handler *arbiterhttp.Handler, logger logging.Logger, writer store.Writer) error {
+func watchConfig(ctx context.Context, path string, handler *arbiterhttp.Handler, logger logging.Logger, writer store.Writer, cooldowns *pipeline.CooldownStore, reader *store.Reader) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("create config watcher: %w", err)
@@ -85,7 +86,7 @@ func watchConfig(ctx context.Context, path string, handler *arbiterhttp.Handler,
 
 		case <-timerC:
 			timerC = nil
-			_ = reload(ctx, path, handler, logger, writer)
+			_ = reload(ctx, path, handler, logger, writer, cooldowns, reader)
 		}
 	}
 }
@@ -94,7 +95,7 @@ func watchConfig(ctx context.Context, path string, handler *arbiterhttp.Handler,
 // On any failure the previous runtime is left untouched and the error is
 // returned so the caller can report it — the file watcher only logs it,
 // while POST /admin/reload surfaces it to whoever asked.
-func reload(ctx context.Context, path string, handler *arbiterhttp.Handler, logger logging.Logger, writer store.Writer) error {
+func reload(ctx context.Context, path string, handler *arbiterhttp.Handler, logger logging.Logger, writer store.Writer, cooldowns *pipeline.CooldownStore, reader *store.Reader) error {
 	cfg, err := config.Load(path)
 	if err != nil {
 		logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "config_reload"})
@@ -102,7 +103,7 @@ func reload(ctx context.Context, path string, handler *arbiterhttp.Handler, logg
 		return err
 	}
 
-	p, err := buildPipeline(cfg, logger, writer)
+	p, err := buildPipeline(cfg, logger, writer, cooldowns, reader)
 	if err != nil {
 		logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "config_reload_build"})
 		slog.Warn("config reload rejected; keeping previous configuration", "config", path)

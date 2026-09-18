@@ -54,7 +54,7 @@ classifiers:
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	if _, err := buildPipeline(cfg, logging.NewStdoutLogger("error"), nil); err != nil {
+	if _, err := buildPipeline(cfg, logging.NewStdoutLogger("error"), nil, nil, nil); err != nil {
 		t.Fatalf("buildPipeline: %v (the llm classifier's fallback, declared after it, must still resolve)", err)
 	}
 }

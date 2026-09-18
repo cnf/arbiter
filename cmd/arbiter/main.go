@@ -62,20 +62,13 @@ func main() {
 		}
 	}()
 
-	p, err := buildPipeline(cfg, logger, writer)
-	if err != nil {
-		slog.Error("failed to build pipeline", "error", err)
-		os.Exit(1)
-	}
-	handler := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg), cfg.SessionAffinity.Header), logger)
-	admin := arbiterhttp.NewAdminHandler(func(ctx context.Context) error {
-		return reload(ctx, *configPath, handler, logger, writer)
-	}, logger)
-
 	// The stats reader opens its own handle on the same database file the
 	// writer feeds, rather than sharing the writer's handle, so a read never
 	// contends with the writer's single drain goroutine. A disabled store
 	// (storage.path unset) leaves it nil; the stats handlers report 503.
+	//
+	// Opened BEFORE the pipeline because a rate-limit guardrail seeds its counters
+	// from it — otherwise a per-day cap would reset on every config reload.
 	var reader *store.Reader
 	if cfg.Storage.Path != "" {
 		reader, err = store.OpenReader(cfg.Storage.Path)
@@ -89,6 +82,23 @@ func main() {
 			}
 		}()
 	}
+
+	// Created once and shared across reloads, so a provider's 429 backoff is not
+	// thrown away every time the config file is saved.
+	cooldowns := pipeline.NewCooldownStore()
+	p, err := buildPipeline(cfg, logger, writer, cooldowns, reader)
+	if err != nil {
+		slog.Error("failed to build pipeline", "error", err)
+		os.Exit(1)
+	}
+	handler := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg), cfg.SessionAffinity.Header), logger)
+	admin := arbiterhttp.NewAdminHandler(func(ctx context.Context) error {
+		return reload(ctx, *configPath, handler, logger, writer, cooldowns, reader)
+	}, logger)
+	// The cooldown reset is bound to the shared store, so it clears the state the
+	// live pipeline is actually using.
+	admin.SetClearCooldowns(cooldowns.ClearForAdmin)
+
 	stats := arbiterhttp.NewStatsHandler(reader, logger)
 
 	// The admin UI reads the same Reader as the JSON surface. It is a separate
@@ -137,7 +147,7 @@ func main() {
 	watchCtx, stopWatch := context.WithCancel(context.Background())
 	defer stopWatch()
 	go func() {
-		if err := watchConfig(watchCtx, *configPath, handler, logger, writer); err != nil {
+		if err := watchConfig(watchCtx, *configPath, handler, logger, writer, cooldowns, reader); err != nil {
 			slog.Error("config watcher stopped", "error", err)
 		}
 	}()
@@ -189,6 +199,10 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	// proxy in front can match on either independently; Arbiter's own control
 	// is the presence-only forward-auth gate.
 	r.HandleFunc("/admin/reload", arbiterhttp.Gate(forwardAuthHeader, admin.ReloadHandler)).Methods("POST")
+	// Clearing 429 backoff is a deliberate action, never a side effect of a
+	// reload — see AdminHandler.ClearCooldownsHandler. POST-only, like reload, so
+	// a fronting proxy can allow reads while denying this.
+	r.HandleFunc("/admin/cooldowns/clear", arbiterhttp.Gate(forwardAuthHeader, admin.ClearCooldownsHandler)).Methods("POST")
 	r.HandleFunc("/admin/stats", arbiterhttp.Gate(forwardAuthHeader, stats.OverallHandler)).Methods("GET")
 	r.HandleFunc("/admin/stats/providers", arbiterhttp.Gate(forwardAuthHeader, stats.ProvidersHandler)).Methods("GET")
 	r.HandleFunc("/admin/stats/epochs", arbiterhttp.Gate(forwardAuthHeader, stats.EpochsHandler)).Methods("GET")
@@ -422,7 +436,7 @@ func startSweeper(ctx context.Context, path, ttlSpec string, logger logging.Logg
 // adding a new classifier/router/guardrail type means adding a case here
 // (or, once there's a reason to, registering it into router.Registry /
 // classifier.Registry / guardrail.Registry instead of switching on it).
-func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Writer) (*pipeline.Pipeline, error) {
+func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Writer, cooldowns *pipeline.CooldownStore, reader *store.Reader) (*pipeline.Pipeline, error) {
 	providers := make(map[string]types.ProviderConfig, len(cfg.Providers))
 	for name, pc := range cfg.Providers {
 		timeout := 60 * time.Second
@@ -488,7 +502,7 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 
 	preGuardrails := make([]guardrail.Guardrail, 0, len(cfg.Guardrails.Pre))
 	for _, gc := range cfg.Guardrails.Pre {
-		g, err := buildGuardrail(gc)
+		g, err := buildGuardrail(gc, countSource(reader))
 		if err != nil {
 			return nil, fmt.Errorf("guardrail %q: %w", gc.Name, err)
 		}
@@ -496,7 +510,7 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 	}
 	postGuardrails := make([]guardrail.Guardrail, 0, len(cfg.Guardrails.Post))
 	for _, gc := range cfg.Guardrails.Post {
-		g, err := buildGuardrail(gc)
+		g, err := buildGuardrail(gc, countSource(reader))
 		if err != nil {
 			return nil, fmt.Errorf("guardrail %q: %w", gc.Name, err)
 		}
@@ -519,7 +533,7 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 		pinner = affinityPinner{sp}
 	}
 
-	p := pipeline.NewPipeline(t, t, t, classifiers, mainRouter, u, providers, cfg.Routing.FallbackProviders, preGuardrails, postGuardrails, logger, defaultCacheTTL, resolver, writer, costLookup, pinner)
+	p := pipeline.NewPipeline(t, t, t, classifiers, mainRouter, u, providers, cfg.Routing.FallbackProviders, preGuardrails, postGuardrails, logger, defaultCacheTTL, resolver, writer, costLookup, pinner, cooldowns)
 	// Every event this pipeline records is stamped with the hash of the config
 	// that built it, so spend can be compared across config changes.
 	p.SetConfigEpoch(cfg.Epoch())
@@ -886,7 +900,21 @@ func stringOneOf(m map[string]interface{}, keys ...string) (string, error) {
 	return value, nil
 }
 
-func buildGuardrail(gc config.GuardrailConfig) (guardrail.Guardrail, error) {
+// countSource converts a possibly-nil *store.Reader into a guardrail.CountSource.
+//
+// The conversion is explicit because a nil *store.Reader assigned to an interface
+// produces a NON-nil interface holding a nil pointer — so the guardrail's own
+// `counts == nil` check would pass and then panic on first use. Returning a true
+// nil interface when there is no reader keeps the "no store configured" case
+// behaving as the guardrail documents.
+func countSource(r *store.Reader) guardrail.CountSource {
+	if r == nil {
+		return nil
+	}
+	return r
+}
+
+func buildGuardrail(gc config.GuardrailConfig, counts guardrail.CountSource) (guardrail.Guardrail, error) {
 	switch gc.Type {
 	case "system_prompt":
 		prompt, _ := gc.Config["prompt"].(string)
@@ -895,7 +923,7 @@ func buildGuardrail(gc config.GuardrailConfig) (guardrail.Guardrail, error) {
 	case "rate_limit":
 		perMinute := intFromConfig(gc.Config, "per_minute")
 		perDay := intFromConfig(gc.Config, "per_day")
-		return guardrail.NewRateLimitGuardrail(gc.Name, perMinute, perDay), nil
+		return guardrail.NewRateLimitGuardrail(gc.Name, perMinute, perDay, counts), nil
 	case "prompt_rewrite":
 		// Every value is read here and validated in the constructor, so a typo'd
 		// mode or action is a config-load error rather than a guardrail that

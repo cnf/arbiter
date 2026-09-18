@@ -69,7 +69,7 @@ func reqFor(model string) *types.NormalizedRequest {
 // never contacted.
 func TestExplicitModelInCooldownReturns429(t *testing.T) {
 	up := &rateLimitedUpstream{}
-	p := NewPipeline(nil, nil, nil, nil, nil, up, testProviders(), nil, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil)
+	p := NewPipeline(nil, nil, nil, nil, nil, up, testProviders(), nil, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil, nil)
 
 	// Put the explicit model's provider into cooldown.
 	p.markCooldown("primary", time.Now().Add(time.Minute))
@@ -98,7 +98,7 @@ func TestExplicitModelInCooldownReturns429(t *testing.T) {
 func TestExplicitModelInCooldownDoesNotFallThrough(t *testing.T) {
 	up := &okUpstream{}
 	providers := testProviders()
-	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, []string{"fallback1"}, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil)
+	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, []string{"fallback1"}, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil, nil)
 	p.markCooldown("primary", time.Now().Add(time.Minute))
 
 	route := types.Route{Provider: "primary", Model: "m-primary", Config: providers["primary"], ExplicitModel: true}
@@ -115,7 +115,7 @@ func TestExplicitModelInCooldownDoesNotFallThrough(t *testing.T) {
 func TestExplicitModelLive429Returns429(t *testing.T) {
 	up := &rateLimitedUpstream{}
 	providers := testProviders()
-	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, []string{"fallback1"}, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil)
+	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, []string{"fallback1"}, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil, nil)
 
 	route := types.Route{Provider: "primary", Model: "m-primary", Config: providers["primary"], ExplicitModel: true}
 	_, _, _, _, err := p.tryUpstream(context.Background(), route, reqFor("m-primary"))
@@ -138,7 +138,7 @@ func TestExplicitModelLive429Returns429(t *testing.T) {
 func TestExplicitModelLive429StillRecordsCooldown(t *testing.T) {
 	up := &rateLimitedUpstream{}
 	providers := testProviders()
-	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, nil, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil)
+	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, nil, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil, nil)
 
 	route := types.Route{Provider: "primary", Model: "m-primary", Config: providers["primary"], ExplicitModel: true}
 	_, _, _, _, _ = p.tryUpstream(context.Background(), route, reqFor("m-primary"))
@@ -159,7 +159,7 @@ func TestExplicitModel429StillRetries(t *testing.T) {
 	primary.RetryMax = 2 // 3 attempts total
 	providers["primary"] = primary
 
-	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, nil, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil)
+	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, nil, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil, nil)
 	route := types.Route{Provider: "primary", Model: "m-primary", Config: primary, ExplicitModel: true}
 
 	if _, _, _, _, err := p.tryUpstream(context.Background(), route, reqFor("m-primary")); err == nil {
@@ -179,7 +179,7 @@ func TestExplicitModel5xxStillRetries(t *testing.T) {
 	primary.RetryMax = 2
 	providers["primary"] = primary
 
-	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, nil, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil)
+	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, nil, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil, nil)
 	route := types.Route{Provider: "primary", Model: "m-primary", Config: primary, ExplicitModel: true}
 
 	_, _, _, _, err := p.tryUpstream(context.Background(), route, reqFor("m-primary"))
@@ -200,7 +200,7 @@ func TestExplicitModel5xxStillRetries(t *testing.T) {
 func TestNonExplicitRouteStillFallsThroughOnCooldown(t *testing.T) {
 	up := &okUpstream{}
 	providers := testProviders()
-	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, []string{"fallback1"}, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil)
+	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, []string{"fallback1"}, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil, nil)
 	p.markCooldown("primary", time.Now().Add(time.Minute))
 
 	route := types.Route{Provider: "primary", Model: "m-primary", Config: providers["primary"]} // ExplicitModel false
@@ -216,7 +216,7 @@ func TestNonExplicitRouteStillFallsThroughOnLive429(t *testing.T) {
 	// primary 429s; fallback1 succeeds. Modelled with a per-provider upstream.
 	up := &perProviderUpstream{status: map[string]int{"primary": http.StatusTooManyRequests}}
 	providers := testProviders()
-	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, []string{"fallback1"}, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil)
+	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, []string{"fallback1"}, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil, nil)
 
 	route := types.Route{Provider: "primary", Model: "m-primary", Config: providers["primary"]} // ExplicitModel false
 	_, _, _, served, err := p.tryUpstream(context.Background(), route, reqFor("auto"))
@@ -234,7 +234,7 @@ func TestNonExplicitRouteStillFallsThroughOnLive429(t *testing.T) {
 func TestGroupMember429StillFallsThroughToSiblings(t *testing.T) {
 	up := &perProviderUpstream{status: map[string]int{"primary": http.StatusTooManyRequests}}
 	providers := testProviders()
-	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, nil, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil)
+	p := NewPipeline(nil, nil, nil, nil, nil, up, providers, nil, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil, nil)
 
 	route := types.Route{
 		Provider: "primary", Model: "m-primary", Config: providers["primary"],
@@ -253,7 +253,7 @@ func TestGroupMember429StillFallsThroughToSiblings(t *testing.T) {
 // path that matters — otherwise the whole change is inert.
 func TestLiteralModelRouteIsMarkedExplicit(t *testing.T) {
 	providers := testProviders()
-	p := NewPipeline(nil, nil, nil, nil, nil, &okUpstream{}, providers, nil, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil)
+	p := NewPipeline(nil, nil, nil, nil, nil, &okUpstream{}, providers, nil, nil, nil, fakeLogger{}, 0, nil, nil, nil, nil, nil)
 
 	route, ok := p.literalModelRoute("m-primary")
 	if !ok {

@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -70,8 +69,10 @@ type Pipeline struct {
 	fallbacks []string // ordered fallback provider names, tried on 429/5xx
 	providers map[string]types.ProviderConfig
 
-	cooldownMu sync.Mutex
-	cooldowns  map[string]time.Time // provider -> earliest time it may be tried again
+	// cooldowns is injected rather than owned, so it survives a reload — see
+	// cooldownStore. A map living here was thrown away on every config save,
+	// which re-opened a provider's flood the moment an unrelated setting changed.
+	cooldowns *CooldownStore
 
 	affinity        *affinityStore
 	defaultCacheTTL time.Duration // used when a served provider sets no cache_ttl override
@@ -147,7 +148,13 @@ func NewPipeline(
 	writer store.Writer,
 	costCatalog router.CostLatencyLookup,
 	pinner Pinner,
+	cooldowns *CooldownStore,
 ) *Pipeline {
+	if cooldowns == nil {
+		// Tests and any caller that does not care about reload survival get a
+		// working store rather than a nil dereference.
+		cooldowns = NewCooldownStore()
+	}
 	if writer == nil {
 		writer = store.NoopWriter{}
 	}
@@ -181,7 +188,7 @@ func NewPipeline(
 		upstream:        u,
 		providers:       providers,
 		fallbacks:       fallbacks,
-		cooldowns:       make(map[string]time.Time),
+		cooldowns:       cooldowns,
 		affinity:        newAffinityStore(pinner),
 		pinner:          pinner,
 		defaultCacheTTL: cacheTTL,
@@ -1213,24 +1220,21 @@ func (p *Pipeline) fallbackRoutes(failed types.Route, req *types.NormalizedReque
 
 // onCooldown reports whether provider is in its 429 cooldown window.
 func (p *Pipeline) onCooldown(provider string) (time.Time, bool) {
-	p.cooldownMu.Lock()
-	defer p.cooldownMu.Unlock()
-	until, ok := p.cooldowns[provider]
-	if !ok || time.Now().After(until) {
-		return time.Time{}, false
-	}
-	return until, true
+	return p.cooldowns.onCooldown(provider)
 }
 
 // markCooldown extends a provider's cooldown to `until` (never shortens an
 // existing one — a second 429 with a longer Retry-After extends, a shorter
 // one doesn't cut the current cooldown).
 func (p *Pipeline) markCooldown(provider string, until time.Time) {
-	p.cooldownMu.Lock()
-	defer p.cooldownMu.Unlock()
-	if until.After(p.cooldowns[provider]) {
-		p.cooldowns[provider] = until
-	}
+	p.cooldowns.markCooldown(provider, until)
+}
+
+// ClearCooldowns drops every provider's 429 backoff and returns how many were
+// active. Exposed for the deliberate reset the operator asked for: a config edit
+// must not clear cooldowns as a side effect, so this is its own action.
+func (p *Pipeline) ClearCooldowns() int {
+	return p.cooldowns.clear()
 }
 
 // classify runs all configured classifiers and merges their signals. With

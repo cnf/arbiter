@@ -2,11 +2,7 @@ package guardrail
 
 import (
 	"context"
-	"fmt"
-	"sync"
-	"time"
 
-	arbitererrors "github.com/cnf/arbiter/pkg/errors"
 	"github.com/cnf/arbiter/pkg/types"
 )
 
@@ -72,76 +68,5 @@ func (spg *SystemPromptGuardrail) ApplyPost(ctx context.Context, resp *types.Nor
 }
 
 func (spg *SystemPromptGuardrail) ShouldRun(req *types.NormalizedRequest) bool {
-	return true
-}
-
-// RateLimitGuardrail enforces simple per-minute/per-day request-count caps
-// using an in-memory sliding counter. This is a single-process limiter —
-// fine for Arbiter's one-binary-per-deployment model, but it resets on
-// restart and doesn't share state across replicas. Good enough for v1;
-// anything sturdier (Redis-backed, etc.) is a later guardrail, not a
-// rewrite of this one, since ApplyPre swaps in independently.
-type RateLimitGuardrail struct {
-	name      string
-	perMinute int
-	perDay    int
-
-	mu          sync.Mutex
-	minuteStart time.Time
-	minuteCount int
-	dayStart    time.Time
-	dayCount    int
-}
-
-// NewRateLimitGuardrail creates a rate limit guardrail.
-func NewRateLimitGuardrail(name string, perMinute, perDay int) *RateLimitGuardrail {
-	return &RateLimitGuardrail{
-		name:      name,
-		perMinute: perMinute,
-		perDay:    perDay,
-	}
-}
-
-func (rlg *RateLimitGuardrail) Name() string {
-	return rlg.name
-}
-
-// ApplyPre increments the request counters and rejects the request once
-// either window's cap is exceeded. A cap of 0 means "unlimited" for that
-// window, so config doesn't need a magic large number to opt out.
-func (rlg *RateLimitGuardrail) ApplyPre(ctx context.Context, req *types.NormalizedRequest) (*types.NormalizedRequest, error) {
-	rlg.mu.Lock()
-	defer rlg.mu.Unlock()
-
-	now := time.Now()
-	if now.Sub(rlg.minuteStart) >= time.Minute {
-		rlg.minuteStart = now
-		rlg.minuteCount = 0
-	}
-	if now.Sub(rlg.dayStart) >= 24*time.Hour {
-		rlg.dayStart = now
-		rlg.dayCount = 0
-	}
-
-	if rlg.perMinute > 0 && rlg.minuteCount >= rlg.perMinute {
-		msg := fmt.Sprintf("per-minute rate limit exceeded (%d/%d)", rlg.minuteCount, rlg.perMinute)
-		return nil, arbitererrors.NewGuardrailError(msg, 429, nil)
-	}
-	if rlg.perDay > 0 && rlg.dayCount >= rlg.perDay {
-		msg := fmt.Sprintf("per-day rate limit exceeded (%d/%d)", rlg.dayCount, rlg.perDay)
-		return nil, arbitererrors.NewGuardrailError(msg, 429, nil)
-	}
-
-	rlg.minuteCount++
-	rlg.dayCount++
-	return req, nil
-}
-
-func (rlg *RateLimitGuardrail) ApplyPost(ctx context.Context, resp *types.NormalizedResponse, route types.Route) (*types.NormalizedResponse, error) {
-	// No-op for post — counting happens on the way in, not the way out.
-	return resp, nil
-}
-
-func (rlg *RateLimitGuardrail) ShouldRun(req *types.NormalizedRequest) bool {
 	return true
 }

@@ -44,6 +44,7 @@ overrides both. Loopback is the default on purpose — see
 | `GET /health`        | liveness                             |
 | `GET /`              | 302 to `/admin/ui/`                  |
 | `POST /admin/reload` | reload config + catalog              |
+| `POST /admin/cooldowns/clear` | drop every provider's 429 backoff (deliberate; a reload does not) |
 | `GET /admin/stats`   | overall requests/tokens/cost/errors  |
 | `GET /admin/stats/providers` | spend by provider/model         |
 | `GET /admin/stats/epochs` | spend by config epoch             |
@@ -479,6 +480,39 @@ hourly sweep, because a stale row can sit in the table for up to a sweep
 interval and honouring it would pin a conversation past its idle timeout. With
 no store configured, pins stay in memory only — the behaviour before persistence
 existed.
+
+### What survives a config reload
+
+A reload rebuilds the whole pipeline — providers, routers, classifiers,
+guardrails — and swaps it in atomically. That is correct for everything derived
+from config, but **runtime state must not live inside the thing being rebuilt**,
+or editing an unrelated setting silently discards it. Three pieces of state are
+therefore held outside the pipeline and injected into each new one:
+
+| State | Where it lives | Survives |
+|---|---|---|
+| Session-affinity pins | `affinity_pins` table | reload **and** restart |
+| Rate-limit counters | seeded from the store | reload **and** restart |
+| Provider 429 cooldowns | in-process `CooldownStore` | reload only |
+
+Each was a real bug before:
+
+- **Pins** were lost on every config save, silently re-routing every live
+  conversation and costing it its warm prompt cache.
+- **Rate-limit counters** reset to zero, so a per-day cap of 1000 became 1000
+  again after each save — meaningless in practice. They are now seeded from the
+  request rows, so a cap reflects what actually happened rather than what this
+  process happens to have seen.
+- **Cooldowns** were cleared, so editing a config while a provider was backing off
+  immediately re-opened the flood and produced another 429. Clearing is now a
+  **deliberate action** (`POST /admin/cooldowns/clear`) rather than a side effect
+  of saving a file: a reload is what you do *while fixing something*, and it
+  should not undo the backoff you were relying on.
+
+Cooldowns are deliberately **not** persisted. A cooldown is short-lived backoff
+state measured in seconds, and a process that just started has no memory of the
+429 that caused it — honouring a stale one across a restart would be inventing
+knowledge Arbiter does not have.
 
 ### Group selection strategies
 

@@ -49,7 +49,7 @@ func TestClassifierCallRecordedOnceThenSkippedByAffinityPin(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: ""}, fakeDenormalizer{},
 		[]classifier.Classifier{fc}, &fakeRouter{route: primaryRoute()}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil, nil)
+		fakeLogger{}, time.Minute, nil, w, nil, nil, nil)
 
 	// Turn 1: no pin yet, classify runs, both the classifier event and the
 	// real request event must land.
@@ -114,7 +114,7 @@ func TestClassifierCallContentIsCaptured(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: ""}, fakeDenormalizer{},
 		[]classifier.Classifier{fc}, &fakeRouter{route: primaryRoute()}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil, nil)
+		fakeLogger{}, time.Minute, nil, w, nil, nil, nil)
 	p.SetCaptureContent(true)
 
 	if _, err := p.Execute(context.Background(), []byte("please fix this bug in the parser"), "openai", "t1", "chat-1"); err != nil {
@@ -162,7 +162,7 @@ func TestClassifierRationaleNamesTheInput(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: ""}, fakeDenormalizer{},
 		[]classifier.Classifier{fc}, &fakeRouter{route: primaryRoute()}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil, nil)
+		fakeLogger{}, time.Minute, nil, w, nil, nil, nil)
 
 	if _, err := p.Execute(context.Background(), []byte("please fix this bug in the parser"), "openai", "t1", "chat-1"); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -217,7 +217,7 @@ func TestClassifierCallContentIsGatedOnCapture(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: ""}, fakeDenormalizer{},
 		[]classifier.Classifier{fc}, &fakeRouter{route: primaryRoute()}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil, nil)
+		fakeLogger{}, time.Minute, nil, w, nil, nil, nil)
 
 	if _, err := p.Execute(context.Background(), []byte("please fix this bug in the parser"), "openai", "t1", "chat-1"); err != nil {
 		t.Fatalf("Execute: %v", err)

@@ -31,9 +31,29 @@ type Handler struct {
 }
 
 // Model describes a model exposed by a configured provider.
+//
+// It carries capability data alongside the identity because a client gates on
+// it: a client that sees no capability metadata assumes a model is text-only
+// and refuses to send an image before making any request at all. The values
+// come from the catalog (see config.ModelCatalogEntry); a model with no catalog
+// row has them all nil/empty, which means UNKNOWN rather than "none".
 type Model struct {
 	ID       string
 	Provider string
+
+	// InputModalities is what the model accepts. nil means unknown, and is
+	// deliberately distinguishable from an empty list: it is the difference
+	// between "nothing is known" and "nothing is accepted", and rendering the
+	// first as the second is a confident claim derived from no data.
+	InputModalities []string
+
+	// MaxInputTokens / MaxOutputTokens are nil when unstated.
+	MaxInputTokens  *int
+	MaxOutputTokens *int
+
+	// Metadata is free-form extra data carried through from the catalog.
+	// Nothing interprets it.
+	Metadata map[string]interface{}
 }
 
 // defaultSessionHeader is the inbound header Arbiter reads for a

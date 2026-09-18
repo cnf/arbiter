@@ -4,12 +4,31 @@ package types
 // provider+model. Costs are US dollars per million tokens. LatencyMsP50 is
 // a static estimate supplied by config; an empirical source (observed
 // latencies) can populate the same struct later without changing callers.
+//
+// It also carries what the model can do, because two consumers need that and
+// only one is about routing: the cost-aware group selector ignores it, while
+// /models advertises it so a client can tell whether a model accepts an image
+// before it sends one. Capabilities live here rather than in a parallel table
+// so a single catalog row answers both questions.
 type ModelCost struct {
 	Provider          string
 	Model             string
 	InputCostPerMTok  float64
 	OutputCostPerMTok float64
 	LatencyMsP50      int
+
+	// InputModalities is what the model accepts ("text", "image", "file").
+	// nil means UNKNOWN — see config.ModelCatalogEntry.InputModalities; a
+	// nil must never be rendered as an empty or text-only capability set.
+	InputModalities []string
+
+	// MaxInputTokens / MaxOutputTokens are nil when unstated.
+	MaxInputTokens  *int
+	MaxOutputTokens *int
+
+	// Metadata is free-form extra data, carried through to /models and read
+	// by nothing. See config.ModelCatalogEntry.Metadata.
+	Metadata map[string]interface{}
 }
 
 // Signals is the output of classification: the axes a router matches on.

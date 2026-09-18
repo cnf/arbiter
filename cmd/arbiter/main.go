@@ -501,12 +501,42 @@ func combineRouters(routers []router.Router) router.Router {
 // resolved target, since group/force aliases don't resolve to one fixed
 // provider.
 func configuredModels(cfg *config.Config) []arbiterhttp.Model {
+	// Catalog rows carry what each model can do, keyed provider+model exactly
+	// as the provider's declared model list is. Built into a lookup first so
+	// the model list stays a single pass and an unmatched model simply has no
+	// capability data (unknown, not none).
+	type capInfo struct {
+		modalities []string
+		maxIn      *int
+		maxOut     *int
+		metadata   map[string]interface{}
+	}
+	byModel := make(map[string]capInfo, len(cfg.ModelCatalog))
+	for _, e := range cfg.ModelCatalog {
+		byModel[e.Provider+"\x00"+e.Model] = capInfo{
+			modalities: e.InputModalities,
+			maxIn:      e.MaxInputTokens,
+			maxOut:     e.MaxOutputTokens,
+			metadata:   e.Metadata,
+		}
+	}
+
 	models := make([]arbiterhttp.Model, 0)
 	for provider, providerConfig := range cfg.Providers {
 		for _, model := range providerConfig.Models {
-			models = append(models, arbiterhttp.Model{ID: model, Provider: provider})
+			m := arbiterhttp.Model{ID: model, Provider: provider}
+			if c, ok := byModel[provider+"\x00"+model]; ok {
+				m.InputModalities = c.modalities
+				m.MaxInputTokens = c.maxIn
+				m.MaxOutputTokens = c.maxOut
+				m.Metadata = c.metadata
+			}
+			models = append(models, m)
 		}
 	}
+	// Aliases carry no capability data of their own: an alias resolves to a
+	// target at request time, so what it can accept depends on where it lands.
+	// Left unknown rather than guessed at from the members.
 	for name := range cfg.Aliases {
 		models = append(models, arbiterhttp.Model{ID: name, Provider: "alias"})
 	}
@@ -663,6 +693,10 @@ func modelCostEntries(entries []config.ModelCatalogEntry) []types.ModelCost {
 			InputCostPerMTok:  e.InputCostPerMTok,
 			OutputCostPerMTok: e.OutputCostPerMTok,
 			LatencyMsP50:      e.LatencyMsP50,
+			InputModalities:   e.InputModalities,
+			MaxInputTokens:    e.MaxInputTokens,
+			MaxOutputTokens:   e.MaxOutputTokens,
+			Metadata:          e.Metadata,
 		})
 	}
 	return out

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"reflect"
 	"strconv"
@@ -127,7 +128,7 @@ func TestBuildCatalogConvertsUnitsAndKeys(t *testing.T) {
 		},
 	}
 
-	rows, skips := buildCatalog(entries, m, []string{"claude", "litellm"})
+	rows, skips := testBuild(entries, m, []string{"claude", "litellm"})
 	if len(skips) != 0 {
 		t.Fatalf("unexpected skips: %v", skips)
 	}
@@ -173,12 +174,12 @@ func TestBuildCatalogSkipsNonChatEntries(t *testing.T) {
 		},
 	}
 
-	rows, skips := buildCatalog(entries, m, []string{"openai"})
+	rows, skips := testBuild(entries, m, []string{"openai"})
 	if len(rows) != 0 {
 		t.Fatalf("expected no rows (only embedding/image entries exist for openai), got %+v", rows)
 	}
-	if len(skips) != 1 || !strings.Contains(skips[0], "no chat-mode litellm entries") {
-		t.Fatalf("got skips %v, want one 'no chat-mode litellm entries' skip", skips)
+	if len(skips) != 1 || !strings.Contains(skips[0], "no models found for provider key") {
+		t.Fatalf("got skips %v, want one 'no models found for provider key' skip", skips)
 	}
 }
 
@@ -188,7 +189,7 @@ func TestBuildCatalogSkipsProviderWithNoMappingEntry(t *testing.T) {
 	entries := parseSample(t)
 	m := mapping{Providers: map[string]providerMap{"claude": {LitellmProvider: "anthropic"}}}
 
-	rows, skips := buildCatalog(entries, m, []string{"claude", "local"})
+	rows, skips := testBuild(entries, m, []string{"claude", "local"})
 	if len(rows) != 2 {
 		t.Fatalf("got %d rows, want 2 from claude", len(rows))
 	}
@@ -210,7 +211,7 @@ func TestBuildCatalogReportsKeyPrefixMismatch(t *testing.T) {
 		},
 	}
 
-	rows, skips := buildCatalog(entries, m, []string{"litellm"})
+	rows, skips := testBuild(entries, m, []string{"litellm"})
 	if len(rows) != 0 {
 		t.Fatalf("expected no rows, got %+v", rows)
 	}
@@ -236,7 +237,7 @@ func TestBuildCatalogLatencyResolution(t *testing.T) {
 		},
 	}
 
-	rows, skips := buildCatalog(entries, m, []string{"claude"})
+	rows, skips := testBuild(entries, m, []string{"claude"})
 	if len(skips) != 0 {
 		t.Fatalf("unexpected skips: %v", skips)
 	}
@@ -262,7 +263,7 @@ func TestOutputRoundTripsThroughConfig(t *testing.T) {
 			"claude": {LitellmProvider: "anthropic", LatencyMsP50: 900},
 		},
 	}
-	rows, skips := buildCatalog(entries, m, []string{"claude"})
+	rows, skips := testBuild(entries, m, []string{"claude"})
 	if len(skips) != 0 {
 		t.Fatalf("unexpected skips: %v", skips)
 	}
@@ -541,8 +542,8 @@ func TestBuildCatalogIsDeterministic(t *testing.T) {
 		},
 	}
 	names := []string{"claude", "z"} // caller-controlled order, sorted the way main.go sorts it
-	first, _ := buildCatalog(entries, m, names)
-	second, _ := buildCatalog(entries, m, names)
+	first, _ := testBuild(entries, m, names)
+	second, _ := testBuild(entries, m, names)
 	if len(first) != len(second) {
 		t.Fatalf("row count differs between runs")
 	}
@@ -608,4 +609,44 @@ providers:
 	if len(names) != 2 || names[0] != "claude" || names[1] != "gpt4" {
 		t.Fatalf("names = %v, want [claude gpt4]", names)
 	}
+}
+
+// testBuild is the pre-sources call shape, kept so the many existing tests that
+// build a map of litellm entries read unchanged. It wraps the entries as a
+// single litellm source named "test".
+func testBuild(entries map[string]litellmEntry, m mapping, providerNames []string) ([]config.ModelCatalogEntry, []string) {
+	rows, malformed, err := readLitellm(entriesAsReader(entries))
+	if err != nil {
+		panic("testBuild: " + err.Error())
+	}
+	if len(malformed) > 0 {
+		panic("testBuild: unexpected malformed entries: " + malformed[0])
+	}
+	return buildCatalog(map[string][]modelRow{"test": rows}, []string{"test"},
+		map[string]sourceKind{"test": kindLitellm}, m, providerNames)
+}
+
+// entriesAsReader re-encodes a litellm entry map to JSON so it can go back
+// through the real parser — the point being that tests exercise the actual
+// decode path rather than a hand-built modelRow.
+func entriesAsReader(entries map[string]litellmEntry) io.Reader {
+	b, err := json.Marshal(entries)
+	if err != nil {
+		panic(err)
+	}
+	return bytes.NewReader(b)
+}
+
+// testKinds derives the per-source kinds map from a mapping, the way main.go
+// resolves it at load time. Tests that build sources by hand use this so they
+// exercise the same provider-key rule the real loader applies.
+func testKinds(m mapping) map[string]sourceKind {
+	out := make(map[string]sourceKind, len(m.Sources))
+	for _, s := range m.Sources {
+		if s.Kind == "" {
+			continue
+		}
+		out[s.Path] = knownKinds[s.Kind]
+	}
+	return out
 }

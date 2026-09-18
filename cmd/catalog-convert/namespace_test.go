@@ -25,7 +25,7 @@ func TestBuildCatalogAppliesNamespace(t *testing.T) {
 		},
 	}
 
-	rows, skips := buildCatalog(entries, m, []string{"claude"})
+	rows, skips := testBuild(entries, m, []string{"claude"})
 	if len(skips) != 0 {
 		t.Fatalf("unexpected skips: %v", skips)
 	}
@@ -54,8 +54,8 @@ func TestBuildCatalogNamespaceEmptyIsUnchanged(t *testing.T) {
 		Providers: map[string]providerMap{"claude": {LitellmProvider: "anthropic", Namespace: ""}},
 	}
 
-	a, _ := buildCatalog(entries, withoutNamespace, []string{"claude"})
-	b, _ := buildCatalog(entries, withEmptyNamespace, []string{"claude"})
+	a, _ := testBuild(entries, withoutNamespace, []string{"claude"})
+	b, _ := testBuild(entries, withEmptyNamespace, []string{"claude"})
 	if len(a) != 1 || len(b) != 1 {
 		t.Fatalf("got %d and %d rows, want 1 each", len(a), len(b))
 	}
@@ -83,7 +83,7 @@ func TestBuildCatalogNamespaceComposesWithKeyPrefix(t *testing.T) {
 		},
 	}
 
-	rows, skips := buildCatalog(entries, m, []string{"proxy"})
+	rows, skips := testBuild(entries, m, []string{"proxy"})
 	if len(skips) != 0 {
 		t.Fatalf("unexpected skips: %v", skips)
 	}
@@ -112,7 +112,7 @@ func TestBuildCatalogLatencyKeyUsesNamespacedName(t *testing.T) {
 		LatencyMsP50: map[string]int{"claude/claude-sonnet-5": 750},
 	}
 
-	rows, _ := buildCatalog(entries, m, []string{"claude"})
+	rows, _ := testBuild(entries, m, []string{"claude"})
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1", len(rows))
 	}
@@ -138,7 +138,7 @@ func TestBuildCatalogNamespaceReachesCapabilities(t *testing.T) {
 		},
 	}
 
-	rows, _ := buildCatalog(entries, m, []string{"claude"})
+	rows, _ := testBuild(entries, m, []string{"claude"})
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1", len(rows))
 	}
@@ -165,7 +165,7 @@ func TestBuildCatalogLatencyKeyUsesBareName(t *testing.T) {
 		LatencyMsP50: map[string]int{"claude/claude-sonnet-5": 750},
 	}
 
-	rows, _ := buildCatalog(entries, m, []string{"claude"})
+	rows, _ := testBuild(entries, m, []string{"claude"})
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1", len(rows))
 	}
@@ -192,7 +192,7 @@ func TestBuildCatalogLatencyFallsBackToProviderDefault(t *testing.T) {
 		},
 	}
 
-	rows, _ := buildCatalog(entries, m, []string{"claude"})
+	rows, _ := testBuild(entries, m, []string{"claude"})
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1", len(rows))
 	}

@@ -536,35 +536,65 @@ The catalog file is inert on write: the config watcher tracks only the config
 file itself, so regenerating `catalog.yaml` does not reload anything until you
 ask for it.
 
-The file is produced by `cmd/catalog-convert`, which normalizes LiteLLM's
-price list (`model_prices_and_context_window.json`) into this shape — the
-runtime never parses a foreign schema itself. LiteLLM keys its list by model
-name and quotes USD *per token*; the catalog is keyed by provider/model in
-USD *per million tokens*, so the converter needs a small mapping file saying
-which `litellm_provider` each Arbiter provider corresponds to (the two
-changes are not interchangeable by guesswork):
+The file is produced by `cmd/catalog-convert`, which normalizes one or more
+upstream files into this shape — the runtime never parses a foreign schema
+itself. Upstreams differ in how they key models and in what units they quote
+costs, so the converter needs a mapping file saying which files to read and
+which provider key each Arbiter provider's models are filed under:
 
 ```bash
 devenv shell
-go run ./cmd/catalog-convert \
-  -mapping cmd/catalog-convert/mapping.example.yaml \
-  -config arbiter.yaml \
-  -out catalog.yaml \
-  model_prices_and_context_window.json
+go run ./cmd/catalog-convert -mapping mapping.yaml -config arbiter.yaml -out catalog.yaml
 ```
 
-`-mapping` is required (copy `mapping.example.yaml` and edit); the price list
-comes from the positional argument or stdin; output goes to stdout unless
-`-out` is given. **There is no per-model list to maintain**: every chat-mode
-LiteLLM entry filed under a mapped `litellm_provider` becomes a catalog row.
+`-mapping` is required (copy `mapping.example.yaml` and edit). The mapping's
+`sources:` list names the upstream files in **precedence order**, either as bare
+paths (the kind is sniffed from the file's content) or as
+`{path: ..., kind: ...}` when you want to be explicit:
+
+```yaml
+sources:
+  - litellm-prices.json          # first wins
+  - models-dev-api.json
+```
+
+Three kinds are supported:
+
+| kind | File | Key shape | Cost unit |
+|---|---|---|---|
+| `litellm` | LiteLLM's `model_prices_and_context_window.json` | flat model name + `litellm_provider` | **per token** (scaled to per-million) |
+| `modelsdev-api` | models.dev `api.json` | nested `provider → models` | **per million tokens** (used as-is) |
+| `modelsdev-models` | models.dev `models.json` | flat `<vendor>/<model>` | none (that file carries no cost) |
+
+**The cost unit differs per kind, and that is the one thing most worth getting
+right** — running models.dev's per-million figures through the litellm
+conversion would inflate every cost a millionfold, silently. Each reader owns
+its own unit.
+
+**First source wins**, and there is no per-field merge: a model already emitted
+is never overridden by a later source. Precedence is the list's order and nothing
+else — a rule you can predict without reading the implementation. Each provider
+may name its own `source:`; omitting it uses the first, so mapping files written
+before `sources:` existed keep working. A `source:` naming an unlisted file is an
+error, never a silent fallback — a typo there would build the catalog from the
+wrong file.
+
+The provider-key field depends on the source kind: `litellm_provider` for a
+`litellm` source, `models_dev_provider` for a `modelsdev-api` source, and neither
+for the flat `modelsdev-models` shape (that file has no provider dimension — its
+keys are already `<vendor>/<model>`, which is exactly how a prefixing aggregator
+names its models). The two fields are separate rather than one because they name
+different namespaces: a `litellm` value used against a models.dev source would
+silently match nothing.
+
 `-config` (optional) points at `arbiter.yaml` and limits generation to the
-providers it actually declares — skipping (with a reason on stderr) any
-mapping entry with no match there; omit it and every provider the mapping
-file lists is used instead. Latency is not in LiteLLM's list at all, so the
-mapping supplies it — a per-provider default with per-model overrides. Rows
-are emitted in the given provider order, so regenerating the same inputs
-produces the same file. The write is **atomic** (temp file, fsync, rename), so
-a crash mid-write cannot leave a truncated catalog — which matters because
+providers it actually declares — skipping (with a reason on stderr) any mapping
+entry with no match there; omit it and every provider the mapping file lists is
+used instead. Latency is in none of these sources, so the mapping supplies it —
+a per-provider default with per-model overrides. Rows are emitted in provider
+order with each provider's rows sorted by model, so regenerating the same inputs
+produces the same file. The write is **atomic** (temp file, fsync, rename), so a
+crash mid-write cannot leave a truncated catalog — which matters because
 regeneration is meant to run on a schedule against a live config.
 
 #### Namespacing the emitted model name

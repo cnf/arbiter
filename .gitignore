@@ -56,3 +56,9 @@ build/
 *.db
 *.db-shm
 *.db-wal
+
+# Downloaded upstream data (price lists, model catalogues) that
+# catalog-convert reads. These are fetched artifacts, large and routinely
+# replaced — they belong on disk, not in git. `sources:` in the mapping file
+# points at paths in here.
+support/downloads/

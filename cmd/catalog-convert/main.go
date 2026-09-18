@@ -80,33 +80,84 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	litellmIn := io.Reader(os.Stdin)
-	sourceName := "stdin"
-	if fs.NArg() == 1 {
-		f, err := os.Open(fs.Arg(0))
-		if err != nil {
-			return fmt.Errorf("open %s: %w", fs.Arg(0), err)
+	// Load every source named in the mapping, in order. The positional argument
+	// is kept as a compatibility path: with no sources: list, a single file on
+	// the command line is read as litellm, which is what every pre-sources
+	// invocation did.
+	sources := make(map[string][]modelRow, len(m.Sources))
+	// Resolved per source at load time — sniffed when the mapping left kind:
+	// unset — so buildCatalog never has to re-derive a shape from a path.
+	kinds := make(map[string]sourceKind, len(m.Sources))
+	var sourceOrder []string
+	var malformed []string
+	for _, s := range m.Sources {
+		if s.Path == "" {
+			return fmt.Errorf("mapping has a sources: entry with no path")
 		}
-		defer func() { _ = f.Close() }()
-		litellmIn = f
-		sourceName = filepath.Base(fs.Arg(0))
+		// An empty kind is sniffed from the file's content — see sniffKind.
+		var kind sourceKind
+		if s.Kind != "" {
+			k, ok := knownKinds[s.Kind]
+			if !ok {
+				return fmt.Errorf("source %s: unknown kind %q (want one of %s)", s.Path, s.Kind, kindList())
+			}
+			kind = k
+		}
+		resolved := resolveSourcePath(*mapPath, s.Path)
+		rows, bad, kindUsed, err := loadSource(resolved, kind)
+		if err != nil {
+			return err
+		}
+		kinds[s.Path] = kindUsed
+		for _, b := range bad {
+			malformed = append(malformed, fmt.Sprintf("%s: %s", sourceLabel(s.Path), b))
+		}
+		sources[s.Path] = rows
+		sourceOrder = append(sourceOrder, s.Path)
 	}
 
-	entries, malformed, err := parseLitellm(litellmIn)
-	if err != nil {
-		return err
+	if len(sourceOrder) == 0 {
+		// No sources: list — fall back to the positional argument (or stdin) as
+		// a single litellm source, so existing invocations keep working.
+		in := io.Reader(os.Stdin)
+		name := "stdin"
+		if fs.NArg() == 1 {
+			f, err := os.Open(fs.Arg(0))
+			if err != nil {
+				return fmt.Errorf("open %s: %w", fs.Arg(0), err)
+			}
+			defer func() { _ = f.Close() }()
+			in = f
+			name = fs.Arg(0)
+		}
+		rows, bad, err := readLitellm(in)
+		if err != nil {
+			return fmt.Errorf("parse source %s: %w", sourceLabel(name), err)
+		}
+		malformed = bad
+		sources[name] = rows
+		kinds[name] = kindLitellm
+		sourceOrder = append(sourceOrder, name)
+	} else if fs.NArg() > 0 {
+		return fmt.Errorf("the mapping declares sources:, so no positional price list is expected (remove it, or drop sources: from the mapping)")
 	}
+
 	for _, s := range malformed {
 		_, _ = fmt.Fprintln(stderr, "skipped "+s)
 	}
 
-	rows, skips := buildCatalog(entries, m, providerNames)
+	rows, skips := buildCatalog(sources, sourceOrder, kinds, m, providerNames)
 	for _, s := range skips {
 		_, _ = fmt.Fprintln(stderr, "skipped "+s)
 	}
 
 	if len(rows) == 0 {
-		return fmt.Errorf("no catalog rows produced; check the mapping and that the price list is the expected file")
+		return fmt.Errorf("no catalog rows produced; check the mapping and that the sources are the expected files")
+	}
+
+	sourceName := sourceLabel(sourceOrder[0])
+	if len(sourceOrder) > 1 {
+		sourceName = fmt.Sprintf("%s (+%d more)", sourceLabel(sourceOrder[0]), len(sourceOrder)-1)
 	}
 
 	var buf bytes.Buffer

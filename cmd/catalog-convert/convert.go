@@ -55,7 +55,18 @@ type litellmEntry struct {
 // (config.go treats a generated-file row naming an undeclared model as inert,
 // not a config error) — see the "catalog is a superset" note in README.md.
 type providerMap struct {
-	LitellmProvider string `yaml:"litellm_provider"`
+	// Source names which entry in the mapping file's sources: list this
+	// provider's models come from. Empty means the first source, so every
+	// mapping file written before sources existed keeps working unchanged.
+	Source string `yaml:"source,omitempty"`
+	// LitellmProvider is the litellm_provider this provider's models are filed
+	// under, for a source of kind litellm.
+	LitellmProvider string `yaml:"litellm_provider,omitempty"`
+	// ModelsDevProvider is the models.dev provider key, for a source of kind
+	// modelsdev-api. Separate from LitellmProvider rather than reusing it,
+	// because the two name different namespaces and a single field would make a
+	// litellm value silently match nothing in a models.dev source.
+	ModelsDevProvider string `yaml:"models_dev_provider,omitempty"`
 	// KeyPrefix strips a namespacing prefix LiteLLM puts on the *input* key
 	// (e.g. "openrouter/anthropic/claude-3.5-sonnet" -> "anthropic/claude-3.5-sonnet").
 	KeyPrefix string `yaml:"key_prefix,omitempty"`
@@ -87,6 +98,16 @@ type providerMap struct {
 // wired up) would otherwise fail every run, and a gate that always fails is one
 // nobody reads.
 type mapping struct {
+	// Sources lists the upstream files to read, in precedence order: the first
+	// source that yields a model wins, and a later source never overrides an
+	// entry already emitted. Paths resolve relative to the mapping file's own
+	// directory (like model_catalog_file: in Arbiter's config), so a mapping
+	// sitting next to its downloads can name them plainly.
+	//
+	// Order is the whole precedence rule — there is no merge and no per-field
+	// override, deliberately: a rule you can predict without reading the
+	// implementation is what keeps a silent-failure tool trustworthy.
+	Sources      []sourceSpec           `yaml:"sources,omitempty"`
 	Providers    map[string]providerMap `yaml:"providers"`
 	LatencyMsP50 map[string]int         `yaml:"latency_ms_p50,omitempty"`
 	Manual       []string               `yaml:"manual,omitempty"`
@@ -249,60 +270,102 @@ func (m mapping) latencyOverride(provider, model string) (int, bool) {
 	return 0, false
 }
 
-// buildCatalog emits one catalog row per LiteLLM chat-mode entry under each
-// named provider's litellm_provider, for every name in providerNames — in
-// that order, so the caller controls determinism (main.go sorts it). A name
-// with no mapping entry, or whose litellm_provider matches nothing in the
-// price list, is skipped with a reason rather than silently producing zero
-// rows for it.
+// buildCatalog emits one catalog row per model a provider's configured source
+// yields, for every name in providerNames — in that order, so the caller
+// controls determinism (main.go sorts it). A name with no mapping entry, or
+// whose source matched nothing, is skipped with a reason rather than silently
+// producing zero rows for it.
 //
-// There is no per-model allow-list: pulling everything under a
-// litellm_provider is what removes the old mapping file's maintenance burden
-// (keeping a model list in sync with arbiter.yaml by hand). An emitted row for
-// a model the operator hasn't declared is simply unused — see README.md's
-// "Model pricing catalog" section.
-func buildCatalog(entries map[string]litellmEntry, m mapping, providerNames []string) ([]config.ModelCatalogEntry, []string) {
-	keys := make([]string, 0, len(entries))
-	for k := range entries {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
+// First-source-wins: a model already emitted for this provider is skipped by a
+// later source and never overridden. Precedence is the mapping file's sources:
+// order and nothing else, so there is no merge logic and no per-field override —
+// a rule you can predict without reading the implementation.
+//
+// There is no per-model allow-list: pulling everything under a provider key is
+// what removes the old mapping file's maintenance burden (keeping a model list
+// in sync with arbiter.yaml by hand). An emitted row for a model the operator
+// hasn't declared is simply unused — see README.md's "Model pricing catalog"
+// section.
+//
+// sources is the loaded form of the mapping file's sources: list, keyed by the
+// path as written. A provider's Source names one of them; empty means the first.
+func buildCatalog(sources map[string][]modelRow, sourceOrder []string, kinds map[string]sourceKind, m mapping, providerNames []string) ([]config.ModelCatalogEntry, []string) {
 	var out []config.ModelCatalogEntry
 	var skips []string
+
 	for _, p := range providerNames {
 		pm, ok := m.Providers[p]
 		if !ok {
 			skips = append(skips, fmt.Sprintf("%s: no mapping entry (add it under providers: in the mapping file)", p))
 			continue
 		}
-		if pm.LitellmProvider == "" {
-			skips = append(skips, fmt.Sprintf("%s: mapping entry has no litellm_provider", p))
+
+		sourceKey, rows, err := pickSource(pm, sources, sourceOrder)
+		if err != nil {
+			skips = append(skips, fmt.Sprintf("%s: %v", p, err))
 			continue
 		}
 
+		// Which provider key in the source this provider's models are filed
+		// under. The kinds name it differently, so the mapping says which — a
+		// single field would make a litellm value silently match nothing in a
+		// models.dev source.
+		//
+		// The flat modelsdev-models shape has NO provider dimension at all: its
+		// keys are already "<vendor>/<model>", which is exactly how a prefixing
+		// aggregator names its models. So no provider key is required there, and
+		// every row is eligible — which is what makes such an aggregator work
+		// through the generic machinery rather than needing special-casing.
+		sourceKind := kinds[sourceKey]
+		wantProvider := pm.LitellmProvider
+		if sourceKind == kindModelsDevAPI {
+			wantProvider = pm.ModelsDevProvider
+		}
+		flat := sourceKind == kindModelsDev
+		if wantProvider == "" && !flat {
+			skips = append(skips, fmt.Sprintf("%s: mapping entry names no provider key for source %s (set litellm_provider or models_dev_provider)", p, sourceLabel(sourceKey)))
+			continue
+		}
+
+		// Sort this provider's rows before emitting, rather than trusting the
+		// loader to have done it: buildCatalog is called with hand-built rows in
+		// tests and could be called from elsewhere, and a map-ordered input
+		// would make the output non-deterministic — the same inputs producing a
+		// differently-ordered catalog on each run, which defeats diffing the
+		// generated file.
+		ordered := make([]modelRow, 0, len(rows))
+		for _, row := range rows {
+			if !flat && row.Provider != wantProvider {
+				continue
+			}
+			ordered = append(ordered, row)
+		}
+		sort.Slice(ordered, func(i, j int) bool { return ordered[i].Key < ordered[j].Key })
+
 		matched := 0
-		for _, key := range keys {
-			e := entries[key]
-			if e.LitellmProvider != pm.LitellmProvider {
-				continue
-			}
-			if e.Mode != "" && e.Mode != "chat" {
-				continue
-			}
-			model := key
+		seen := make(map[string]bool)
+		for _, row := range ordered {
+			model := row.Key
 			if pm.KeyPrefix != "" {
-				if !strings.HasPrefix(key, pm.KeyPrefix) {
-					skips = append(skips, fmt.Sprintf("%s: litellm key %q (litellm_provider %q) does not start with configured key_prefix %q", p, key, pm.LitellmProvider, pm.KeyPrefix))
+				if !strings.HasPrefix(row.Key, pm.KeyPrefix) {
+					skips = append(skips, fmt.Sprintf("%s: key %q (provider %q) does not start with configured key_prefix %q", p, row.Key, wantProvider, pm.KeyPrefix))
 					continue
 				}
-				model = strings.TrimPrefix(key, pm.KeyPrefix)
+				model = strings.TrimPrefix(row.Key, pm.KeyPrefix)
 			}
 			// Namespace the emitted name so it matches how the provider's models
 			// are declared in arbiter.yaml. Applied after the key_prefix strip
 			// and before the latency lookup, so latency_ms_p50 keys stay the
 			// same shape as the emitted model.
 			model = pm.Namespace + model
+
+			// First-source-wins. A model already emitted for this provider is
+			// left alone, so ordering the sources: list is the whole precedence
+			// mechanism.
+			if seen[model] {
+				continue
+			}
+			seen[model] = true
 
 			latency := pm.LatencyMsP50
 			if v, ok := m.latencyOverride(p, model); ok {
@@ -311,20 +374,40 @@ func buildCatalog(entries map[string]litellmEntry, m mapping, providerNames []st
 			out = append(out, config.ModelCatalogEntry{
 				Provider:          p,
 				Model:             model,
-				InputCostPerMTok:  perMTok(e.InputCostPerToken),
-				OutputCostPerMTok: perMTok(e.OutputCostPerToken),
+				InputCostPerMTok:  row.InputCostPerMTok,
+				OutputCostPerMTok: row.OutputCostPerMTok,
 				LatencyMsP50:      latency,
-				InputModalities:   inputModalities(e),
-				MaxInputTokens:    tokenLimit(e.MaxInputTokens),
-				MaxOutputTokens:   tokenLimit(e.MaxOutputTokens),
-				Metadata:          extraMetadata(e),
+				InputModalities:   row.InputModalities,
+				MaxInputTokens:    row.MaxInputTokens,
+				MaxOutputTokens:   row.MaxOutputTokens,
+				Metadata:          row.Metadata,
 			})
 			matched++
 		}
 		if matched == 0 {
-			skips = append(skips, fmt.Sprintf("%s: no chat-mode litellm entries found for litellm_provider %q", p, pm.LitellmProvider))
+			skips = append(skips, fmt.Sprintf("%s: no models found for provider key %q in source %s", p, wantProvider, sourceLabel(sourceKey)))
 		}
 	}
 	sort.Strings(skips)
 	return out, skips
+}
+
+// pickSource resolves a provider's source entry, defaulting to the first listed
+// when unset. A name that matches no entry is an error rather than a silent
+// fallback to the first: a typo there would otherwise produce a catalog built
+// from the wrong file, which is exactly the kind of silent wrongness this tool
+// has to avoid.
+func pickSource(pm providerMap, sources map[string][]modelRow, order []string) (string, []modelRow, error) {
+	if len(order) == 0 {
+		return "", nil, fmt.Errorf("mapping declares no sources: (add a sources: list naming the upstream files)")
+	}
+	if pm.Source == "" {
+		first := order[0]
+		return first, sources[first], nil
+	}
+	rows, ok := sources[pm.Source]
+	if !ok {
+		return "", nil, fmt.Errorf("source %q is not listed in sources: (valid: %s)", pm.Source, strings.Join(order, ", "))
+	}
+	return pm.Source, rows, nil
 }

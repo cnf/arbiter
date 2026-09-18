@@ -1,33 +1,65 @@
-# Example mapping for catalog-convert: says which litellm_provider each
-# Arbiter provider corresponds to. Copy next to your config and edit.
+# Example mapping for catalog-convert: says which upstream files to read and
+# which provider key each Arbiter provider's models are filed under.
+# Copy next to your config and edit.
 #
 #   devenv shell -- go run ./cmd/catalog-convert \
-#     -mapping cmd/catalog-convert/mapping.example.yaml \
-#     -config arbiter.yaml \
-#     -out catalog.yaml \
-#     model_prices_and_context_window.json
+#     -mapping mapping.yaml -config arbiter.yaml -out catalog.yaml
 #
-# There is no per-model list to maintain: every chat-mode entry LiteLLM files
-# under a mapped litellm_provider becomes a catalog row. `-config arbiter.yaml`
-# limits generation to the providers it actually declares (skipping any
-# mapping entry with no match there); omit -config and every provider listed
-# below is used instead.
+# ---------------------------------------------------------------------------
+# sources: the upstream files, in PRECEDENCE ORDER.
+# ---------------------------------------------------------------------------
 #
-# `key_prefix` strips a namespacing prefix LiteLLM uses for some providers
+# Each entry is either a bare path (kind sniffed from the file's content) or an
+# object when you want to be explicit:
+#
+#   sources:
+#     - litellm-prices.json
+#     - {path: api.json, kind: modelsdev-api}
+#
+# Paths resolve relative to THIS file's directory, like model_catalog_file: in
+# Arbiter's config — so a mapping sitting next to its downloads names them
+# plainly. With a sources: list, no positional price list is expected.
+#
+# Kinds:
+#   litellm           LiteLLM's model_prices_and_context_window.json
+#                     (costs are per TOKEN; scaled to per-million here)
+#   modelsdev-api     models.dev api.json — provider-nested, carries cost
+#                     (costs are ALREADY per million tokens)
+#   modelsdev-models  models.dev models.json — flat "<vendor>/<model>" keys,
+#                     no cost, no provider dimension
+#
+# First source wins: a model already emitted is never overridden by a later
+# source, and there is no per-field merge. Precedence is this list's order and
+# nothing else — a rule you can predict without reading the implementation.
+#
+# The cost unit differs per kind and is handled by each reader. It is the one
+# thing most worth getting right: models.dev figures run through the litellm
+# conversion would be inflated a millionfold, silently.
+
+sources:
+  - litellm-prices.json        # first wins
+  - models-dev-api.json
+  - models-dev-models.json
+
+# `-config arbiter.yaml` limits generation to the providers it actually
+# declares (skipping any mapping entry with no match there); omit -config and
+# every provider listed below is used instead.
+#
+# `key_prefix` strips a namespacing prefix the upstream puts on the key
 # (e.g. "openrouter/anthropic/claude-3.5-sonnet") before the remainder becomes
 # the catalog row's `model` — which is exactly the string you'd write under
 # that provider's `models:` in arbiter.yaml, so no further translation is
-# needed. A litellm_provider entry whose key doesn't start with the configured
-# prefix is reported on stderr rather than guessed at.
+# needed. A key that doesn't start with the configured prefix is reported on
+# stderr rather than guessed at.
 #
 # `namespace` adds a prefix to the emitted model name. It is the other direction
 # from key_prefix, and both are needed because providers differ in which side
-# carries the namespace: one whose LiteLLM keys are longer than its declared
-# names wants key_prefix, while one whose LiteLLM keys are bare but whose models
+# carries the namespace: one whose upstream keys are longer than its declared
+# names wants key_prefix, while one whose upstream keys are bare but whose models
 # are declared under a namespace (an omniroute-style prefixing proxy, or a
 # self-hosted proxy fronting another vendor's API) wants namespace. Arbiter joins
 # a row to a declared model on the exact string, so a missing namespace means the
-# rows are emitted but never read.
+# rows are emitted but never read — silently.
 #
 # Rows for models you haven't declared in arbiter.yaml are simply unused — see
 # README.md's "Group selection strategies" section for why that's fine.
@@ -45,12 +77,13 @@
 # its own file keeps the report pure JSON, with none of the log lines that share
 # stderr.
 #
-# Latency is NOT in LiteLLM's price list. `latency_ms_p50` sets a per-provider
+# Latency is NOT in any of these sources. `latency_ms_p50` sets a per-provider
 # default; the top-level `latency_ms_p50` map overrides it per "provider/model"
-# (using the model name as it appears in the generated catalog, i.e. after
-# key_prefix is stripped). Omit both and rows are written with latency 0 (the
-# `fastest` strategy treats 0 as unknown and ranks such members last, so a
-# real figure is worth supplying for anything you intend to select by speed).
+# (using the emitted name, i.e. after key_prefix and namespace — both spellings
+# resolve, so a key written against the bare name keeps working if a namespace is
+# added later). Omit both and rows are written with latency 0 (the `fastest`
+# strategy treats 0 as unknown and ranks such members last, so a real figure is
+# worth supplying for anything you intend to select by speed).
 
 providers:
   claude:
@@ -66,6 +99,16 @@ providers:
     litellm_provider: openrouter
     key_prefix: "openrouter/"
     latency_ms_p50: 2500
+
+  opencode_zen:
+    source: models-dev-api.json
+    models_dev_provider: opencode
+
+  omni:
+    # An aggregator whose models are already named "<vendor>/<model>" — exactly
+    # the flat file's key shape, so no prefix handling is needed or wanted, and
+    # no provider key either: that file has no provider dimension.
+    source: models-dev-models.json
 
 # Per-model latency overrides, keyed "provider/model" as Arbiter sees them —
 # i.e. the emitted name, including any namespace. Both spellings resolve, so a

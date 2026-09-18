@@ -241,7 +241,7 @@ func TestFloatTokenLimitsDoNotDropTheEntry(t *testing.T) {
 	}
 
 	m := mapping{Providers: map[string]providerMap{"xai": {LitellmProvider: "xai"}}}
-	rows, _ := buildCatalog(entries, m, []string{"xai"})
+	rows, _ := testBuild(entries, m, []string{"xai"})
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1 — the model must survive with its cost", len(rows))
 	}

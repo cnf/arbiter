@@ -143,7 +143,7 @@ func TestBuildCatalogCarriesCapabilities(t *testing.T) {
 		"claude": {LitellmProvider: "anthropic"},
 	}}
 
-	rows, _ := buildCatalog(entries, m, []string{"claude"})
+	rows, _ := testBuild(entries, m, []string{"claude"})
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
@@ -179,7 +179,7 @@ func TestBuildCatalogLeavesUnknownRowsBare(t *testing.T) {
 		"gpt4": {LitellmProvider: "openai"},
 	}}
 
-	rows, _ := buildCatalog(entries, m, []string{"gpt4"})
+	rows, _ := testBuild(entries, m, []string{"gpt4"})
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}

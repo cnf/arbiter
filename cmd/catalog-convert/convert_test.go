@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -291,7 +292,9 @@ func TestOutputRoundTripsThroughConfig(t *testing.T) {
 		t.Fatalf("round-trip changed row count: %d -> %d", len(rows), len(round.ModelCatalog))
 	}
 	for i := range rows {
-		if round.ModelCatalog[i] != rows[i] {
+		// reflect.DeepEqual, not ==: a catalog row now carries a modality
+		// slice and a metadata map, which makes the struct non-comparable.
+		if !reflect.DeepEqual(round.ModelCatalog[i], rows[i]) {
 			t.Errorf("row %d changed: %+v -> %+v", i, rows[i], round.ModelCatalog[i])
 		}
 	}
@@ -544,7 +547,7 @@ func TestBuildCatalogIsDeterministic(t *testing.T) {
 		t.Fatalf("row count differs between runs")
 	}
 	for i := range first {
-		if first[i] != second[i] {
+		if !reflect.DeepEqual(first[i], second[i]) {
 			t.Errorf("row %d differs between runs: %+v vs %+v", i, first[i], second[i])
 		}
 	}

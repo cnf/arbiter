@@ -79,12 +79,42 @@ type StorageConfig struct {
 
 // ModelCatalogEntry is one row of the static cost/latency catalog. Costs are
 // US dollars per million tokens; latency is a p50 estimate in milliseconds.
+//
+// A row also carries what the model can *do*, not just what it costs, because
+// clients gate on capability metadata: a client that sees none assumes the
+// model is text-only and refuses to send an image at all. The information comes
+// from the upstream price list (see cmd/catalog-convert), which carries far more
+// than prices.
 type ModelCatalogEntry struct {
 	Provider          string  `yaml:"provider"`
 	Model             string  `yaml:"model"`
 	InputCostPerMTok  float64 `yaml:"input_cost_per_mtok"`
 	OutputCostPerMTok float64 `yaml:"output_cost_per_mtok"`
 	LatencyMsP50      int     `yaml:"latency_ms_p50,omitempty"`
+
+	// InputModalities lists what the model accepts: "text", "image", "file".
+	//
+	// ABSENT MEANS UNKNOWN, and unknown is not the same as none. The upstream
+	// list records vision support for under half its chat models, so treating
+	// absence as "no" would be a confidently wrong answer for the majority —
+	// and it is exactly the failure that motivated this field. A model known to
+	// be text-only carries ["text"]; a model nothing is known about carries no
+	// field at all.
+	InputModalities []string `yaml:"input_modalities,omitempty"`
+
+	// MaxInputTokens / MaxOutputTokens are the model's context and completion
+	// limits, when the upstream states them. Pointers so "unstated" stays
+	// distinguishable from a genuine zero.
+	MaxInputTokens  *int `yaml:"max_input_tokens,omitempty"`
+	MaxOutputTokens *int `yaml:"max_output_tokens,omitempty"`
+
+	// Metadata is free-form, operator-supplied extra data. NOTHING READS IT:
+	// it exists to be carried into the /models response, and that is the whole
+	// contract. Anything with a consumer gets a typed field instead — an
+	// untyped map that two packages branch on is the trap this codebase has
+	// already hit once (the classifier's `labels:`), and a map that is only
+	// ever forwarded cannot drift into that.
+	Metadata map[string]interface{} `yaml:"metadata,omitempty"`
 }
 
 // SessionAffinityConfig controls how requests are pinned to whichever

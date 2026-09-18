@@ -15,11 +15,29 @@ import (
 // model_prices_and_context_window.json that this converter consumes. The list
 // is keyed by model name and rows carry many more fields than these; unknown
 // ones are ignored.
+//
+// Capability fields are POINTERS on purpose. The upstream list omits a flag it
+// has no information about, and for the majority of its chat models that is the
+// case (vision support is recorded on under half). A plain bool would collapse
+// "no information" into "no", which is a confidently wrong answer — so the
+// pointer is what lets the converter emit nothing at all rather than a false.
 type litellmEntry struct {
 	InputCostPerToken  float64 `json:"input_cost_per_token"`
 	OutputCostPerToken float64 `json:"output_cost_per_token"`
 	LitellmProvider    string  `json:"litellm_provider"`
 	Mode               string  `json:"mode"`
+
+	SupportsVision            *bool `json:"supports_vision"`
+	SupportsImageInput        *bool `json:"supports_image_input"`
+	SupportsPDFInput          *bool `json:"supports_pdf_input"`
+	SupportsFunctionCalling   *bool `json:"supports_function_calling"`
+	SupportsReasoning         *bool `json:"supports_reasoning"`
+	SupportsPromptCaching     *bool `json:"supports_prompt_caching"`
+	SupportsAudioInput        *bool `json:"supports_audio_input"`
+	SupportsComputerUse       *bool `json:"supports_computer_use"`
+	SupportsParallelToolCalls *bool `json:"supports_parallel_function_calling"`
+	MaxInputTokens            *int  `json:"max_input_tokens"`
+	MaxOutputTokens           *int  `json:"max_output_tokens"`
 }
 
 // providerMap says how one Arbiter provider's models are found in the LiteLLM
@@ -88,6 +106,66 @@ func perMTok(perToken float64) float64 {
 	return math.Round(perToken*1e6*1e10) / 1e10
 }
 
+// inputModalities normalizes LiteLLM's per-capability booleans into one
+// modality list. Several upstream flags mean the same thing to a client
+// ("supports_vision" and "supports_image_input" both mean it takes an image),
+// and collapsing them here is what keeps the internal vocabulary ours — a
+// second upstream source can then be added without touching any consumer.
+//
+// Returns nil when the upstream says nothing about any of them, which is the
+// signal to emit no field at all. Text is not inferred: a row with no modality
+// information is unknown, not text-only, and guessing "text" for it would put a
+// confident claim behind an absence of data.
+func inputModalities(e litellmEntry) []string {
+	var out []string
+	if truthy(e.SupportsVision) || truthy(e.SupportsImageInput) {
+		out = append(out, "image")
+	}
+	if truthy(e.SupportsPDFInput) {
+		out = append(out, "file")
+	}
+	// Only meaningful once something else was stated: seeing an explicit
+	// capability flag means the row describes this model, so text support is
+	// implied alongside it.
+	if len(out) > 0 {
+		out = append([]string{"text"}, out...)
+	}
+	return out
+}
+
+// extraMetadata collects the capabilities that have no typed field yet but are
+// worth carrying. Same absence rule as the modalities: nothing is emitted for a
+// flag the upstream does not state.
+//
+// These ride in the free-form metadata map rather than becoming fields of their
+// own, because nothing in Arbiter reads them — they exist for a client to see.
+// Promoting one to a typed field is the move when something starts branching on
+// it.
+func extraMetadata(e litellmEntry) map[string]interface{} {
+	m := make(map[string]interface{})
+	for key, v := range map[string]*bool{
+		"function_calling":    e.SupportsFunctionCalling,
+		"reasoning":           e.SupportsReasoning,
+		"prompt_caching":      e.SupportsPromptCaching,
+		"audio_input":         e.SupportsAudioInput,
+		"computer_use":        e.SupportsComputerUse,
+		"parallel_tool_calls": e.SupportsParallelToolCalls,
+	} {
+		if v != nil {
+			m[key] = *v
+		}
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+// truthy reports whether an optional bool is present and true. A nil pointer
+// (the upstream said nothing) is not true, and must not be confused with an
+// explicit false — see inputModalities.
+func truthy(b *bool) bool { return b != nil && *b }
+
 // buildCatalog emits one catalog row per LiteLLM chat-mode entry under each
 // named provider's litellm_provider, for every name in providerNames — in
 // that order, so the caller controls determinism (main.go sorts it). A name
@@ -148,6 +226,10 @@ func buildCatalog(entries map[string]litellmEntry, m mapping, providerNames []st
 				InputCostPerMTok:  perMTok(e.InputCostPerToken),
 				OutputCostPerMTok: perMTok(e.OutputCostPerToken),
 				LatencyMsP50:      latency,
+				InputModalities:   inputModalities(e),
+				MaxInputTokens:    e.MaxInputTokens,
+				MaxOutputTokens:   e.MaxOutputTokens,
+				Metadata:          extraMetadata(e),
 			})
 			matched++
 		}

@@ -76,8 +76,7 @@ func TestCaptureHappensBeforePreGuardrails(t *testing.T) {
 		nil, eavesdropNormalizer{}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil,
 		[]guardrail.Guardrail{rewritingGuardrail{}}, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 	p.SetCaptureContent(true)
 
 	if _, err := p.Execute(context.Background(), []byte("the real question"), "openai", "t1", ""); err != nil {
@@ -129,8 +128,7 @@ func TestCaptureOffRecordsNoContent(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 
 	if _, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", ""); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -157,8 +155,7 @@ func TestCaptureStoresRequestAndResponse(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 	p.SetCaptureContent(true)
 
 	if _, err := p.Execute(context.Background(), []byte("a question with substance"), "openai", "t1", ""); err != nil {
@@ -191,8 +188,7 @@ func TestCaptureStreamStoresRequestAndResponse(t *testing.T) {
 	p := NewPipeline(
 		nil, streamingNormalizer{model: "m-primary"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 	p.SetCaptureContent(true)
 
 	out, err := p.Execute(context.Background(), []byte("a question with substance"), "openai", "t1", "")
@@ -235,8 +231,7 @@ func TestCaptureStreamOffRecordsNoContent(t *testing.T) {
 	p := NewPipeline(
 		nil, streamingNormalizer{model: "m-primary"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 
 	out, err := p.Execute(context.Background(), []byte("anything"), "openai", "t1", "")
 	if err != nil {
@@ -265,8 +260,7 @@ func TestRejectedRequestContentIsRecorded(t *testing.T) {
 		nil, eavesdropNormalizer{}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil,
 		[]guardrail.Guardrail{rejectingGuardrail{}}, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 	p.SetCaptureContent(true)
 
 	_, err := p.Execute(context.Background(), []byte("a request that will be refused"), "openai", "t-reject", "")
@@ -316,8 +310,7 @@ func TestRejectedContentIsNotCapturedWhenCaptureOff(t *testing.T) {
 		nil, eavesdropNormalizer{}, fakeDenormalizer{},
 		nil, &fakeRouter{}, &fakeUpstream{}, testProviders(), nil,
 		[]guardrail.Guardrail{rejectingGuardrail{}}, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 
 	if _, err := p.Execute(context.Background(), []byte("refused"), "openai", "t1", ""); err == nil {
 		t.Fatal("Execute returned nil error, want a rejection")

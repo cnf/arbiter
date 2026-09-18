@@ -68,8 +68,7 @@ func TestExecuteRecordsCompletedRequest(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, catalogLookup(),
-	)
+		fakeLogger{}, time.Minute, nil, w, catalogLookup(), nil)
 
 	if _, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", ""); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -108,8 +107,7 @@ func TestExecuteRecordsActualModelWhenItDiverges(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 
 	if _, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", ""); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -136,8 +134,7 @@ func TestExecuteLeavesActualModelEmptyWhenItMatches(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 
 	if _, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", ""); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -162,8 +159,7 @@ func TestExecuteRecordsHeadersFromContext(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 
 	ctx := WithHeaders(context.Background(), map[string]string{"User-Agent": "opencode/1.0"})
 	if _, err := p.Execute(ctx, []byte("hello"), "openai", "t1", ""); err != nil {
@@ -189,8 +185,7 @@ func TestRecordStampsConfigEpoch(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 	p.SetConfigEpoch("epoch-abc123")
 
 	if _, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", ""); err != nil {
@@ -214,8 +209,7 @@ func TestRecordLeavesEpochEmptyWhenUnset(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 
 	if _, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", ""); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -235,8 +229,7 @@ func TestUpstreamReportedCostIsNotOverwritten(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, catalogLookup(),
-	)
+		fakeLogger{}, time.Minute, nil, w, catalogLookup(), nil)
 
 	if _, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", ""); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -257,8 +250,7 @@ func TestUnknownCostStaysZero(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: "m-fallback1"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, catalogLookup(),
-	)
+		fakeLogger{}, time.Minute, nil, w, catalogLookup(), nil)
 
 	if _, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", ""); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -280,8 +272,7 @@ func TestRecordedOnUpstreamFailure(t *testing.T) {
 	p := NewPipeline(
 		nil, fakeNormalizer{model: "m-primary"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 
 	if _, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", ""); err == nil {
 		t.Fatal("expected Execute to fail")
@@ -308,8 +299,7 @@ func TestExecuteStreamRecordsCompletedRequest(t *testing.T) {
 	p := NewPipeline(
 		nil, streamingNormalizer{model: "m-primary"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 
 	out, err := p.Execute(context.Background(), []byte("stream please"), "openai", "t1", "")
 	if err != nil {
@@ -348,8 +338,7 @@ func TestExecuteStreamRecordsMidStreamFailure(t *testing.T) {
 	p := NewPipeline(
 		nil, streamingNormalizer{model: "m-primary"}, fakeDenormalizer{},
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
-		fakeLogger{}, time.Minute, nil, w, nil,
-	)
+		fakeLogger{}, time.Minute, nil, w, nil, nil)
 
 	out, err := p.Execute(context.Background(), []byte("stream please"), "openai", "t1", "")
 	if err != nil {

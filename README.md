@@ -463,6 +463,23 @@ Note that changing the key derivation (denoising, a different anchor, a
 different gate) invalidates every existing pin at once, which shows up as one
 burst of re-routing across all live conversations.
 
+**Pins are persisted** (the `affinity_pins` table) when a store is configured,
+so a conversation stays pinned across a **config reload** and a **restart**.
+Both used to lose every pin: a reload rebuilds the whole pipeline, and the pins
+lived inside it, so saving `arbiter.yaml` — even to change something unrelated —
+silently re-routed every live conversation and cost it its warm prompt cache.
+Persistence is also why a reload is no longer a way to clear pins deliberately;
+that wants its own explicit affordance rather than happening as a side effect of
+editing an unrelated setting.
+
+The in-memory map is a cache in front of the table, not the source of truth: a
+miss falls through to the store, and the common case (a hit on the very next
+turn) never touches the database. Expiry is enforced on read as well as by the
+hourly sweep, because a stale row can sit in the table for up to a sweep
+interval and honouring it would pin a conversation past its idle timeout. With
+no store configured, pins stay in memory only — the behaviour before persistence
+existed.
+
 ### Group selection strategies
 
 A `group` alias's `select:` decides which member becomes the primary:

@@ -105,3 +105,37 @@ CREATE TABLE IF NOT EXISTS content_refs (
 );
 CREATE INDEX IF NOT EXISTS idx_content_refs_owner ON content_refs(owner_kind, owner_id, direction, msg_index, position);
 CREATE INDEX IF NOT EXISTS idx_content_refs_hash ON content_refs(hash);
+
+-- ---------------------------------------------------------------------------
+-- Session-affinity pins
+-- ---------------------------------------------------------------------------
+-- Which provider/model last served a session, so later turns of the same
+-- conversation land on the same upstream (preserving prompt-cache reuse) rather
+-- than being re-routed from scratch.
+--
+-- Persisted rather than in-memory because a config reload rebuilds the whole
+-- pipeline, and pins living inside it died on every reload — so editing any
+-- unrelated setting silently re-routed every live conversation and broke its
+-- prompt cache. Restarts lost them too. Session pinning is load-bearing enough
+-- (it is what keeps a conversation coherent and cheap) that it must outlive
+-- both.
+--
+-- requested_model is the client's `model` value at pin time: a pin only applies
+-- while the client keeps asking for that same model, because a client that
+-- explicitly switches models means it. At most one pin per session key — a pin
+-- recorded under a new requested model replaces the old one rather than
+-- accumulating.
+--
+-- expires_at is an absolute deadline computed at write time (idle-timeout
+-- semantics: a hit refreshes it, an abandoned conversation expires). The
+-- deadline is stored rather than a TTL because the reader must be able to
+-- reject a stale row without knowing the TTL it was pinned with.
+CREATE TABLE IF NOT EXISTS affinity_pins (
+    session_key     TEXT PRIMARY KEY,
+    requested_model TEXT NOT NULL,
+    provider        TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    expires_at      TIMESTAMP NOT NULL
+);
+-- Feeds the expiry sweep, which deletes pins whose deadline has passed.
+CREATE INDEX IF NOT EXISTS idx_affinity_expires ON affinity_pins(expires_at);

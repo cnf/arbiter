@@ -31,6 +31,29 @@ import (
 // without locking it out for long.
 const defaultCooldown = 5 * time.Second
 
+// Pinner persists session-affinity pins. The pipeline depends on this narrow
+// slice rather than the store's wider surface, so the store stays free to grow
+// and tests can substitute a fake — the same shape router.CostLatencyLookup
+// establishes.
+//
+// AffinityPinRecord is the persistence shape, kept separate from the pipeline's
+// internal affinityPin so the stored format cannot drift silently when the
+// internal struct changes.
+type Pinner interface {
+	SavePin(ctx context.Context, p AffinityPinRecord) error
+	LoadPin(ctx context.Context, sessionKey string) (AffinityPinRecord, bool, error)
+	DeletePin(ctx context.Context, sessionKey string) error
+}
+
+// AffinityPinRecord is one session's pin as persisted.
+type AffinityPinRecord struct {
+	SessionKey     string
+	RequestedModel string
+	Provider       string
+	Model          string
+	ExpiresAt      time.Time
+}
+
 // Pipeline orchestrates the full request lifecycle.
 type Pipeline struct {
 	translator   translator.Translator
@@ -52,6 +75,13 @@ type Pipeline struct {
 
 	affinity        *affinityStore
 	defaultCacheTTL time.Duration // used when a served provider sets no cache_ttl override
+
+	// pinner persists affinity pins so they outlive this Pipeline. A reload
+	// rebuilds the whole pipeline, so without persistence every live
+	// conversation lost its pin on any config save — silently re-routing it and
+	// breaking its prompt cache. Nil means pins stay in memory only (no store
+	// configured), which is the correct degradation.
+	pinner Pinner
 
 	// aliasResolver resolves force-alias overrides named by req.Model. Nil
 	// when no aliases are configured — resolveRoute skips the force step
@@ -116,6 +146,7 @@ func NewPipeline(
 	aliasResolver *router.AliasResolver,
 	writer store.Writer,
 	costCatalog router.CostLatencyLookup,
+	pinner Pinner,
 ) *Pipeline {
 	if writer == nil {
 		writer = store.NoopWriter{}
@@ -151,7 +182,8 @@ func NewPipeline(
 		providers:       providers,
 		fallbacks:       fallbacks,
 		cooldowns:       make(map[string]time.Time),
-		affinity:        newAffinityStore(),
+		affinity:        newAffinityStore(pinner),
+		pinner:          pinner,
 		defaultCacheTTL: cacheTTL,
 		preGuardrails:   preG,
 		postGuardrails:  postG,
@@ -298,7 +330,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		return nil, err
 	}
 	if hasKey {
-		p.affinity.pin(sessionKey, req.Model, served.Provider, served.Model, p.cacheTTLFor(served.Provider))
+		p.affinity.pin(ctx, sessionKey, req.Model, served.Provider, served.Model, p.cacheTTLFor(served.Provider))
 	}
 	// Captured before any post-guardrail can touch resp: this is what the
 	// upstream itself reported, which is what a meta-router alias (e.g.
@@ -657,7 +689,7 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 	}
 
 	if hasKey {
-		if provider, model, ok := p.affinity.get(req.SessionKey, req.Model); ok {
+		if provider, model, ok := p.affinity.get(ctx, req.SessionKey, req.Model); ok {
 			if _, cooling := p.onCooldown(provider); !cooling {
 				if cfg, ok := p.providers[provider]; ok {
 					route := types.Route{
@@ -840,7 +872,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 		return nil, err
 	}
 	if hasKey {
-		p.affinity.pin(sessionKey, req.Model, served.Provider, served.Model, p.cacheTTLFor(served.Provider))
+		p.affinity.pin(ctx, sessionKey, req.Model, served.Provider, served.Model, p.cacheTTLFor(served.Provider))
 	}
 
 	// Forward upstream events, stamping each with the trace ID — the

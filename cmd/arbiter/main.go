@@ -102,7 +102,7 @@ func main() {
 	// deleting data.
 	sweepCtx, stopSweeper := context.WithCancel(context.Background())
 	defer stopSweeper()
-	startContentSweeper(sweepCtx, cfg.Storage.Path, cfg.Storage.ContentTTL, logger)
+	startSweeper(sweepCtx, cfg.Storage.Path, cfg.Storage.ContentTTL, logger)
 
 	r := newRouter(handler, admin, stats, adminUI, cfg.Admin.ForwardAuthHeader)
 
@@ -333,22 +333,26 @@ func openStore(cfg *config.Config, logger logging.Logger) (storeHandle, error) {
 // indexed deletes.
 const sweepInterval = time.Hour
 
-// startContentSweeper runs the retention sweep in the background until ctx is
-// done. It runs once immediately so a long-idle store is reclaimed at startup
-// rather than after the first interval.
+// startSweeper runs the background reclamation sweep in the background until ctx
+// is done: expired content (only when a content TTL is configured) and expired
+// affinity pins, which have their own deadlines and so are swept regardless.
+// It runs once immediately so a long-idle store is reclaimed at startup rather
+// than after the first interval.
 //
-// Only a non-zero TTL sweeps; with TTL unset ("never expire") starting a
-// goroutine that can only ever delete nothing would be pointless, so it isn't
-// started at all.
-func startContentSweeper(ctx context.Context, path, ttlSpec string, logger logging.Logger) {
-	if path == "" || ttlSpec == "" {
-		return
-	}
-	ttl, err := time.ParseDuration(ttlSpec)
-	if err != nil || ttl <= 0 {
-		if err != nil {
-			slog.Error("content_ttl is not a valid duration; content will not expire", "content_ttl", ttlSpec, "error", err)
-		}
+// Only a non-zero content TTL sweeps content; with TTL unset ("never expire") a
+// content sweep could only ever delete nothing. Pins changed the shape of this:
+// they expire unconditionally, so the goroutine now always starts when a store
+// is configured, and it is the content half that is conditional.
+// Pins are swept unconditionally because their expiry is not opt-in — every pin
+// carries an absolute deadline, so a row that outlives it is dead weight whether
+// or not content retention is configured. Correctness does not depend on this
+// running (LoadPin rejects an expired pin on its own), but without it the table
+// grows forever.
+//
+// One goroutine, not two: both are indexed deletes on the same database, and a
+// second ticker would add contention for no benefit.
+func startSweeper(ctx context.Context, path, ttlSpec string, logger logging.Logger) {
+	if path == "" {
 		return
 	}
 
@@ -357,8 +361,25 @@ func startContentSweeper(ctx context.Context, path, ttlSpec string, logger loggi
 	// case the shared DSN's WAL + busy_timeout exist for.
 	reader, err := store.OpenReader(path)
 	if err != nil {
-		slog.Error("cannot start content sweeper", "error", err)
+		slog.Error("cannot start reclamation sweeper", "error", err)
 		return
+	}
+
+	// A content TTL is optional; an invalid one is reported and then ignored
+	// (content simply never expires) rather than preventing the pin sweep.
+	var contentTTL time.Duration
+	if ttlSpec != "" {
+		d, err := time.ParseDuration(ttlSpec)
+		switch {
+		case err != nil:
+			slog.Error("content_ttl is not a valid duration; content will not expire",
+				"content_ttl", ttlSpec, "error", err)
+		case d <= 0:
+			// Zero/negative means "never expire", which is the documented way to
+			// keep content forever.
+		default:
+			contentTTL = d
+		}
 	}
 
 	go func() {
@@ -366,14 +387,26 @@ func startContentSweeper(ctx context.Context, path, ttlSpec string, logger loggi
 		ticker := time.NewTicker(sweepInterval)
 		defer ticker.Stop()
 		for {
-			bodies, refs, err := reader.SweepContent(ctx, ttl)
+			if contentTTL > 0 {
+				bodies, refs, err := reader.SweepContent(ctx, contentTTL)
+				if err != nil {
+					if ctx.Err() == nil {
+						logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "content_sweep"})
+					}
+				} else if refs > 0 || bodies > 0 {
+					slog.Info("expired captured content", "refs", refs, "bodies", bodies)
+				}
+			}
+
+			pins, err := reader.SweepPins(ctx)
 			if err != nil {
 				if ctx.Err() == nil {
-					logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "content_sweep"})
+					logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "pin_sweep"})
 				}
-			} else if refs > 0 || bodies > 0 {
-				slog.Info("expired captured content", "refs", refs, "bodies", bodies)
+			} else if pins > 0 {
+				slog.Info("expired session pins", "pins", pins)
 			}
+
 			select {
 			case <-ctx.Done():
 				return
@@ -477,7 +510,16 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 		}
 	}
 
-	p := pipeline.NewPipeline(t, t, t, classifiers, mainRouter, u, providers, cfg.Routing.FallbackProviders, preGuardrails, postGuardrails, logger, defaultCacheTTL, resolver, writer, costLookup)
+	// Affinity pins are persisted so they survive a reload (which rebuilds this
+	// whole pipeline) and a restart. With no store configured there is nothing
+	// to persist to, and pins stay in memory — today's behaviour, and the
+	// correct degradation.
+	var pinner pipeline.Pinner
+	if sp, ok := writer.(store.Pinner); ok {
+		pinner = affinityPinner{sp}
+	}
+
+	p := pipeline.NewPipeline(t, t, t, classifiers, mainRouter, u, providers, cfg.Routing.FallbackProviders, preGuardrails, postGuardrails, logger, defaultCacheTTL, resolver, writer, costLookup, pinner)
 	// Every event this pipeline records is stamped with the hash of the config
 	// that built it, so spend can be compared across config changes.
 	p.SetConfigEpoch(cfg.Epoch())
@@ -485,6 +527,44 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 	// epoch rather than joining the constructor's positional arguments.
 	p.SetCaptureContent(cfg.Storage.CaptureContent)
 	return p, nil
+}
+
+// affinityPinner adapts the store's pin API onto the pipeline's narrow Pinner
+// interface.
+//
+// The two use different record types on purpose — the store must not import the
+// pipeline (the pipeline already imports the store), and a shared type would
+// make the persisted format and the pipeline's internal struct change together
+// by accident. The adapter is the one place that knows both, so a change to
+// either surface is a compile error here rather than silent data drift.
+type affinityPinner struct{ s store.Pinner }
+
+func (a affinityPinner) SavePin(ctx context.Context, p pipeline.AffinityPinRecord) error {
+	return a.s.SavePin(ctx, store.AffinityPin{
+		SessionKey:     p.SessionKey,
+		RequestedModel: p.RequestedModel,
+		Provider:       p.Provider,
+		Model:          p.Model,
+		ExpiresAt:      p.ExpiresAt,
+	})
+}
+
+func (a affinityPinner) LoadPin(ctx context.Context, sessionKey string) (pipeline.AffinityPinRecord, bool, error) {
+	rec, ok, err := a.s.LoadPin(ctx, sessionKey)
+	if err != nil || !ok {
+		return pipeline.AffinityPinRecord{}, ok, err
+	}
+	return pipeline.AffinityPinRecord{
+		SessionKey:     rec.SessionKey,
+		RequestedModel: rec.RequestedModel,
+		Provider:       rec.Provider,
+		Model:          rec.Model,
+		ExpiresAt:      rec.ExpiresAt,
+	}, true, nil
+}
+
+func (a affinityPinner) DeletePin(ctx context.Context, sessionKey string) error {
+	return a.s.DeletePin(ctx, sessionKey)
 }
 
 func combineRouters(routers []router.Router) router.Router {

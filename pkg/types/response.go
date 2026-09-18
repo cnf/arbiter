@@ -152,6 +152,18 @@ type Route struct {
 	// the group's unselected members form its fallback chain. The pipeline
 	// tries these before the global routing.fallback_providers list.
 	Fallbacks []Route
+
+	// ExplicitModel marks a route the client named directly (a concrete model
+	// declared by a provider), rather than one Arbiter chose — via an alias, a
+	// pin, a policy rule, or classification.
+	//
+	// It changes failure behaviour: an explicit model is never silently
+	// substituted. The client asked for that model specifically, so serving a
+	// different one is not a valid answer — a rate-limited explicit model returns
+	// the 429 to the client instead of quietly falling through to a fallback
+	// provider. For every other route the fallback chain is exactly right, since
+	// Arbiter made the choice and any equivalent model satisfies the request.
+	ExplicitModel bool
 }
 
 // Metadata augments a Route with runtime info captured at decision time.

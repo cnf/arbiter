@@ -757,6 +757,9 @@ func (p *Pipeline) literalModelRoute(model string) (types.Route, bool) {
 		Model:     model,
 		Config:    p.providers[name],
 		Rationale: fmt.Sprintf("explicit model %q -> provider %q", model, name),
+		// The one place this is set: the client named a concrete model, so a
+		// rate-limited provider must surface rather than be substituted.
+		ExplicitModel: true,
 	}, true
 }
 
@@ -999,6 +1002,12 @@ const (
 	actionRetrySame     upstreamAction = iota // transient (5xx): try this provider again
 	actionNextCandidate                       // move on to the next fallback provider
 	actionFailFast                            // give up; a retry can't help
+	// actionRetryThisProvider is for a 429 on an explicit model: retry the SAME
+	// provider (a retry is not substitution), but never fall through to a
+	// fallback — the client named this model, so once the attempts are exhausted
+	// the 429 goes back to the client rather than becoming a different model's
+	// answer.
+	actionRetryThisProvider
 )
 
 // tryUpstream sends the request to the routed provider — retrying it on 5xx
@@ -1030,6 +1039,16 @@ candidates:
 	for _, cand := range candidates {
 		if until, cooling := p.onCooldown(cand.Provider); cooling {
 			p.logger.LogUpstreamCooldown(ctx, cand.Provider, until, 0, "skipped")
+
+			// An explicit model is not substituted. The client named this model,
+			// so a rate-limited provider is reported rather than quietly routed
+			// around — falling through here would serve a different model with a
+			// 200 and no indication, which is the one outcome an explicit request
+			// must never get. This is also the cheaper refusal: the upstream is
+			// known to be rate-limited, so it is not contacted at all.
+			if cand.ExplicitModel {
+				return nil, nil, nil, types.Route{}, p.cooldownError(cand, until)
+			}
 			continue
 		}
 
@@ -1049,6 +1068,15 @@ candidates:
 				switch p.classifyUpstreamError(ctx, cand, err, time.Since(start)) {
 				case actionRetrySame:
 					continue
+				case actionRetryThisProvider:
+					// Retry this provider while attempts remain, then surface the
+					// error. Falling out of the attempt loop instead would advance
+					// to the next candidate, which is the substitution this action
+					// exists to prevent.
+					if attempt < maxAttempts {
+						continue
+					}
+					return nil, nil, nil, types.Route{}, lastErr
 				case actionNextCandidate:
 					continue candidates
 				case actionFailFast:
@@ -1065,6 +1093,13 @@ candidates:
 			switch p.classifyUpstreamError(ctx, cand, err, time.Since(start)) {
 			case actionRetrySame:
 				continue
+			case actionRetryThisProvider:
+				// See the streaming branch: exhausting the attempts must surface
+				// the error, not fall through to another provider.
+				if attempt < maxAttempts {
+					continue
+				}
+				return nil, nil, nil, types.Route{}, lastErr
 			case actionNextCandidate:
 				continue candidates
 			case actionFailFast:
@@ -1085,6 +1120,28 @@ candidates:
 // (429 — the cooldown is recorded here), or fail fast (other 4xx — a
 // different provider won't fix a bad request; non-HTTP failures are
 // Arbiter's own and aren't retryable either).
+//
+// cooldownError builds the refusal for an explicit model whose provider is still
+// in its 429 cooldown. The status is 429 so writeArbiterError passes it through
+// unchanged, and the remaining time is included because it is the one piece of
+// information that makes the refusal actionable — the client knows when retrying
+// is worth it rather than guessing.
+func (p *Pipeline) cooldownError(route types.Route, until time.Time) error {
+	remaining := time.Until(until).Round(time.Second)
+	if remaining < 0 {
+		remaining = 0
+	}
+	err := arbitererrors.NewUpstreamError(
+		route.Provider, http.StatusTooManyRequests,
+		fmt.Sprintf("%s is rate limited; retry in %s", route.Model, remaining), nil)
+	err.RetryAfter = remaining
+	return err
+}
+
+// classifyUpstreamError decides what to do after a failed attempt. cand is
+// needed because the decision depends on whether the route was explicit — an
+// explicit model must never be substituted, so a 429 fails fast for it while
+// every other route falls through to its fallback chain.
 func (p *Pipeline) classifyUpstreamError(ctx context.Context, cand types.Route, err error, latency time.Duration) upstreamAction {
 	var ue *arbitererrors.UpstreamError
 	if !errors.As(err, &ue) {
@@ -1100,8 +1157,19 @@ func (p *Pipeline) classifyUpstreamError(ctx context.Context, cand types.Route, 
 			cooldown = defaultCooldown
 		}
 		until := time.Now().Add(cooldown)
+		// The cooldown is recorded even for an explicit route: it is a routing
+		// heuristic, and later non-explicit traffic should route around this
+		// provider normally. Only the response to THIS client differs.
 		p.markCooldown(ue.Provider, until)
 		p.logger.LogUpstreamCooldown(ctx, ue.Provider, until, ue.RetryAfter, "recorded")
+
+		// An explicit model is not substituted: the client named it, so a 429
+		// goes back to the client rather than to the fallback chain. Retrying the
+		// same provider is still allowed — a retry is not substitution — so this
+		// is not actionFailFast, which would skip the remaining attempts.
+		if cand.ExplicitModel {
+			return actionRetryThisProvider
+		}
 		return actionNextCandidate
 	case ue.StatusCode >= 500:
 		return actionRetrySame

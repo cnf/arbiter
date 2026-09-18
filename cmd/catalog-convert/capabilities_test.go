@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -12,7 +13,9 @@ import (
 // that made a client refuse to send an image, so it is what these tests pin.
 
 func boolp(b bool) *bool { return &b }
-func intp(i int) *int    { return &i }
+
+// nump is the json.Number form the litellmEntry token-limit fields now take.
+func nump(n string) json.Number { return json.Number(n) }
 
 // TestInputModalitiesNormalizesSeveralFlagsToOne pins the collapsing: the
 // upstream has three different flags that all mean "takes an image or a
@@ -132,8 +135,8 @@ func TestBuildCatalogCarriesCapabilities(t *testing.T) {
 			SupportsVision:          boolp(true),
 			SupportsPDFInput:        boolp(true),
 			SupportsFunctionCalling: boolp(true),
-			MaxInputTokens:          intp(200000),
-			MaxOutputTokens:         intp(64000),
+			MaxInputTokens:          nump("200000"),
+			MaxOutputTokens:         nump("64000"),
 		},
 	}
 	m := mapping{Providers: map[string]providerMap{

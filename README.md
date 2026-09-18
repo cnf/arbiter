@@ -561,11 +561,65 @@ LiteLLM entry filed under a mapped `litellm_provider` becomes a catalog row.
 providers it actually declares — skipping (with a reason on stderr) any
 mapping entry with no match there; omit it and every provider the mapping
 file lists is used instead. Latency is not in LiteLLM's list at all, so the
-mapping supplies it — a per-provider default with per-model overrides.
-`-strict` turns any skip (a provider with no mapping entry, or one whose
-`litellm_provider` matched nothing) into a non-zero exit. Rows are emitted in
-the given provider order, so regenerating the same inputs produces the same
-file.
+mapping supplies it — a per-provider default with per-model overrides. Rows
+are emitted in the given provider order, so regenerating the same inputs
+produces the same file. The write is **atomic** (temp file, fsync, rename), so
+a crash mid-write cannot leave a truncated catalog — which matters because
+regeneration is meant to run on a schedule against a live config.
+
+#### Namespacing the emitted model name
+
+Arbiter joins a catalog row to a declared model on the **exact** string, so a
+provider whose models are declared under a namespace needs that namespace on
+the emitted row — otherwise the rows are written but never read, and nothing
+reports a problem. Two mapping fields fix opposite mismatches:
+
+| Field | Direction | Use when |
+|---|---|---|
+| `key_prefix` | strips from the LiteLLM key | the upstream key is longer than the declared name (`openrouter/anthropic/claude-3.5-sonnet`) |
+| `namespace` | adds to the emitted name | the upstream key is bare but the declared name is namespaced (`claude/claude-sonnet-5`) |
+
+Both may be set; `key_prefix` is applied first. This is the common case for a
+self-hosted or omniroute-style proxy that fronts another vendor's API under a
+prefix. Matching stays **exact** on both sides — there is no fuzzy fallback,
+deliberately, because a near-miss would silently attach one model's cost and
+capabilities to another.
+
+#### Coverage reporting
+
+Regenerating can succeed while the models that matter get nothing, because the
+join is exact and a naming mismatch is silent. `-coverage` reports, per
+provider, which declared models actually got a row:
+
+```bash
+go run ./cmd/catalog-convert -mapping mapping.yaml -config arbiter.yaml \
+  -coverage json -coverage-out report.json \
+  model_prices_and_context_window.json
+```
+
+```
+claude: 3/3 matched
+openrouter: 2/8 matched (6 manual: @preset/comp, @preset/deepseek-flash, ...)
+total: 19 declared, 5 matched, 14 manual, 0 unexpected
+```
+
+`-coverage` is `text` (default), `json`, or `none`, and requires `-config`
+(that is what declares the models). `-coverage-out` writes the report to its
+own file, which a cron wants: the report is the last thing on stderr otherwise,
+sharing it with the skip lines.
+
+Three states, and the third is the point: **matched**, **manual** (declared
+under `manual:` in the mapping file as expected to have no upstream data — your
+own presets, a source not wired up yet), and **unexpected** (no data, not
+declared as manual). Only *unexpected* is a failure. Without that split the
+`-strict` gate would be red on every run for permanently-unmatchable models,
+and a gate that always fails is one nobody reads.
+
+`-strict` therefore fails on an undecodable source entry, on any unexpected
+coverage miss, and — when no `-config` is given, so there is no coverage to
+check — on any skip. A provider-level skip with `-config` present is
+informational: the provider is simply out of scope, and the coverage report
+already shows the consequence for its models.
 
 **The generated catalog is a superset of what `arbiter.yaml` declares, by
 design** — a row naming a provider/model this config doesn't (yet) list is

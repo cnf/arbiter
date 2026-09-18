@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 
 	"gopkg.in/yaml.v3"
@@ -38,9 +39,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 	mapPath := fs.String("mapping", "", "Path to the mapping YAML (arbiter provider -> litellm_provider). Required.")
 	configPath := fs.String("config", "", "Path to arbiter.yaml. When set, catalog rows are generated for every provider it declares (skipping any with no mapping entry) instead of every provider the mapping file lists.")
 	outPath := fs.String("out", "", "Write the catalog to this path instead of stdout.")
-	strict := fs.Bool("strict", false, "Exit non-zero if any provider had no usable litellm entries.")
+	strict := fs.Bool("strict", false, "Exit non-zero if any provider had no usable entries, or any declared model went unmatched (see -coverage).")
+	coverageFmt := fs.String("coverage", "text", "Coverage report format: text, json, or none. Requires -config (that is what declares the models).")
+	coverageOut := fs.String("coverage-out", "", "Write the coverage report to this path instead of stderr. Use with -coverage json so the report is pure JSON with no interleaved log lines.")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stderr, "Usage: catalog-convert -mapping mapping.yaml [-config arbiter.yaml] [-out catalog.yaml] [-strict] <model_prices_and_context_window.json>\n\n")
+		_, _ = fmt.Fprintf(stderr, "Usage: catalog-convert -mapping mapping.yaml [-config arbiter.yaml] [-out catalog.yaml] [-strict] [-coverage text|json|none] <model_prices_and_context_window.json>\n\n")
 		_, _ = fmt.Fprintf(stderr, "The litellm price list is read from the single positional argument, or stdin when it is omitted.\n\n")
 		fs.PrintDefaults()
 	}
@@ -78,6 +81,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 
 	litellmIn := io.Reader(os.Stdin)
+	sourceName := "stdin"
 	if fs.NArg() == 1 {
 		f, err := os.Open(fs.Arg(0))
 		if err != nil {
@@ -85,6 +89,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 		defer func() { _ = f.Close() }()
 		litellmIn = f
+		sourceName = filepath.Base(fs.Arg(0))
 	}
 
 	entries, malformed, err := parseLitellm(litellmIn)
@@ -105,7 +110,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 
 	var buf bytes.Buffer
-	if _, err := buf.WriteString(header(len(rows), len(skips)+len(malformed))); err != nil {
+	if _, err := buf.WriteString(header(sourceName, len(rows), len(skips)+len(malformed))); err != nil {
 		return err
 	}
 	enc := yaml.NewEncoder(&buf)
@@ -121,19 +126,141 @@ func run(args []string, stdout, stderr io.Writer) error {
 		if _, err := stdout.Write(buf.Bytes()); err != nil {
 			return err
 		}
-	} else if err := os.WriteFile(*outPath, buf.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", *outPath, err)
+	} else if err := writeCatalogFile(*outPath, buf.Bytes()); err != nil {
+		return err
 	}
 
+	// The summary goes BEFORE the coverage report, deliberately: the coverage
+	// report is the thing a cron parses, so it must be the last thing written to
+	// stderr. Interleaving a "wrote N rows" line after it makes `2>` capture
+	// both and the JSON unparsable.
 	_, _ = fmt.Fprintf(stderr, "wrote %d catalog rows", len(rows))
 	if n := len(skips) + len(malformed); n > 0 {
 		_, _ = fmt.Fprintf(stderr, ", skipped %d", n)
 	}
 	_, _ = fmt.Fprintln(stderr)
 
-	if *strict && len(skips)+len(malformed) > 0 {
-		return fmt.Errorf("strict: %d issue(s) — see the skipped lines above", len(skips)+len(malformed))
+	// Coverage: did every model the config declares actually get a row? This is
+	// the check that catches a silent naming mismatch — the converter can write
+	// hundreds of rows and report success while the models that matter match
+	// nothing, because the join is on an exact provider+model string.
+	//
+	// Only meaningful with -config, which is what declares the models.
+	unexpected := 0
+	if *configPath != "" {
+		declared, err := declaredModels(*configPath)
+		if err != nil {
+			return err
+		}
+		rep := buildCoverage(declared, rows, m.Manual)
+		unexpected = rep.Totals.Unexpected
+		// A report destined for a parser goes to its own file when asked, so the
+		// skip lines and summary above cannot contaminate it. Without this, a
+		// cron doing `2>report.json` gets JSON with log lines in front of it,
+		// which is unparsable — and the failure looks like corrupt output rather
+		// than a flag that was needed.
+		dest := io.Writer(stderr)
+		if *coverageOut != "" {
+			f, err := os.Create(*coverageOut)
+			if err != nil {
+				return fmt.Errorf("create coverage report %s: %w", *coverageOut, err)
+			}
+			if err := renderCoverage(f, rep, *coverageFmt); err != nil {
+				_ = f.Close()
+				return err
+			}
+			if err := f.Close(); err != nil {
+				return fmt.Errorf("close coverage report %s: %w", *coverageOut, err)
+			}
+			dest = nil
+		}
+		if dest != nil {
+			if err := renderCoverage(dest, rep, *coverageFmt); err != nil {
+				return err
+			}
+		}
+	} else if *coverageFmt != "none" {
+		_, _ = fmt.Fprintln(stderr, "coverage: skipped (no -config, so there are no declared models to check against)")
 	}
+
+	// The strict gate. Three classes of finding, deliberately not treated alike:
+	//
+	//   - A malformed ENTRY is always a failure. It means data was dropped from
+	//     the source itself, which is never expected.
+	//   - An UNEXPECTED coverage miss is a failure. A declared model with no data
+	//     and no manual: entry saying that is expected is the real signal this
+	//     gate exists for.
+	//   - A provider-level SKIP is informational once coverage is available. A
+	//     provider the mapping file doesn't mention is simply out of scope —
+	//     during a build-out that is the normal state, and the coverage report
+	//     already shows the consequence (its models appear as manual or
+	//     unexpected). Failing on it would make the gate red on every run for a
+	//     reason nobody intends to fix, and a gate that always fails is one
+	//     nobody reads — which is worse than no gate.
+	//
+	// Without -config there is no coverage to check, so skips are all there is to
+	// go on and they keep their original meaning.
+	if *strict {
+		if len(malformed) > 0 {
+			return fmt.Errorf("strict: %d undecodable entry/entries in the source — see the skipped lines above", len(malformed))
+		}
+		if unexpected > 0 {
+			return fmt.Errorf("strict: %d declared model(s) unmatched and not listed under manual: (see the coverage report above)", unexpected)
+		}
+		if *configPath == "" && len(skips) > 0 {
+			return fmt.Errorf("strict: %d issue(s) — see the skipped lines above", len(skips))
+		}
+	}
+	return nil
+}
+
+// writeCatalogFile writes the catalog atomically: a temporary file in the same
+// directory, fsynced, then renamed over the target. A plain os.WriteFile
+// truncates the target first, so a crash mid-write leaves a truncated catalog —
+// and this file is meant to be regenerated on a schedule by a cron while the
+// config that reads it stays live, which makes that window real rather than
+// theoretical. Rename is atomic within a filesystem, so a reader sees either the
+// previous catalog or the new one, never a partial one.
+//
+// The temp file is created in the target's own directory deliberately: a rename
+// across filesystems is not atomic (and fails outright on some), so a temp file
+// in /tmp would defeat the point.
+func writeCatalogFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp file in %s: %w", dir, err)
+	}
+	tmp := f.Name()
+	// Best-effort cleanup: after a successful rename this is a no-op, and on any
+	// failure path it keeps the directory free of debris.
+	defer func() {
+		if tmp != "" {
+			_ = os.Remove(tmp)
+		}
+	}()
+
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	// fsync before rename so the contents are durable, not just the name. Without
+	// it a crash can leave the rename applied but the data not yet on disk.
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("sync %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", tmp, err)
+	}
+	// Match the permissions a plain write would have produced.
+	if err := os.Chmod(tmp, 0o644); err != nil {
+		return fmt.Errorf("chmod %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("rename %s to %s: %w", tmp, path, err)
+	}
+	tmp = "" // renamed; nothing to clean up
 	return nil
 }
 
@@ -181,12 +308,16 @@ func providerNamesFromConfig(path string) ([]string, error) {
 
 // header is a comment banner for the generated file. Regeneration is expected
 // (the file is inert on write and picked up by POST /admin/reload), so the
-// header names its source rather than pretending to be hand-maintained.
-func header(rows, skipped int) string {
-	return fmt.Sprintf(`# Generated by catalog-convert from LiteLLM's model_prices_and_context_window.json.
+// header names its actual source rather than pretending to be hand-maintained.
+//
+// The source is named from the path it was read from, not hardcoded: the tool
+// reads whatever price list it is given, and more than one upstream exists, so a
+// fixed filename would become a lie the moment a second source is used.
+func header(source string, rows, skipped int) string {
+	return fmt.Sprintf(`# Generated by catalog-convert from %s.
 # Do not edit by hand; edits are lost on regeneration. Per-model overrides
 # belong in arbiter.yaml's inline model_catalog:, which wins over this file.
-# Costs are USD per million tokens (converted from litellm's per-token figures).
+# Costs are USD per million tokens.
 # %d rows, %d skipped (see the converter's stderr for reasons).
-`, rows, skipped)
+`, source, rows, skipped)
 }

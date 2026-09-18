@@ -268,7 +268,7 @@ func TestOutputRoundTripsThroughConfig(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	_, _ = buf.WriteString(header(len(rows), len(skips)))
+	_, _ = buf.WriteString(header("model_prices_and_context_window.json", len(rows), len(skips)))
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(catalogOut{ModelCatalog: rows}); err != nil {

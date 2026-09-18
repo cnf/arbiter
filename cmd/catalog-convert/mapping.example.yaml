@@ -20,8 +20,30 @@
 # needed. A litellm_provider entry whose key doesn't start with the configured
 # prefix is reported on stderr rather than guessed at.
 #
+# `namespace` adds a prefix to the emitted model name. It is the other direction
+# from key_prefix, and both are needed because providers differ in which side
+# carries the namespace: one whose LiteLLM keys are longer than its declared
+# names wants key_prefix, while one whose LiteLLM keys are bare but whose models
+# are declared under a namespace (an omniroute-style prefixing proxy, or a
+# self-hosted proxy fronting another vendor's API) wants namespace. Arbiter joins
+# a row to a declared model on the exact string, so a missing namespace means the
+# rows are emitted but never read.
+#
 # Rows for models you haven't declared in arbiter.yaml are simply unused — see
 # README.md's "Group selection strategies" section for why that's fine.
+#
+# `manual` lists declared models expected to have NO upstream data — your own
+# presets, or models whose source isn't wired up yet. They are reported in the
+# coverage summary but never count as failures, which is what keeps -strict
+# meaningful: without this, a permanently-unmatchable model would fail every run
+# and the gate would stop being read. Entries are the model string exactly as
+# declared in arbiter.yaml.
+#
+# `-coverage text|json|none` reports, per provider, which declared models got a
+# row and which did not. It requires `-config`, since that is what declares the
+# models. Use `-coverage json -coverage-out report.json` for a cron: writing to
+# its own file keeps the report pure JSON, with none of the log lines that share
+# stderr.
 #
 # Latency is NOT in LiteLLM's price list. `latency_ms_p50` sets a per-provider
 # default; the top-level `latency_ms_p50` map overrides it per "provider/model"
@@ -33,6 +55,7 @@
 providers:
   claude:
     litellm_provider: anthropic
+    namespace: "claude/"        # emit claude/claude-sonnet-5
     latency_ms_p50: 900
 
   gpt4:
@@ -44,6 +67,13 @@ providers:
     key_prefix: "openrouter/"
     latency_ms_p50: 2500
 
-# Per-model latency overrides, keyed "provider/model" as Arbiter sees them.
+# Per-model latency overrides, keyed "provider/model" as Arbiter sees them —
+# i.e. the emitted name, including any namespace. Both spellings resolve, so a
+# key written against the bare name keeps working if a namespace is added later.
 latency_ms_p50:
   claude/claude-3-haiku-20250307: 750
+
+# Declared models expected to have no upstream data. Reported, never fatal.
+manual:
+  - "openrouter/@preset/my-preset"   # your own preset: no upstream row exists
+  - "opencode_zen/big-pickle"        # source not wired up yet

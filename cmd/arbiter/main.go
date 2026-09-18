@@ -442,7 +442,7 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 
 	routers := make([]router.Router, 0, len(cfg.Routers))
 	for _, rc := range cfg.Routers {
-		r, err := buildRouter(rc, providers, resolver)
+		r, err := buildRouter(rc, providers, resolver, costLookup)
 		if err != nil {
 			return nil, fmt.Errorf("router %q: %w", rc.Name, err)
 		}
@@ -702,7 +702,7 @@ func modelCostEntries(entries []config.ModelCatalogEntry) []types.ModelCost {
 	return out
 }
 
-func buildRouter(rc config.RouterConfig, providers map[string]types.ProviderConfig, resolver *router.AliasResolver) (router.Router, error) {
+func buildRouter(rc config.RouterConfig, providers map[string]types.ProviderConfig, resolver *router.AliasResolver, catalog router.CostLatencyLookup) (router.Router, error) {
 	switch rc.Type {
 	case "simple":
 		defaultProvider, _ := rc.Config["default_provider"].(string)
@@ -716,7 +716,7 @@ func buildRouter(rc config.RouterConfig, providers map[string]types.ProviderConf
 		if err != nil {
 			return nil, err
 		}
-		return router.NewPolicyRouter(rc.Name, rules, providers, resolver), nil
+		return router.NewPolicyRouter(rc.Name, rules, providers, resolver, catalog), nil
 	default:
 		return nil, fmt.Errorf("unknown router type %q", rc.Type)
 	}
@@ -768,6 +768,17 @@ func policyRules(cfg map[string]interface{}) ([]router.PolicyRule, error) {
 				for _, c := range caps {
 					if s, ok := c.(string); ok {
 						when.Capabilities = append(when.Capabilities, s)
+					}
+				}
+			}
+			// Guards the rule's target rather than matching the request — see
+			// PolicyCondition.RequiresInputModalities. Named distinctly from
+			// `capabilities` because the two vocabularies differ: signals say
+			// what the request needs, modalities say what a model accepts.
+			if mods, ok := w["requires_input_modalities"].([]interface{}); ok {
+				for _, c := range mods {
+					if s, ok := c.(string); ok {
+						when.RequiresInputModalities = append(when.RequiresInputModalities, s)
 					}
 				}
 			}

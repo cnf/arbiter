@@ -19,7 +19,7 @@ func TestPolicyRouterFirstMatchWins(t *testing.T) {
 		{When: PolicyCondition{Domain: "code_generation"}, Provider: "claude"},
 		{When: PolicyCondition{}, Provider: "gpt4"}, // wildcard catch-all
 	}
-	pr := NewPolicyRouter("test", rules, testProviders(), nil)
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
 	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "code_generation"})
 	if err != nil {
@@ -38,7 +38,7 @@ func TestPolicyRouterWildcardFallsThrough(t *testing.T) {
 		{When: PolicyCondition{Domain: "code_generation"}, Provider: "claude"},
 		{When: PolicyCondition{}, Provider: "gpt4"},
 	}
-	pr := NewPolicyRouter("test", rules, testProviders(), nil)
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
 	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "chat"})
 	if err != nil {
@@ -53,7 +53,7 @@ func TestPolicyRouterNoMatchErrors(t *testing.T) {
 	rules := []PolicyRule{
 		{When: PolicyCondition{Domain: "code_generation"}, Provider: "claude"},
 	}
-	pr := NewPolicyRouter("test", rules, testProviders(), nil)
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
 	_, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "chat"})
 	if err == nil {
@@ -65,7 +65,7 @@ func TestPolicyRouterUnconfiguredProviderErrors(t *testing.T) {
 	rules := []PolicyRule{
 		{When: PolicyCondition{}, Provider: "nonexistent"},
 	}
-	pr := NewPolicyRouter("test", rules, testProviders(), nil)
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
 	_, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
 	if err == nil {
@@ -77,7 +77,7 @@ func TestPolicyRouterCapabilitiesRequireAll(t *testing.T) {
 	rules := []PolicyRule{
 		{When: PolicyCondition{Capabilities: []string{"vision", "tool_use"}}, Provider: "gpt4"},
 	}
-	pr := NewPolicyRouter("test", rules, testProviders(), nil)
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
 	// only one of two required capabilities present -> no match
 	_, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{RequiredCapabilities: []string{"vision"}})
@@ -99,7 +99,7 @@ func TestPolicyRouterModelOverride(t *testing.T) {
 	rules := []PolicyRule{
 		{When: PolicyCondition{}, Provider: "claude", Model: "claude-3-haiku-20250307"},
 	}
-	pr := NewPolicyRouter("test", rules, testProviders(), nil)
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
 	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{Model: "claude-3-opus-20250219"}, types.Signals{})
 	if err != nil {
@@ -116,7 +116,7 @@ func TestPolicyRouterEffortMatches(t *testing.T) {
 		{When: PolicyCondition{Domain: "code_generation", Effort: "hard"}, Provider: "claude"},
 		{When: PolicyCondition{}, Provider: "gpt4"},
 	}
-	pr := NewPolicyRouter("test", rules, testProviders(), nil)
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
 	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "code_generation", Effort: "hard"})
 	if err != nil {
@@ -132,7 +132,7 @@ func TestPolicyRouterEffortWildcardFallsThrough(t *testing.T) {
 		{When: PolicyCondition{Domain: "code_generation", Effort: "hard"}, Provider: "claude"},
 		{When: PolicyCondition{}, Provider: "gpt4"},
 	}
-	pr := NewPolicyRouter("test", rules, testProviders(), nil)
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
 	// same domain, different effort -> falls through to the wildcard
 	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "code_generation", Effort: "easy"})
@@ -152,7 +152,7 @@ func TestPolicyRouterTargetResolvesPinnedAlias(t *testing.T) {
 	rules := []PolicyRule{
 		{When: PolicyCondition{}, Target: "cheap-claude"},
 	}
-	pr := NewPolicyRouter("test", rules, testProviders(), resolver)
+	pr := NewPolicyRouter("test", rules, testProviders(), resolver, nil)
 
 	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
 	if err != nil {
@@ -179,7 +179,7 @@ func TestPolicyRouterTargetResolvesGroupWithFallbacks(t *testing.T) {
 	rules := []PolicyRule{
 		{When: PolicyCondition{}, Target: "free-search"},
 	}
-	pr := NewPolicyRouter("test", rules, testProviders(), resolver)
+	pr := NewPolicyRouter("test", rules, testProviders(), resolver, nil)
 
 	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
 	if err != nil {
@@ -197,7 +197,7 @@ func TestPolicyRouterTargetWithoutResolverErrors(t *testing.T) {
 	rules := []PolicyRule{
 		{When: PolicyCondition{}, Target: "cheap-claude"},
 	}
-	pr := NewPolicyRouter("test", rules, testProviders(), nil)
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
 	_, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
 	if err == nil {
@@ -208,7 +208,7 @@ func TestPolicyRouterTargetWithoutResolverErrors(t *testing.T) {
 func TestPolicyRouterChainedWithSimpleFallback(t *testing.T) {
 	policy := NewPolicyRouter("policy", []PolicyRule{
 		{When: PolicyCondition{Domain: "code_generation"}, Provider: "claude"},
-	}, testProviders(), nil)
+	}, testProviders(), nil, nil)
 	simple := NewSimpleRouter("fallback", "gpt4", "", testProviders())
 	chained := NewChainedRouter("chained", []Router{policy, simple})
 

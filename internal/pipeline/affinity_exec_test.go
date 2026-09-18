@@ -236,7 +236,7 @@ func TestForceAliasOverridesOnlyNamedAxes(t *testing.T) {
 		{When: router.PolicyCondition{Domain: "code_generation", Effort: "medium"}, Provider: "smart"},
 		{When: router.PolicyCondition{}, Provider: "fast"},
 	}
-	policy := router.NewPolicyRouter("test", rules, provs, resolver)
+	policy := router.NewPolicyRouter("test", rules, provs, resolver, nil)
 
 	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
 	n := fakeNormalizer{model: "coding"}
@@ -268,7 +268,7 @@ func TestExplicitModelPrecedenceOverAffinityPin(t *testing.T) {
 	}, provs, nil, nil)
 	policy := router.NewPolicyRouter("test", []router.PolicyRule{
 		{When: router.PolicyCondition{}, Provider: "claude"},
-	}, provs, resolver)
+	}, provs, resolver, nil)
 
 	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
 	msg := []byte("explain how the custom parser handles nesting")
@@ -313,7 +313,7 @@ func TestUnknownModelRejected(t *testing.T) {
 	}
 	policy := router.NewPolicyRouter("test", []router.PolicyRule{
 		{When: router.PolicyCondition{}, Provider: "claude"},
-	}, provs, nil)
+	}, provs, nil, nil)
 
 	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
 	n := fakeNormalizer{model: "anthropic/booboo"}

@@ -120,3 +120,50 @@ func TestPolicyRulesRejectsBothCostClassSpellingsSet(t *testing.T) {
 		t.Fatal("expected an error: both 'cost_class' and 'cost_sensitivity' set on the same rule")
 	}
 }
+
+func TestPolicyRulesParsesRequiresInputModalities(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"provider": "claude",
+				"when":     map[string]interface{}{"requires_input_modalities": []interface{}{"image", "file"}},
+			},
+		},
+	}
+	rules, err := policyRules(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := rules[0].When.RequiresInputModalities
+	if len(got) != 2 || got[0] != "image" || got[1] != "file" {
+		t.Fatalf("RequiresInputModalities = %v, want [image file]", got)
+	}
+}
+
+// The new key must not be confused with the existing `capabilities`, which
+// matches the request rather than the target. Parsing one into the other would
+// silently change what every existing capabilities rule means.
+func TestPolicyRulesKeepsModalitiesAndCapabilitiesSeparate(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"provider": "claude",
+				"when": map[string]interface{}{
+					"capabilities":              []interface{}{"vision"},
+					"requires_input_modalities": []interface{}{"image"},
+				},
+			},
+		},
+	}
+	rules, err := policyRules(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	when := rules[0].When
+	if len(when.Capabilities) != 1 || when.Capabilities[0] != "vision" {
+		t.Errorf("Capabilities = %v, want [vision] (request-side)", when.Capabilities)
+	}
+	if len(when.RequiresInputModalities) != 1 || when.RequiresInputModalities[0] != "image" {
+		t.Errorf("RequiresInputModalities = %v, want [image] (target-side)", when.RequiresInputModalities)
+	}
+}

@@ -40,7 +40,7 @@ overrides both. Loopback is the default on purpose — see
 |----------------------|--------------------------------------|
 | `POST /v1/messages`, `POST /messages` | Anthropic Messages API   |
 | `POST /chat/completions`, `POST /v1/chat/completions` | OpenAI Chat Completions |
-| `GET /models`, `GET /v1/models` | model list (OpenAI shape), provider models and aliases |
+| `GET /models`, `GET /v1/models` | model list (OpenAI shape), provider models, aliases, and advertised capabilities |
 | `GET /health`        | liveness                             |
 | `GET /`              | 302 to `/admin/ui/`                  |
 | `POST /admin/reload` | reload config + catalog              |
@@ -351,6 +351,10 @@ model_catalog:                         # feeds the cost/latency select strategie
     input_cost_per_mtok: 0.25
     output_cost_per_mtok: 1.25
     latency_ms_p50: 900
+    input_modalities: ["text", "image"]   # what the model accepts
+    max_input_tokens: 200000
+    metadata:                             # free-form, forwarded to /models
+      function_calling: true
 
 routers:
   - name: "policy"
@@ -361,6 +365,8 @@ routers:
           target: "cheap-claude"       # a rule target may name an alias
         - when: { capabilities: ["vision"] }
           provider: "gpt4"             # ...or a literal provider/model
+        - when: { requires_input_modalities: ["image"] }
+          provider: "claude"           # skipped unless claude accepts images
         - when: {}                     # catch-all
           provider: "claude"
   - name: "primary"
@@ -493,6 +499,38 @@ inline row replaces the file's row entirely — fields are never mixed between
 the two. That's deliberate because `0` is a meaningful cost (a free model), so
 a field-by-field override could not tell "unset" from "free". Duplicate rows
 *within* one source are a config error.
+
+#### Capabilities
+
+A row also carries what the model **can do**, which `/v1/models` advertises and
+policy rules can route on:
+
+| Field | Meaning |
+|---|---|
+| `input_modalities` | What the model accepts: `text`, `image`, `file` |
+| `max_input_tokens` | Input context window |
+| `max_output_tokens` | Output limit |
+| `metadata` | Free-form; forwarded to `/v1/models` verbatim |
+
+**Absence means unknown, not false.** If a row omits `input_modalities`, or has
+no row at all, `/v1/models` omits the field entirely rather than sending an
+empty list — "we have no information about this model" and "this model accepts
+nothing" are different claims, and a client reading an empty list would believe
+the second. For the same reason an alias advertises no capabilities: it resolves
+to a target at request time, so what it accepts depends on where it lands.
+
+`catalog-convert` fills these from LiteLLM's price list, which carries
+`supports_vision`, `supports_pdf_input`, `max_input_tokens` and friends for
+roughly two-thirds of its chat models. The rest simply have no capability data,
+and their fields stay absent. `metadata` collects the flags that have no
+normalized home (`function_calling`, `reasoning`, `prompt_caching`,
+`computer_use`, …) so a client can read them without Arbiter having to
+interpret them — nothing in Arbiter consults `metadata` for any decision.
+
+The normalized vocabulary is Arbiter's own rather than LiteLLM's: several of its
+flags collapse into one modality (`supports_vision` or `supports_image_input` →
+`image`; `supports_pdf_input` → `file`). Mapping happens in the converter, so a
+second upstream source can be added later without changing what consumes it.
 
 The catalog file is inert on write: the config watcher tracks only the config
 file itself, so regenerating `catalog.yaml` does not reload anything until you
@@ -886,6 +924,45 @@ always fills `capabilities` and rejects an explicit `axis`. In a policy rule's
 `when` clause the older key spellings `intent` (for `domain`) and
 `cost_sensitivity` (for `cost_class`) are still accepted, but setting a key and
 its replacement on the same rule is an error rather than a silent pick.
+
+### Routing on what a model can do
+
+A rule may demand that its **target** accept certain input modalities:
+
+```yaml
+- when: { requires_input_modalities: ["image"] }
+  provider: "claude"
+```
+
+This is deliberately a different key from `capabilities`, which matches the
+*request's* own requirements. The two vocabularies are different things:
+`capabilities` says what a request **needs** (`vision`, `tool_use`,
+`long_context`), while `requires_input_modalities` says what a model
+**accepts** (`text`, `image`, `file`). Folding them together would silently
+change the meaning of every existing `capabilities` rule.
+
+A rule whose target cannot satisfy the requirement is **skipped**, and matching
+continues to the next rule. That is what makes a chain read as "send image
+traffic to the vision model, everything else here" without the operator writing
+the negative case:
+
+```yaml
+rules:
+  - when: { requires_input_modalities: ["image"] }
+    provider: "vision-model"     # used only if it accepts images
+  - when: {}                     # catch-all
+    provider: "text-model"
+```
+
+Modalities come from the cost/latency catalog (`input_modalities` on a
+`model_catalog` row). A model with **no catalog row, or a row that states
+nothing about modalities, does not satisfy the requirement** — unknown is not
+permission, and routing image traffic to a model whose support is simply
+unstated is the guess this exists to prevent. The same applies when no catalog
+is configured at all: an unverifiable guard never passes.
+
+If every rule is skipped the router reports its usual no-match error, so a
+router chained after it (a `simple` router, say) still takes over.
 
 ### LLM-backed classification
 

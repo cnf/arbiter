@@ -17,6 +17,19 @@ type PolicyCondition struct {
 	Effort       string
 	Capabilities []string // every entry must appear in signals.RequiredCapabilities
 	CostClass    string
+
+	// RequiresInputModalities guards the rule's *target* rather than matching
+	// the request: every entry must be something the target model accepts
+	// ("text", "image", "file"). A rule whose target cannot satisfy it is
+	// SKIPPED and matching continues, which is what lets a chain of rules read
+	// as "use the vision model when there is an image, otherwise this one".
+	//
+	// Deliberately a separate field from Capabilities, which matches the
+	// request's own required capabilities. The two vocabularies are different
+	// things — signals say what the request NEEDS, modalities say what a model
+	// ACCEPTS — and folding them together would silently change what every
+	// existing `when: {capabilities: ...}` rule means.
+	RequiresInputModalities []string
 }
 
 // Matches reports whether signals satisfy this condition.
@@ -73,17 +86,27 @@ type PolicyRouter struct {
 	rules          []PolicyRule
 	providerConfig map[string]types.ProviderConfig
 	resolver       *AliasResolver // nil when no aliases are configured
+
+	// catalog answers "what does this model accept", for rules that guard on
+	// their target's input modalities. nil when no catalog is configured, in
+	// which case a guarded rule cannot be verified and is skipped rather than
+	// assumed to pass — an unverifiable claim must not route a request to a
+	// model that may reject it.
+	catalog CostLatencyLookup
 }
 
 // NewPolicyRouter creates a signals-driven router. resolver may be nil when
 // the config declares no aliases, in which case rules must use the literal
-// provider/model form.
-func NewPolicyRouter(name string, rules []PolicyRule, providerConfig map[string]types.ProviderConfig, resolver *AliasResolver) *PolicyRouter {
+// provider/model form. catalog may be nil when no cost/latency catalog is
+// configured; it is only consulted by rules that set
+// RequiresInputModalities.
+func NewPolicyRouter(name string, rules []PolicyRule, providerConfig map[string]types.ProviderConfig, resolver *AliasResolver, catalog CostLatencyLookup) *PolicyRouter {
 	return &PolicyRouter{
 		name:           name,
 		rules:          rules,
 		providerConfig: providerConfig,
 		resolver:       resolver,
+		catalog:        catalog,
 	}
 }
 
@@ -99,6 +122,14 @@ func (pr *PolicyRouter) Route(ctx context.Context, req *types.NormalizedRequest,
 			return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: rule %d: %w", pr.name, i, err)
 		}
 
+		// A rule whose target cannot accept what the rule demands is skipped,
+		// and matching continues to the next rule. This is what makes a chain
+		// read as "send image traffic here, everything else there" without the
+		// operator having to express the negative case.
+		if unmet := pr.unmetModalities(rule.When, route); len(unmet) > 0 {
+			continue
+		}
+
 		meta := types.Metadata{
 			LatencyTarget: "normal",
 			TraceID:       req.TraceID,
@@ -108,6 +139,46 @@ func (pr *PolicyRouter) Route(ctx context.Context, req *types.NormalizedRequest,
 	}
 
 	return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: no rule matched signals (%s)", pr.name, signalsDescription(signals))
+}
+
+// unmetModalities returns the required modalities the route's target model does
+// not advertise. An empty result means the rule may be used.
+//
+// Three cases are deliberately distinguished:
+//
+//   - No requirement, or no catalog to consult: nothing to check. A catalog-less
+//     router cannot verify a guarded rule, and an unverifiable guard must not
+//     pass silently, so the caller treats a nil catalog as "skip the rule".
+//   - The model has no capability data (unknown): also unverifiable. Unknown is
+//     not permission — routing image traffic to a model whose support is simply
+//     unstated is the guess this whole feature exists to stop.
+//   - The model states its modalities: check them directly.
+func (pr *PolicyRouter) unmetModalities(when PolicyCondition, route types.Route) []string {
+	if len(when.RequiresInputModalities) == 0 {
+		return nil
+	}
+	if pr.catalog == nil {
+		return when.RequiresInputModalities
+	}
+	cost, ok := pr.catalog.Lookup(route.Provider, route.Model)
+	if !ok || len(cost.InputModalities) == 0 {
+		// No catalog row, or a row that states nothing about modalities.
+		return when.RequiresInputModalities
+	}
+	var unmet []string
+	for _, want := range when.RequiresInputModalities {
+		found := false
+		for _, have := range cost.InputModalities {
+			if want == have {
+				found = true
+				break
+			}
+		}
+		if !found {
+			unmet = append(unmet, want)
+		}
+	}
+	return unmet
 }
 
 // routeFor turns a matched rule into a concrete Route, resolving a Target

@@ -1259,8 +1259,9 @@ the **same `model` value**. A client that explicitly switches models means
 it, so the pin is discarded and routing runs fresh. The pin is recorded from
 the route that *actually served* the request, so it follows a fallback to
 another provider; a pinned provider currently in 429 cooldown is treated as a
-miss (fresh routing runs). Pins are in-memory and idle-expiring (refreshed on
-each hit); they reset on restart.
+miss (fresh routing runs). Pins are persisted (see the Session affinity section
+under Configuration) — they survive a config reload and a restart, and expiry is
+enforced on read as well as by the sweep.
 
 ## Testing
 

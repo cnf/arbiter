@@ -123,6 +123,74 @@ func ParseScoreLevels(raw interface{}) ([]ScoreLevel, error) {
 	}
 }
 
+// MatchPattern is one configured match pattern: what to look for, and how.
+type MatchPattern struct {
+	Pattern string
+	// Mode is "exact", "prefix" or "regex"; empty means prefix.
+	Mode string
+}
+
+// ParseMatchPatterns reads a classifier's `match:` field: a list of patterns,
+// OR-ed together, each `{mode, pattern}`.
+//
+// A YAML list of single-key maps is accepted in either shape:
+//
+//	match:
+//	  - mode: "prefix"
+//	    pattern: "You are a title generator."
+//	  - pattern: "another signature"      # mode omitted -> prefix
+//
+// A bare string is also accepted and means one prefix pattern, because that is
+// the shape an operator writes for the common case and forcing a list for one
+// entry would be noise.
+func ParseMatchPatterns(raw interface{}) ([]MatchPattern, error) {
+	switch v := raw.(type) {
+	case nil:
+		return nil, nil
+
+	case string:
+		return []MatchPattern{{Pattern: v}}, nil
+
+	case []interface{}:
+		out := make([]MatchPattern, 0, len(v))
+		for _, item := range v {
+			switch e := item.(type) {
+			case string:
+				out = append(out, MatchPattern{Pattern: e})
+			case map[string]interface{}:
+				pattern, _ := e["pattern"].(string)
+				if pattern == "" {
+					return nil, fmt.Errorf("every match entry needs a non-empty \"pattern\"")
+				}
+				mode, _ := e["mode"].(string)
+				if raw, ok := e["mode"]; ok {
+					if _, isStr := raw.(string); !isStr {
+						return nil, fmt.Errorf("mode for pattern %q must be a string, got %T", pattern, raw)
+					}
+				}
+				out = append(out, MatchPattern{Pattern: pattern, Mode: mode})
+			default:
+				return nil, fmt.Errorf("every match entry must be a string or a {mode, pattern} map, got %T", item)
+			}
+		}
+		return out, nil
+
+	case map[string]interface{}:
+		// A single {mode, pattern} map, not wrapped in a list. Accepted because
+		// `match:` with exactly one pattern is the common case and YAML makes
+		// the list form easy to forget.
+		pattern, _ := v["pattern"].(string)
+		if pattern == "" {
+			return nil, fmt.Errorf("match as a map needs a non-empty \"pattern\" (or use a list of patterns)")
+		}
+		mode, _ := v["mode"].(string)
+		return []MatchPattern{{Pattern: pattern, Mode: mode}}, nil
+
+	default:
+		return nil, fmt.Errorf("want a pattern, a list of patterns, or {mode, pattern}, got %T", raw)
+	}
+}
+
 // FindLabel returns the label matching name case-insensitively, with its
 // canonically-configured spelling — a model's own casing (or an operator's typo
 // in a reference) must never become the stored value.

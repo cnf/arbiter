@@ -1024,6 +1024,99 @@ classifier's, with the same captured-content behaviour — so the row's
 `routing_rationale` and the captured prompt/input are the evidence trail for a
 verdict that came from a distribution rather than from text.
 
+### Matching a request's own text (`match`)
+
+Every classifier above reads `types.LastUserText(req)` — the last **user**
+message. Some requests are identified by text that lives somewhere else: a
+title generator's system prompt begins `"You are a title generator."`, and for
+such a request the last user message is the conversation being titled, which
+looks like ordinary chat. The identifying text was not merely unmatched, it was
+invisible by construction.
+
+`match` searches the request's own text instead, on **any** classifier type:
+
+```yaml
+classifiers:
+  - name: "request-kind"
+    type: "heuristic"
+    axis: "domain"                      # any axis
+    config:
+      match:                            # OR-ed; any hit wins
+        - mode: "prefix"                # exact | prefix | regex
+          pattern: "You are a title generator."
+        - mode: "regex"
+          pattern: "(?i)you are (a|the) .{0,20}title (generator|writer)"
+      value: "title_generation"         # the axis value a hit fills
+      where: ["system"]                 # system | messages | all (default system)
+      decisive: true                    # optional — see below
+```
+
+`mode` and `where` mean exactly what they mean on the `prompt_rewrite`
+guardrail, and the implementation is literally the same code
+(`types.TextMatcher`): `exact` and `prefix` ignore case and surrounding
+whitespace, because the same preamble is re-serialized differently by different
+clients and wire formats; `regex` is used verbatim. A bare string is accepted
+as one `prefix` pattern.
+
+**A hit is a certainty, not a guess**, so it reports confidence `1.0` and the
+keywords are not consulted — a request that provably *is* a title generation is
+not a candidate for keyword voting.
+
+**`decisive: true` ends classification.** `MergedClassifier` consults
+classifiers in the order they are declared, and a decisive **hit** stops the
+merge, so classifiers behind it never run — no keyword pass, no model call. A
+decisive **miss** falls through exactly like any other miss, which is the
+property that matters: one title-gen rule must not switch off classification
+for every request that is not a title generation.
+
+This is a classifier capability rather than a guardrail because a guardrail
+structurally cannot do it: `ApplyPre` returns a request and an error with no
+channel for routing signals, and pre-guardrails run *before* `classify`, so a
+guardrail emitting a signal would be emitting into a phase that already
+happened.
+
+**Brittleness, honestly.** A pattern list is only as good as the patterns in it:
+a client whose signature you have never seen is a false negative until its
+pattern is added. Three things mitigate that — the OR-list makes each client
+variation a one-line edit, `regex` covers the ones that differ cosmetically,
+and a decisions classifier is the backstop for what neither catches.
+
+### Structural capability detection (`detect`)
+
+`capability_detector` gained request-shape predicates alongside its keywords:
+
+```yaml
+classifiers:
+  - name: "capability"
+    type: "capability_detector"
+    config:
+      detect: ["tool_use", "attachment"]   # proven from the request
+      long_context_tokens: 100000          # required if long_context is detected
+      keywords:                            # still works, for what shape cannot prove
+        vision: ["screenshot"]
+```
+
+| `detect` value | Proven by |
+|---|---|
+| `tool_use` | the request carries tools |
+| `attachment` | a content block is an attachment (image, PDF, document) |
+| `long_context` | `EstimatedTokens` at or over `long_context_tokens` |
+
+These are **facts about the request**, not inferences from its words: whether a
+request carries an attachment is countable, whereas the keyword detector was
+guessing from the word "image". A structural hit is therefore certain
+(confidence `1.0`) and is unioned with whatever keywords also matched — a
+request can need vision and tool_use at once.
+
+`attachment` is deliberately distinct from `vision`. `vision` is the
+pre-existing guess from text, kept unchanged so existing rules keep meaning what
+they meant; `attachment` is the certainty. A rule may match either.
+
+`long_context` is the one needing a threshold, because "long" is a policy
+choice rather than a fact — configuring `detect: ["long_context"]` without
+`long_context_tokens` is a **config-load error**, since it could otherwise never
+fire and "never fired" is indistinguishable from "the request was short".
+
 ### Admin surface and access
 
 `POST /admin/reload` re-reads the config and the `model_catalog_file` on

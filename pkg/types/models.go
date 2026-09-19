@@ -122,7 +122,38 @@ type ClassifierCallInfo struct {
 	AxisConfidence map[string]float64
 }
 
+// Capability names. These are the values a classifier fills
+// Signals.RequiredCapabilities with and a policy rule's `capabilities:`
+// matches against.
+//
+// CapToolUse, CapLongContext and CapVision are the pre-existing vocabulary the
+// heuristics already emit, kept unchanged so existing configs and rules keep
+// meaning what they meant. CapAttachment is new and deliberately distinct from
+// CapVision: a request carrying an image/document block is a FACT about the
+// bytes, whereas "vision" was always a guess from the text. A rule may match
+// either, and an operator who wants the certainty can now ask for it.
+const (
+	CapVision      = "vision"
+	CapToolUse     = "tool_use"
+	CapLongContext = "long_context"
+	CapAttachment  = "attachment"
+)
+
+// KnownCapabilities is the set a `detect:` block may name, in the order an
+// error message should list them.
+var KnownCapabilities = []string{CapToolUse, CapAttachment, CapVision, CapLongContext}
+
+// Axis names. Canonical, and the source of truth KnownAxes is built from, so
+// the config package can name an axis without importing internal/classifier
+// (which it cannot reach).
+const (
+	AxisDomainName       = "domain"
+	AxisEffortName       = "effort"
+	AxisCostClassName    = "cost_class"
+	AxisCapabilitiesName = "capabilities"
+)
+
 // KnownAxes lists the axis names a force-alias may target. Keys are the
 // canonical (current) names; the config layer also accepts the deprecated
 // spellings and maps them onto these.
-var KnownAxes = []string{"domain", "effort", "cost_class", "capabilities"}
+var KnownAxes = []string{AxisDomainName, AxisEffortName, AxisCostClassName, AxisCapabilitiesName}

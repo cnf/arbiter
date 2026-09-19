@@ -301,6 +301,9 @@ func (c *Config) Validate() error {
 	if err := c.validateDecisionsClassifiers(); err != nil {
 		return err
 	}
+	if err := validateClassifierMatch(c.Classifiers); err != nil {
+		return err
+	}
 	if err := validateUniqueNames("router", routerNames(c.Routers)); err != nil {
 		return err
 	}
@@ -655,6 +658,121 @@ func (c *Config) validateDecisionsAlias(classifier, alias string) error {
 		return nil
 	}
 	return walk(alias)
+}
+
+// validateClassifierMatch checks every classifier's optional `match:` and
+// `detect:` blocks.
+//
+// `match` and `detect` are interpreted by cmd/arbiter's buildClassifier, which
+// this package cannot reach, so a shape it would drop has to be caught here.
+// The failure mode is the one this file exists to prevent: a `match` block the
+// builder ignores looks exactly like a `match` block that never hits, and the
+// operator concludes the signature is wrong rather than the config.
+func validateClassifierMatch(cs []ClassifierConfig) error {
+	for _, cc := range cs {
+		// `detect` and `long_context_tokens` are only meaningful on the
+		// capabilities axis. On any other axis the structural hit would be
+		// discarded by fillAxis.
+		if raw, ok := cc.Config["detect"]; ok {
+			if cc.Type != "capability_detector" && cc.Axis != types.AxisCapabilitiesName {
+				return arbitererrors.NewConfigError(fmt.Sprintf(
+					"classifier %q: \"detect\" only applies to the capabilities axis (this one fills %q; use type \"capability_detector\" or axis: %q)",
+					cc.Name, cc.Axis, types.AxisCapabilitiesName), nil)
+			}
+			names, err := matchStringList(raw, "detect")
+			if err != nil {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: %v", cc.Name, err), nil)
+			}
+			if len(names) == 0 {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: \"detect\" must name at least one capability (want one of %v)", cc.Name, types.KnownCapabilities), nil)
+			}
+			for _, name := range names {
+				if !containsString(types.KnownCapabilities, name) {
+					return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: unknown capability %q in detect (want one of %v)", cc.Name, name, types.KnownCapabilities), nil)
+				}
+				// long_context is the one capability that needs a threshold:
+				// without one it could never fire, and "never fires" is
+				// indistinguishable from "the request was short".
+				if name == types.CapLongContext {
+					if n, _ := cc.Config["long_context_tokens"].(int); n <= 0 {
+						return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: detect \"long_context\" requires \"long_context_tokens\" (a positive token threshold); without one it can never match", cc.Name), nil)
+					}
+				}
+			}
+		}
+
+		raw, ok := cc.Config["match"]
+		if !ok {
+			continue
+		}
+		patterns, err := types.ParseMatchPatterns(raw)
+		if err != nil {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: match: %v", cc.Name, err), nil)
+		}
+		if len(patterns) == 0 {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: match needs at least one pattern", cc.Name), nil)
+		}
+		value, _ := cc.Config["value"].(string)
+		if value == "" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: match requires \"value\" (the axis value a hit fills)", cc.Name), nil)
+		}
+		if raw, ok := cc.Config["where"]; ok {
+			where, err := matchStringList(raw, "where")
+			if err != nil {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: %v", cc.Name, err), nil)
+			}
+			if _, err := types.ParseMatchTargets(where); err != nil {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: %v", cc.Name, err), nil)
+			}
+		}
+		if raw, ok := cc.Config["decisive"]; ok {
+			if _, isBool := raw.(bool); !isBool {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: decisive must be a boolean", cc.Name), nil)
+			}
+		}
+		// A decisive matcher ends classification for everything after it, so
+		// it must not be able to end it for a request it does not match.
+		// Compiling each pattern is the only way to know that here.
+		for _, p := range patterns {
+			if _, err := types.NewTextMatcher(p.Pattern, types.MatchMode(p.Mode)); err != nil {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: match pattern %q: %v", cc.Name, p.Pattern, err), nil)
+			}
+		}
+	}
+	return nil
+}
+
+// matchStringList reads a config value that may be a YAML list or a single
+// string, for the shapes this file validates on its own rather than through a
+// types parser.
+func matchStringList(raw interface{}, field string) ([]string, error) {
+	switch v := raw.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		return []string{v}, nil
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("%s entries must be strings, got %T", field, item)
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("%s must be a string or a list of strings, got %T", field, raw)
+	}
+}
+
+func containsString(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }
 
 // validateAliases checks the aliases block: names unique and disjoint from

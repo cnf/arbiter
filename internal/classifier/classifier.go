@@ -28,10 +28,10 @@ func Register(typeName string, factory Factory) {
 // (domain, effort, capabilities) without overwriting each other's axis —
 // the merger keys off this rather than off the classifier's name.
 const (
-	AxisDomain       = "domain"
-	AxisEffort       = "effort"
-	AxisCapabilities = "capabilities"
-	AxisCostClass    = "cost_class"
+	AxisDomain       = types.AxisDomainName
+	AxisEffort       = types.AxisEffortName
+	AxisCapabilities = types.AxisCapabilitiesName
+	AxisCostClass    = types.AxisCostClassName
 )
 
 // HeuristicClassifier uses keyword matching against the last user message
@@ -39,24 +39,79 @@ const (
 // answer. The multi-axis split in arbiter.yaml is handled by running several
 // instances of this same type with different keyword maps and axis settings,
 // merged via MergedClassifier, rather than baking each axis into the type.
+//
+// It can also carry a RequestMatcher, which is the opposite kind of guess: an
+// exact structural signature (a client's known preamble, say) rather than a
+// keyword hit. When one is configured and hits, it wins outright and the
+// keywords are not consulted — a request that provably IS a title generation
+// is not a candidate for keyword guessing.
 type HeuristicClassifier struct {
 	name     string
 	axis     string              // which Signals field this instance fills
 	keywords map[string][]string // axis value -> keywords
+
+	// matcher, when non-nil, matches the request's own text (system prompt or
+	// messages) rather than the last user message. See RequestMatcher.
+	matcher *RequestMatcher
+
+	// detect, when non-empty, names capabilities to test STRUCTURALLY against
+	// the request (tools present, attachment present, over a token threshold)
+	// rather than by keyword. Only meaningful on the capabilities axis, and
+	// unioned with whatever keywords also matched — a request can need vision
+	// and tool_use at once. See capabilityPredicate.
+	detect            []string
+	longContextTokens int
 }
 
 // NewHeuristicClassifier creates a heuristic classifier filling axis. An
 // empty axis means AxisDomain, which is what every pre-existing config
 // (written before axes were declared) means.
 func NewHeuristicClassifier(name, axis string, keywords map[string][]string) *HeuristicClassifier {
+	return NewHeuristicClassifierWithMatch(name, axis, keywords, nil)
+}
+
+// NewHeuristicClassifierWithMatch creates a heuristic classifier that consults
+// matcher first. A nil matcher is exactly NewHeuristicClassifier's behaviour.
+func NewHeuristicClassifierWithMatch(name, axis string, keywords map[string][]string, matcher *RequestMatcher) *HeuristicClassifier {
+	return NewHeuristicClassifierFull(name, axis, keywords, matcher, nil, 0)
+}
+
+// NewHeuristicClassifierFull creates a heuristic classifier with every
+// optional capability. detect names capabilities tested structurally;
+// longContextTokens is the threshold long_context is measured against (0 means
+// unconfigured, which config validation rejects rather than letting it never
+// fire).
+func NewHeuristicClassifierFull(name, axis string, keywords map[string][]string, matcher *RequestMatcher, detect []string, longContextTokens int) *HeuristicClassifier {
 	if axis == "" {
 		axis = AxisDomain
 	}
 	return &HeuristicClassifier{
-		name:     name,
-		axis:     axis,
-		keywords: keywords,
+		name:              name,
+		axis:              axis,
+		keywords:          keywords,
+		matcher:           matcher,
+		detect:            detect,
+		longContextTokens: longContextTokens,
 	}
+}
+
+// DecisiveMatch reports whether a decisive matcher on this classifier HIT.
+// False for a classifier with no matcher, and false for a decisive matcher
+// that did not match — a miss must fall through, not stop the merge.
+//
+// Deliberately stateless: classifiers are built once at config load and shared
+// across concurrent requests, so recording "I matched" on the struct would be a
+// data race. This re-evaluates the match instead, which is cheap (string
+// comparison) and means the answer cannot go stale.
+func (hc *HeuristicClassifier) DecisiveMatch(req *types.NormalizedRequest) bool {
+	return hc.matcher.Decisive() && hc.matcher.Match(req)
+}
+
+// decisiveMatcher is implemented by a classifier that can end classification
+// outright. A narrow interface rather than a field on Classifier, so the two
+// model-backed types and every pre-existing classifier are untouched.
+type decisiveMatcher interface {
+	DecisiveMatch(req *types.NormalizedRequest) bool
 }
 
 // Classify performs keyword-based classification against the last user
@@ -64,7 +119,22 @@ func NewHeuristicClassifier(name, axis string, keywords map[string][]string) *He
 // intent was declared first in config. Confidence is hits / (hits + 1), a
 // cheap curve that approaches 1.0 as evidence piles up but never reaches it
 // (heuristics are never fully certain) and is exactly 0 for zero hits.
+//
+// A configured matcher is consulted first and wins outright: a structural
+// signature is not a guess, so there is nothing for keywords to add. Its
+// confidence is 1.0 for the same reason — an exact match is the one thing this
+// classifier can be certain of.
 func (hc *HeuristicClassifier) Classify(ctx context.Context, req *types.NormalizedRequest) (types.Signals, error) {
+	if hc.matcher != nil && hc.matcher.Match(req) {
+		sig := types.Signals{
+			EstimatedTokens: estimateTokens(req),
+			Confidence:      1.0,
+			AxisConfidence:  map[string]float64{hc.axis: 1.0},
+		}
+		hc.fillAxis(&sig, hc.matcher.Value())
+		return sig, nil
+	}
+
 	text := strings.ToLower(types.LastUserText(req))
 
 	var bestValue string
@@ -97,19 +167,107 @@ func (hc *HeuristicClassifier) Classify(ctx context.Context, req *types.Normaliz
 		EstimatedTokens: estimateTokens(req),
 		Confidence:      confidence,
 	}
-	switch hc.axis {
-	case AxisEffort:
-		sig.Effort = bestValue
-	case AxisCostClass:
-		sig.CostClass = bestValue
-	case AxisCapabilities:
+	if bestValue != "" {
+		sig.AxisConfidence = map[string]float64{hc.axis: confidence}
+	}
+	if hc.axis == AxisCapabilities {
 		// Every matched group is a capability, not just the winner — a
 		// request can need vision and tool_use at once.
 		sig.RequiredCapabilities = matched
-	default:
-		sig.Domain = bestValue
+		hc.detectCapabilities(req, &sig)
+	} else {
+		hc.fillAxis(&sig, bestValue)
 	}
 	return sig, nil
+}
+
+// detectCapabilities adds each structurally-proven capability to sig, keeping
+// the result order-stable (config order, then anything keywords already added).
+//
+// A structural hit is certain, so it raises Confidence to 1.0: the request
+// demonstrably carries tools or an attachment, which is not a guess and must
+// not lose a merge to a keyword classifier's hit/(hits+1) curve.
+func (hc *HeuristicClassifier) detectCapabilities(req *types.NormalizedRequest, sig *types.Signals) {
+	if len(hc.detect) == 0 {
+		return
+	}
+	seen := make(map[string]bool, len(sig.RequiredCapabilities))
+	for _, c := range sig.RequiredCapabilities {
+		seen[c] = true
+	}
+	structural := false
+	for _, name := range hc.detect {
+		hit, answerable := capabilityPredicate(name, req, hc.longContextTokens)
+		if !answerable || !hit {
+			continue
+		}
+		structural = true
+		if !seen[name] {
+			seen[name] = true
+			sig.RequiredCapabilities = append(sig.RequiredCapabilities, name)
+		}
+	}
+	if structural {
+		sig.Confidence = 1.0
+		sig.AxisConfidence = map[string]float64{AxisCapabilities: 1.0}
+	}
+}
+
+// fillAxis writes one value onto whichever Signals field this instance fills.
+// An empty value leaves every axis empty, which is what a zero-hit heuristic
+// reports and what a matcher's escape-equivalent would mean.
+func (hc *HeuristicClassifier) fillAxis(sig *types.Signals, value string) {
+	switch hc.axis {
+	case AxisEffort:
+		sig.Effort = value
+	case AxisCostClass:
+		sig.CostClass = value
+	case AxisCapabilities:
+		if value != "" {
+			sig.RequiredCapabilities = []string{value}
+		}
+	default:
+		sig.Domain = value
+	}
+}
+
+// capabilityPredicates maps a capability name to the request-shape test that
+// proves it, for the `detect:` block on a capability_detector classifier.
+//
+// These are exact: whether a request carries tools or an attachment is a fact
+// about the request, not an inference from its words. So a structural hit is
+// certain (confidence 1.0) and does not depend on the operator guessing which
+// keyword a client will use. That matters more than it looks: the previous
+// keyword-only detection matched on the shape of the TEXT ("image",
+// "screenshot"), which is a guess about bytes that are actually present and
+// countable.
+//
+// long_context is the one that needs a threshold, because "long" is a policy
+// choice rather than a fact — hence `long_context_tokens:`.
+func capabilityPredicate(name string, req *types.NormalizedRequest, longContextTokens int) (bool, bool) {
+	switch name {
+	case types.CapToolUse:
+		return len(req.Tools) > 0, true
+	case types.CapAttachment:
+		for _, m := range req.Messages {
+			for _, b := range m.Content {
+				if b.Type == "attachment" {
+					return true, true
+				}
+			}
+		}
+		return false, true
+	case types.CapLongContext:
+		if longContextTokens <= 0 {
+			// Configured without a threshold: matched on nothing, reported as
+			// not-answerable so the caller can reject it at config load rather
+			// than silently never firing.
+			return false, false
+		}
+		return estimateTokens(req) >= longContextTokens, true
+	default:
+		return false, false
+	}
 }
 
 // estimateTokens is a rough char/4 heuristic over all message text, good
@@ -163,6 +321,13 @@ func axisScore(sig types.Signals, axis string) float64 {
 // classifier out of populating Effort. RequiredCapabilities and
 // EstimatedTokens are unioned/maxed since those are additive rather than
 // exclusive facts about the request.
+//
+// A classifier whose matcher is `decisive` ends the merge when it hits: the
+// classifiers after it do not run at all. That is the difference between an
+// exact structural match and a guess — "this request IS a title generation" is
+// not a candidate for keyword voting or a model call, and paying for a
+// classification whose answer is already known is pure loss. Declared order is
+// the priority order, which buildClassifiers already preserves.
 func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedRequest) (types.Signals, error) {
 	var merged types.Signals
 	axisConfidence := make(map[string]float64)
@@ -206,6 +371,20 @@ func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedR
 		// its own upstream call (an LLMClassifier) is worth recording, not
 		// just the one whose axis ends up winning.
 		merged.ClassifierCalls = append(merged.ClassifierCalls, sig.ClassifierCalls...)
+
+		// A decisive matcher HIT ends the merge: whatever this classifier
+		// concluded IS the answer, so the classifiers declared after it are
+		// not consulted. Checked last within the iteration so this
+		// classifier's own signal is folded in before the loop stops.
+		//
+		// The check is on the hit, not on the configuration. A decisive
+		// matcher that did not match must fall through to the classifiers
+		// behind it exactly like any other miss, or one title-gen rule would
+		// switch off classification for every request that is not a title
+		// generation.
+		if d, ok := c.(decisiveMatcher); ok && d.DecisiveMatch(req) {
+			break
+		}
 	}
 
 	// The per-axis scores that decided each axis are carried forward, so a

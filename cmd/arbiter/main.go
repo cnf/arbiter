@@ -708,20 +708,57 @@ func isModelBackedClassifier(typeName string) bool {
 func buildClassifier(cc config.ClassifierConfig) (classifier.Classifier, error) {
 	switch cc.Type {
 	case "heuristic":
-		keywords, err := stringListMap(cc.Config, "keywords", "detectors")
-		if err != nil {
-			return nil, err
-		}
-		return classifier.NewHeuristicClassifier(cc.Name, cc.Axis, keywords), nil
+		return buildHeuristicClassifier(cc, cc.Axis)
 	case "capability_detector":
-		keywords, err := stringListMap(cc.Config, "keywords", "detectors")
-		if err != nil {
-			return nil, err
-		}
-		return classifier.NewHeuristicClassifier(cc.Name, classifier.AxisCapabilities, keywords), nil
+		// The legacy type always fills capabilities, whatever axis it declares
+		// (config validation rejects a declared axis on it).
+		return buildHeuristicClassifier(cc, classifier.AxisCapabilities)
 	default:
 		return nil, fmt.Errorf("unknown classifier type %q", cc.Type)
 	}
+}
+
+// buildHeuristicClassifier builds a heuristic classifier from its `config:`
+// block: keywords (or the legacy `detectors` spelling), an optional `match`
+// block matching the request's own text rather than its last user message, and
+// an optional `detect` list of structurally-proven capabilities.
+//
+// match and detect are the two ways this type does better than keyword
+// guessing, and they fail differently: `match` is exact but needs the operator
+// to know the client's signature, while `detect` needs nothing from the
+// operator beyond naming the capability because the request either carries the
+// bytes or it does not.
+func buildHeuristicClassifier(cc config.ClassifierConfig, axis string) (classifier.Classifier, error) {
+	keywords, err := stringListMap(cc.Config, "keywords", "detectors")
+	if err != nil {
+		return nil, err
+	}
+
+	var matcher *classifier.RequestMatcher
+	if raw, ok := cc.Config["match"]; ok {
+		patterns, err := types.ParseMatchPatterns(raw)
+		if err != nil {
+			return nil, fmt.Errorf("match: %w", err)
+		}
+		value, _ := cc.Config["value"].(string)
+		where, err := stringList(cc.Config, "where")
+		if err != nil {
+			return nil, err
+		}
+		decisive, _ := cc.Config["decisive"].(bool)
+		matcher, err = classifier.NewRequestMatcher(patterns, value, where, decisive)
+		if err != nil {
+			return nil, fmt.Errorf("match: %w", err)
+		}
+	}
+
+	detect, err := stringList(cc.Config, "detect")
+	if err != nil {
+		return nil, err
+	}
+	longContextTokens := intFromConfig(cc.Config, "long_context_tokens")
+
+	return classifier.NewHeuristicClassifierFull(cc.Name, axis, keywords, matcher, detect, longContextTokens), nil
 }
 
 // buildLLMClassifier builds an "llm" classifier: alias (required) names the

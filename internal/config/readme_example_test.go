@@ -94,6 +94,59 @@ func TestReadmeDecisionsClassifierExampleLoads(t *testing.T) {
 	loadReadmeFragment(t, string(m[1]))
 }
 
+// TestReadmeClassifierMatchExamplesLoad checks the `match` and `detect` snippets
+// in the classifier sections against the config schema.
+//
+// Like the guardrail fragments, these show only a `classifiers:` block, so each
+// is grafted onto the base example (replacing its classifiers block). Without
+// this the section could document a key the loader rejects — which is exactly
+// how the Guardrails section once came to document a guardrail type that never
+// existed.
+func TestReadmeClassifierMatchExamplesLoad(t *testing.T) {
+	readme := readReadme(t)
+
+	base := regexp.MustCompile("(?s)## Configuration.*?```yaml\n(.*?)```").FindSubmatch(readme)
+	if base == nil {
+		t.Fatal("could not find the base example under '## Configuration'")
+	}
+	// The base example's classifiers block, replaced wholesale by each fragment.
+	//
+	// Found by slicing rather than by regex: Go's regexp has no lookahead, and
+	// the block must be bounded by the NEXT top-level key — bounding it by blank
+	// lines would run past the end, since the block contains blank lines
+	// internally and the keys after it hold the rest of a loadable config.
+	baseText := string(base[1])
+	start := strings.Index(baseText, "classifiers:\n")
+	if start < 0 {
+		t.Fatal("could not locate the base example's classifiers block; update this test")
+	}
+	rest := baseText[start+len("classifiers:\n"):]
+	end := len(rest)
+	lineRe := regexp.MustCompile(`(?m)^[a-zA-Z_]+:`)
+	if loc := lineRe.FindStringIndex(rest); loc != nil {
+		end = loc[0]
+	}
+	classifiersBlock := baseText[start : start+len("classifiers:\n")+end]
+
+	for _, tc := range []struct {
+		name    string
+		section string
+	}{
+		{"match section", "### Matching a request's own text"},
+		{"detect section", "### Structural capability detection"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			re := regexp.MustCompile("(?s)" + regexp.QuoteMeta(tc.section) + `.*?` + "```yaml\n(.*?)```")
+			m := re.FindSubmatch(readme)
+			if m == nil {
+				t.Fatalf("no ```yaml block found under %q", tc.section)
+			}
+			grafted := strings.Replace(string(base[1]), classifiersBlock, strings.TrimRight(string(m[1]), "\n")+"\n", 1)
+			loadReadmeFragment(t, grafted)
+		})
+	}
+}
+
 func readReadme(t *testing.T) []byte {
 	t.Helper()
 	readme, err := os.ReadFile("../../README.md")

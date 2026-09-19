@@ -96,6 +96,29 @@ providers:
 # on, that row also carries the text it classified and the prompt it was given,
 # so a wrong verdict can be read against what produced it.
 #
+# ANY classifier type may also take a `match:` block, which matches the
+# request's OWN text rather than its last user message — the text that
+# identifies a request is not always in the user's message (a title generator's
+# signature is in its system prompt, and its last user message is the
+# conversation being titled):
+#   match:        required for the block — a pattern, a list of patterns, or
+#                 {mode, pattern}. Patterns are OR-ed.
+#     mode:       exact | prefix | regex (default prefix). Same vocabulary and
+#                 the same code as the prompt_rewrite guardrail's.
+#     pattern:    the text to look for.
+#   value:        required — the axis value a hit fills.
+#   where:        system | messages | all (default system).
+#   decisive:     optional bool — a HIT ends classification, so classifiers
+#                 declared after this one do not run. A MISS falls through
+#                 normally.
+#
+# A `capability_detector` may take `detect:`, which proves capabilities from the
+# request's shape rather than from its words:
+#   detect:               tool_use | attachment | long_context
+#   long_context_tokens:  required when long_context is detected — without a
+#                         threshold it could never fire.
+# Keywords still work alongside it, for what shape cannot prove.
+#
 # classifiers:
 #   - name: "domain-heuristic"
 #     type: "heuristic"

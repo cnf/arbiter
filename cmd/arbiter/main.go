@@ -758,6 +758,16 @@ func buildHeuristicClassifier(cc config.ClassifierConfig, axis string) (classifi
 	}
 	longContextTokens := intFromConfig(cc.Config, "long_context_tokens")
 
+	// A classifier with no signals at all can never produce anything, which is
+	// config the operator believes is doing something — the failure mode this
+	// builder's callers exist to catch. It is checked here rather than in
+	// stringListMap because each of the three is individually optional: a
+	// title-gen matcher has no keywords and needs none, while a keyword
+	// classifier has no match and needs none either.
+	if len(keywords) == 0 && matcher == nil && len(detect) == 0 {
+		return nil, fmt.Errorf("classifier %q: needs at least one of \"keywords\", \"match\" or \"detect\"", cc.Name)
+	}
+
 	return classifier.NewHeuristicClassifierFull(cc.Name, axis, keywords, matcher, detect, longContextTokens), nil
 }
 
@@ -1102,20 +1112,33 @@ func stringList(cfg map[string]interface{}, key string) ([]string, error) {
 	return out, nil
 }
 
-// stringListMap pulls a map[string][]string out of a classifier config
-// block, trying each of the given keys in turn (arbiter.yaml uses "keywords"
-// for the domain classifier and "detectors" for the capability classifier —
-// same shape, different name).
+// stringListMap pulls a map[string][]string out of a classifier config block,
+// trying each of the given keys in turn (arbiter.yaml uses "keywords" for the
+// domain classifier and "detectors" for the capability classifier — same shape,
+// different name).
+//
+// An ABSENT map yields no keywords rather than an error, and that is
+// deliberate: keywords stopped being mandatory when `match` and `detect`
+// arrived. A classifier can be purely structural — a title-gen matcher needs no
+// keyword list at all, and demanding one would force the operator to write a
+// dummy that never fires. The caller decides whether a classifier with no
+// signals of any kind is worth rejecting; see buildHeuristicClassifier.
 func stringListMap(cfg map[string]interface{}, keys ...string) (map[string][]string, error) {
 	var raw map[string]interface{}
 	for _, k := range keys {
 		if v, ok := cfg[k]; ok {
-			raw, _ = v.(map[string]interface{})
+			// Present but not a map is a real mistake — a list, a scalar — and
+			// must not be read as "absent".
+			m, ok := v.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("%s must be a map of group -> keywords", k)
+			}
+			raw = m
 			break
 		}
 	}
 	if raw == nil {
-		return nil, fmt.Errorf("missing one of %v in config", keys)
+		return nil, nil
 	}
 
 	out := make(map[string][]string, len(raw))

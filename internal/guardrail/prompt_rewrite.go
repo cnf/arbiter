@@ -3,7 +3,6 @@ package guardrail
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 
 	arbitererrors "github.com/cnf/arbiter/pkg/errors"
@@ -26,12 +25,10 @@ import (
 type PromptRewriteGuardrail struct {
 	name string
 
-	// match is the pattern to look for.
-	match string
-	// matchRe is the compiled form, non-nil only for mode == regex.
-	matchRe *regexp.Regexp
+	// matcher is the compiled pattern. Delegated to types.TextMatcher so the
+	// matching rules are shared with the classifier that matches request text.
+	matcher *types.TextMatcher
 
-	mode   matchMode
 	action rewriteAction
 
 	// replacement is the text an `action: replace` substitutes in. Ignored by
@@ -52,21 +49,22 @@ type PromptRewriteGuardrail struct {
 	where []matchTarget
 }
 
-// matchMode says how a pattern is compared.
-type matchMode string
+// matchMode and matchTarget are aliases of types' shared definitions rather
+// than local ones: a classifier now matches request text too, and two
+// implementations of "does this text start with this pattern" would drift
+// invisibly — both keep working, on slightly different definitions of a match.
+// The aliases keep every existing reference in this package (and its tests)
+// reading the same.
+type matchMode = types.MatchMode
 
 const (
-	// modeExact requires the searched text to equal the pattern, ignoring case
-	// and surrounding whitespace. The whole block must be the injected prompt.
-	modeExact matchMode = "exact"
 	// modePrefix requires the searched text to START with the pattern. This is
 	// the common case for an injected preamble: the client's prompt is a fixed
-	// opening, possibly followed by more.
-	modePrefix matchMode = "prefix"
-	// modeRegex compiles the pattern as a Go regular expression and uses the
-	// first match's byte offsets. The escape hatch for "smarter matching" — a
-	// signature that varies (a version number, a path, a date).
-	modeRegex matchMode = "regex"
+	// opening, possibly followed by more. It is also the documented default,
+	// which is why it is the one mode name this package still needs — the
+	// others are validated by the shared matcher and arrive as a config string
+	// rather than a constant here.
+	modePrefix = types.MatchPrefix
 )
 
 // rewriteAction says what happens to a match.
@@ -88,25 +86,21 @@ const (
 	actionStripParagraph rewriteAction = "strip_paragraph"
 )
 
-// matchTarget names a part of the request that can be searched.
-type matchTarget string
+type matchTarget = types.MatchTarget
 
 const (
 	// targetSystem searches req.SystemPrompt.
-	targetSystem matchTarget = "system"
+	targetSystem = types.TargetSystem
 	// targetMessages searches the text blocks of every message.
-	targetMessages matchTarget = "messages"
-	// targetAll searches both.
-	targetAll matchTarget = "all"
+	targetMessages = types.TargetMessages
 )
 
-// validModes and validActions exist so an unknown value is a load-time error
-// listing the alternatives, rather than a silent no-op. A guardrail that quietly
-// does nothing is the worst outcome here: the operator believes injected text is
-// being stripped while every request still carries it.
-var validModes = []matchMode{modeExact, modePrefix, modeRegex}
+// validActions exists so an unknown value is a load-time error listing the
+// alternatives, rather than a silent no-op. A guardrail that quietly does
+// nothing is the worst outcome here: the operator believes injected text is
+// being stripped while every request still carries it. Modes and targets get
+// the same treatment from the shared types declarations.
 var validActions = []rewriteAction{actionStrip, actionReplace, actionBlock, actionStripParagraph}
-var validTargets = []matchTarget{targetSystem, targetMessages, targetAll}
 
 // NewPromptRewriteGuardrail builds the guardrail from config values already
 // extracted by the caller.
@@ -122,36 +116,27 @@ func NewPromptRewriteGuardrail(
 		return nil, fmt.Errorf("prompt_rewrite guardrail %q: match is required (an empty pattern would match everything)", name)
 	}
 
+	// Compiled by the shared matcher, so an empty pattern or an invalid regex
+	// is rejected on the same terms a classifier's would be.
+	matcher, err := types.NewTextMatcher(match, matchMode(mode))
+	if err != nil {
+		return nil, fmt.Errorf("prompt_rewrite guardrail %q: %w", name, err)
+	}
+
 	g := &PromptRewriteGuardrail{
 		name:              name,
-		match:             match,
-		mode:              matchMode(mode),
+		matcher:           matcher,
 		action:            rewriteAction(action),
 		replacement:       replacement,
 		paragraphBoundary: paragraphBoundary,
 		blockStatus:       blockStatus,
 	}
 
-	if g.mode == "" {
-		// Prefix is the default because it is what an injected preamble almost
-		// always is: a fixed opening followed by the client's own instructions.
-		g.mode = modePrefix
-	}
-	if !contains(validModes, g.mode) {
-		return nil, fmt.Errorf("prompt_rewrite guardrail %q: unknown mode %q (want one of %s)", name, mode, join(validModes))
-	}
 	if g.action == "" {
 		g.action = actionStrip
 	}
 	if !contains(validActions, g.action) {
-		return nil, fmt.Errorf("prompt_rewrite guardrail %q: unknown action %q (want one of %s)", name, action, join(validActions))
-	}
-	if g.mode == modeRegex {
-		re, err := regexp.Compile(match)
-		if err != nil {
-			return nil, fmt.Errorf("prompt_rewrite guardrail %q: invalid regex %q: %w", name, match, err)
-		}
-		g.matchRe = re
+		return nil, fmt.Errorf("prompt_rewrite guardrail %q: unknown action %q (want one of %s)", name, action, joinActions(validActions))
 	}
 	if g.action == actionReplace && g.replacement == "" {
 		return nil, fmt.Errorf("prompt_rewrite guardrail %q: action replace needs a replacement (use strip to remove instead)", name)
@@ -163,17 +148,11 @@ func NewPromptRewriteGuardrail(
 		g.blockStatus = 403
 	}
 
-	if len(where) == 0 {
-		g.where = []matchTarget{targetSystem}
-	} else {
-		for _, w := range where {
-			t := matchTarget(w)
-			if !contains(validTargets, t) {
-				return nil, fmt.Errorf("prompt_rewrite guardrail %q: unknown where %q (want one of %s)", name, w, join(validTargets))
-			}
-			g.where = append(g.where, t)
-		}
+	targets, err := types.ParseMatchTargets(where)
+	if err != nil {
+		return nil, fmt.Errorf("prompt_rewrite guardrail %q: %w", name, err)
 	}
+	g.where = targets
 	return g, nil
 }
 
@@ -239,12 +218,7 @@ func (g *PromptRewriteGuardrail) ApplyPost(ctx context.Context, resp *types.Norm
 }
 
 func (g *PromptRewriteGuardrail) searches(t matchTarget) bool {
-	for _, w := range g.where {
-		if w == t || w == targetAll {
-			return true
-		}
-	}
-	return false
+	return types.Searches(g.where, t)
 }
 
 // rewrite applies the configured action to one piece of text, returning it
@@ -330,36 +304,11 @@ func tidySeam(before, after string) string {
 }
 
 // find locates the configured pattern in text and returns its byte offsets, or
-// nil when it does not match.
-//
-// exact and prefix are case-insensitive and ignore surrounding whitespace,
-// because a client's preamble is re-serialized differently by different clients
-// and by different wire formats — a case or trailing-space difference is not a
-// different prompt. regex is used verbatim, since the operator wrote the pattern
-// precisely and Go's regexp already offers (?i) when case-insensitivity is
-// wanted there.
+// nil when it does not match. The rules live in types.TextMatcher so this
+// guardrail and a text-matching classifier cannot disagree about what a match
+// is; see that type for why exact/prefix ignore case and whitespace.
 func (g *PromptRewriteGuardrail) find(text string) []int {
-	if text == "" {
-		return nil
-	}
-	switch g.mode {
-	case modeRegex:
-		return g.matchRe.FindStringIndex(text)
-	case modeExact:
-		if strings.EqualFold(strings.TrimSpace(text), strings.TrimSpace(g.match)) {
-			return []int{0, len(text)}
-		}
-		return nil
-	case modePrefix:
-		trimmed := strings.TrimLeft(text, " \t\r\n")
-		offset := len(text) - len(trimmed)
-		if len(trimmed) >= len(g.match) && strings.EqualFold(trimmed[:len(g.match)], g.match) {
-			return []int{offset, offset + len(g.match)}
-		}
-		return nil
-	default:
-		return nil
-	}
+	return g.matcher.Find(text)
 }
 
 func contains[T comparable](xs []T, want T) bool {
@@ -371,10 +320,13 @@ func contains[T comparable](xs []T, want T) bool {
 	return false
 }
 
-func join[T comparable](xs []T) string {
+// joinActions renders the valid action list for an error message. Only actions
+// need this now: modes and targets are validated by their shared types
+// counterparts, which format their own errors.
+func joinActions(xs []rewriteAction) string {
 	parts := make([]string, 0, len(xs))
 	for _, x := range xs {
-		parts = append(parts, fmt.Sprint(x))
+		parts = append(parts, string(x))
 	}
 	return strings.Join(parts, ", ")
 }

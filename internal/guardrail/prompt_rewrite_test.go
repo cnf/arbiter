@@ -330,8 +330,8 @@ func TestDefaultsAreApplied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPromptRewriteGuardrail: %v", err)
 	}
-	if g.mode != modePrefix {
-		t.Errorf("mode = %q, want prefix", g.mode)
+	if g.matcher.Mode != modePrefix {
+		t.Errorf("mode = %q, want prefix", g.matcher.Mode)
 	}
 	if g.action != actionStrip {
 		t.Errorf("action = %q, want strip", g.action)

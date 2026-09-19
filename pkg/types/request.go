@@ -17,6 +17,22 @@ type NormalizedRequest struct {
 	Tools        []Tool
 	Stream       bool // if true, caller expects SSE response
 
+	// ClientSystemPrompt is SystemPrompt as the CLIENT sent it, before any
+	// pre-guardrail mutated it. Empty when nothing has run yet, so it is never
+	// a second source of truth — a caller reading it must fall back to
+	// SystemPrompt.
+	//
+	// It exists because a `system_prompt` guardrail with override:false
+	// PREPENDS its own text, and pre-guardrails run before classification. So a
+	// `prefix` match against SystemPrompt — "the request starts with this
+	// signature" — sees Arbiter's injected preamble first and cannot see the
+	// client's signature behind it. The failure is silent and looks exactly
+	// like a wrong pattern, while every view the operator has (captured
+	// content, the transcript) shows the prompt as sent, because capture also
+	// happens before guardrails. RequestMatcher reads this field for that
+	// reason: matching should see what the operator sees.
+	ClientSystemPrompt string
+
 	// Tracking
 	OriginalFormat  string // "anthropic" or "openai"
 	OriginalPayload []byte

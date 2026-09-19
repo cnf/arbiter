@@ -269,6 +269,15 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 	sessionKey, hasKey := SessionKey(sessionHint, req)
 	req.SessionKey = sessionKey
 
+	// The client's own system prompt, kept before any pre-guardrail can mutate
+	// it. A `system_prompt` guardrail with override:false PREPENDS its text, and
+	// a structural classifier matching req.SystemPrompt with mode prefix would
+	// then be looking for a signature behind Arbiter's own preamble — a miss
+	// that looks exactly like a wrong pattern. Capture is taken here for the
+	// same reason (see just below), and the two must be taken together or they
+	// can disagree about what "as sent" means.
+	req.ClientSystemPrompt = req.SystemPrompt
+
 	// Capture content BEFORE any pre-guardrail runs. A guardrail such as
 	// system_prompt rewrites req.SystemPrompt, and capturing after it would
 	// store Arbiter's own injected prompt as though the client had sent it —

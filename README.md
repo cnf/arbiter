@@ -1058,6 +1058,22 @@ whitespace, because the same preamble is re-serialized differently by different
 clients and wire formats; `regex` is used verbatim. A bare string is accepted
 as one `prefix` pattern.
 
+**`where: ["system"]` searches the prompt as the CLIENT sent it**, not as the
+guardrails left it. This matters because a `system_prompt` guardrail with
+`override: false` *prepends* its own text, and pre-guardrails run before
+classification — so a `prefix` match against the assembled prompt would be
+looking for a signature behind Arbiter's own preamble, and would fail silently
+in a way that looks exactly like a wrong pattern. The request carries the
+pre-guardrail text in `ClientSystemPrompt` for this reason, and matching reads
+that. `where: ["messages"]` needs no equivalent: no guardrail rewrites messages
+by default, and the ones that can (`prompt_rewrite` with `where: ["messages"]`)
+run in the same phase, so a signature in a message is matched as sent.
+
+One consequence worth knowing: a `system_prompt` guardrail that *strips* the
+client's signature cannot break a match, because the matcher sees the text
+before stripping. That is the intended direction — the signature was in the
+request, which is the thing being classified.
+
 **A hit is a certainty, not a guess**, so it reports confidence `1.0` and the
 keywords are not consulted — a request that provably *is* a title generation is
 not a candidate for keyword voting.

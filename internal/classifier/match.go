@@ -87,10 +87,23 @@ func (m *RequestMatcher) Match(req *types.NormalizedRequest) bool {
 	if m == nil || req == nil {
 		return false
 	}
-	if types.Searches(m.where, types.TargetSystem) && req.SystemPrompt != "" {
-		for _, p := range m.patterns {
-			if p.Matches(req.SystemPrompt) {
-				return true
+	if types.Searches(m.where, types.TargetSystem) {
+		// The prompt as the CLIENT sent it, not as the guardrails left it. A
+		// system_prompt guardrail prepends its own text before classification
+		// runs, so matching req.SystemPrompt would look for a signature behind
+		// Arbiter's injected preamble — and fail, silently, in a way that looks
+		// exactly like a wrong pattern. Falling back to SystemPrompt keeps this
+		// correct for a caller that never set the field (a test, a direct
+		// construction).
+		system := req.ClientSystemPrompt
+		if system == "" {
+			system = req.SystemPrompt
+		}
+		if system != "" {
+			for _, p := range m.patterns {
+				if p.Matches(system) {
+					return true
+				}
 			}
 		}
 	}

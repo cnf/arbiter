@@ -889,6 +889,141 @@ classifies fresh every turn, same as any other classifier. Pins are persisted,
 so a config reload no longer re-classifies a pinned conversation: the pin
 survives it (see the Session affinity section under Configuration).
 
+### Decision-model classification (`type: "decisions"`)
+
+A `type: "decisions"` classifier asks a **decision model** typed questions
+about a request instead of asking a chat model to emit one word. It is a third
+type beside `heuristic` and `llm`, not a replacement for either: the two
+model-backed types send the same input, so they are directly comparable on real
+traffic.
+
+It exists because the LLM classifier's two load-bearing hacks have no
+equivalent here. There is no reply to parse — a `choice` question is
+constrained to the options the config defines, so an off-list answer is
+impossible rather than a *failed call* that falls back to the heuristic — and
+there is no reply contract to protect. What it adds beyond that is a real
+probability per answer, which the LLM classifier can only ever set to `1.0`.
+
+**Every question is asked in ONE upstream call**, and each answer carries its
+own probability. That is what makes a decision model fit Arbiter's multi-axis
+`Signals`: several axes, one request. Each question declares its own `axis`
+(there is no classifier-level `axis:`), and two questions may not fill the same
+axis — they would race for it with nothing to break the tie.
+
+Because one call answers several axes, a single "how sure was this classifier"
+number would be a lie: a 0.98 domain pick would carry a 0.61 cost_class verdict
+at 0.98 and beat a legitimate classifier on that axis. So a decisions classifier
+reports **per-axis confidence** (`Signals.AxisConfidence`), and the merge picks
+each axis's winner on that axis's own number. `Signals.Confidence` stays the
+highest per-axis value — the most certain thing the call concluded.
+
+A partially-answered call is not a failed call: an unanswered or off-list
+question is dropped (and recorded on the call's row) while the axes that were
+answered stand, since each axis is resolved independently.
+
+```yaml
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    models: ["claude-3-haiku-20250307"]
+  openrouter-decisions:                   # same vendor, a different API surface
+    type: "decisions"
+    endpoint: "https://openrouter.ai/api/alpha/decisions"   # the COMPLETE URL
+    key: "${OPENROUTER_API_KEY}"
+    models: ["~typesafe/jev-latest"]
+aliases:
+  jev:
+    type: "pinned"
+    provider: "openrouter-decisions"
+    model: "~typesafe/jev-latest"
+routers:
+  - name: "primary"
+    type: "simple"
+    config:
+      default_provider: "claude"
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config: { keywords: { code_generation: ["write", "refactor"] } }
+  - name: "routing-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"                        # routes the decision call
+      questions:                          # ALL asked in ONE call
+        domain:
+          axis: "domain"                  # which Signals axis it fills
+          type: "choice"                  # the only primitive built so far
+          labels:                         # bare names, or name -> rubric
+            code_generation: "wants code written, modified or reviewed."
+            reasoning: "wants something explained or debugged."
+            chat: "small talk with no artifact expected."
+            none: "none of the other categories apply."
+          escape: "none"                  # sent as the `other` option
+          instructions: "Pick the category that best describes the request."
+        cost_class:
+          axis: "cost_class"
+          type: "choice"
+          labels:
+            budget: "a cheap model is fine."
+            quality_first: "spend more for a better answer."
+          instructions: "How much is this request worth spending on?"
+      fallback: "domain-heuristic"        # may name an `llm` classifier too
+      timeout: "5s"                       # optional, defaults to 10s
+```
+
+**A `type: "decisions"` provider's `endpoint` is the complete URL**, and nothing
+is appended to it. Every other provider type treats `endpoint` as an API root
+and the transport adds its own suffix (`/v1/messages`, `/chat/completions`).
+This one is deliberately different because the decisions path is known to be
+unstable — OpenRouter serves it at an unversioned `/api/alpha/decisions`, and
+TypeSafe's own API is `/v1/systemone` — so keeping the whole URL in config makes
+a vendor path change a config edit rather than a code change. Auth is the
+bearer-token convention, with the provider's own `headers` applied last like
+every other type.
+
+The alias must resolve to a provider of type `decisions`; a pinned alias naming
+an ordinary chat provider is a **config-load error**, because the alternative is
+sending a `state`/`questions` body to `/chat/completions` and failing at request
+time.
+
+**`escape` is sent under its own name.** It is already one of the `labels`, so
+the operator's own wording is what the model sees — declare
+`none: "none of the other categories apply."` and that is the option sent.
+Choosing it fills **no axis at all**, so a policy router's `when: {domain: ...}`
+rules simply don't match and a chained router takes over — the same semantics the
+`llm` classifier's escape label has.
+
+`other: "none of the above apply"` is added **only when no `escape` is
+configured**: without some way to say "none of these fit", a decision model is
+forced into the closest listed option, which is exactly the failure an escape
+label prevents. In that case a literal `other` reply is the escape verdict. When
+an `escape` label *is* configured, a stray `other` is **not** treated as escape —
+the operator named their own option, and accepting a synonym would make the
+axis's emptiness depend on which word the model happened to pick.
+
+**`fallback` may name an `llm` classifier here**, unlike an `llm` classifier's
+own fallback. The no-chained-LLM rule exists to bound chains; `decisions → llm`
+is depth 1 and terminates, because the `llm` classifier's fallback must still be
+a non-model classifier. It is also the useful direction — a chat model asked the
+same question is exactly the escalation a failed decision call wants.
+
+**The stored rationale names every axis with its probability**, not just the
+winner: `decisions classifier answered domain="code_generation" (0.92),
+cost_class="budget" (0.61)`. The probability is the entire reason for using a
+decision model, and it is what makes a low-confidence verdict readable as
+*uncertain* rather than simply wrong. An escape verdict is named explicitly
+(`domain="none of the options fit"`) rather than rendering as an empty string,
+so "the model said nothing fits" never reads like "we failed to fill the axis".
+Note that `confidence` is **how peaked the distribution is on the answer, not a
+calibrated probability that the answer is correct** — it is usable as a relative
+act-vs-escalate gate, and nothing more is claimed for it here.
+
+Every call is recorded as its own `kind="classifier"` row, like the `llm`
+classifier's, with the same captured-content behaviour — so the row's
+`routing_rationale` and the captured prompt/input are the evidence trail for a
+verdict that came from a distribution rather than from text.
+
 ### Admin surface and access
 
 `POST /admin/reload` re-reads the config and the `model_catalog_file` on

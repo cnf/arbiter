@@ -66,6 +66,32 @@ providers:
 #                 the call fails outright.
 #   timeout:      optional — Go duration, defaults to 10s.
 #
+# A `type: "decisions"` classifier asks a decision model (TypeSafe's System One
+# / Jev) typed questions instead of asking a chat model for one word. Nothing is
+# parsed, so an off-list answer is impossible, and every answer carries a real
+# probability. Its `config:` takes:
+#   alias:        required — a configured alias that must resolve to a provider
+#                 of type "decisions" (a chat provider here is a load error).
+#   question:     required — the typed questions it asks, ALL in ONE call:
+#     <name>:
+#                   axis:         which Signals axis it fills (required; two
+#                                 questions may not share an axis)
+#                   type:         "choice" (the only primitive built so far)
+#                   labels:       the option set, same shapes as `labels:` above
+#                   escape:       optional — names the label meaning "no option
+#                                 fits". It is sent under ITS OWN NAME (it is
+#                                 already one of `labels`), and choosing it fills
+#                                 no axis. With no escape configured, an `other`
+#                                 option is added instead.
+#                   instructions: optional — what is being decided between them
+#                 Each answer's probability becomes that axis's confidence
+#                 (Signals.AxisConfidence), so the merge scores every axis on
+#                 its own number rather than on one figure for the whole call.
+#   fallback:     required — another classifier; MAY name an `llm` one, unlike
+#                 an llm classifier's own fallback (a chat model is the natural
+#                 escalation for a failed decision call).
+#   timeout:      optional — Go duration, defaults to 10s.
+#
 # Every call is recorded as its own kind="classifier" row. With capture_content
 # on, that row also carries the text it classified and the prompt it was given,
 # so a wrong verdict can be read against what produced it.

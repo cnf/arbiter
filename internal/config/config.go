@@ -259,8 +259,8 @@ func (c *Config) Validate() error {
 		return arbitererrors.NewConfigError("no providers configured", nil)
 	}
 	for name, p := range c.Providers {
-		if p.Type != "anthropic" && p.Type != "openai" && p.Type != "ollama" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("provider %q: unknown type %q (want \"anthropic\", \"openai\", or \"ollama\")", name, p.Type), nil)
+		if p.Type != "anthropic" && p.Type != "openai" && p.Type != "ollama" && p.Type != "decisions" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("provider %q: unknown type %q (want \"anthropic\", \"openai\", \"ollama\", or \"decisions\")", name, p.Type), nil)
 		}
 		if p.Endpoint == "" {
 			return arbitererrors.NewConfigError(fmt.Sprintf("provider %q: missing endpoint", name), nil)
@@ -296,6 +296,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := c.validateLLMClassifiers(); err != nil {
+		return err
+	}
+	if err := c.validateDecisionsClassifiers(); err != nil {
 		return err
 	}
 	if err := validateUniqueNames("router", routerNames(c.Routers)); err != nil {
@@ -366,7 +369,10 @@ var canonicalAxisSet = func() map[string]bool {
 
 // validateClassifierAxes checks each classifier's declared axis is a current
 // axis name. The legacy "capability_detector" type always fills capabilities,
-// so declaring an axis on it is rejected rather than silently ignored.
+// so declaring an axis on it is rejected rather than silently ignored. A
+// "decisions" classifier fills the axis its question declares, so an axis on
+// the classifier itself would be a second, silently-ignored answer to the same
+// question — rejected for the same reason.
 func validateClassifierAxes(cs []ClassifierConfig) error {
 	for _, c := range cs {
 		if c.Axis == "" {
@@ -374,6 +380,9 @@ func validateClassifierAxes(cs []ClassifierConfig) error {
 		}
 		if c.Type == "capability_detector" {
 			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"capability_detector\" always fills capabilities and must not set axis", c.Name), nil)
+		}
+		if c.Type == "decisions" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"decisions\" fills the axis its question declares and must not set axis", c.Name), nil)
 		}
 		if !canonicalAxisSet[c.Axis] {
 			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: unknown axis %q (want one of %v)", c.Name, c.Axis, types.KnownAxes), nil)
@@ -450,8 +459,8 @@ func (c *Config) validateLLMClassifiers() error {
 		if !ok {
 			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: fallback %q is not a configured classifier", cc.Name, fallback), nil)
 		}
-		if fbType == "llm" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: fallback %q must not itself be type \"llm\" (no chained LLM fallbacks)", cc.Name, fallback), nil)
+		if fbType == "llm" || fbType == "decisions" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: fallback %q must not itself be a model-backed classifier (%q) — a failed classification must not become a second classification call", cc.Name, fallback, fbType), nil)
 		}
 		if raw, _ := cc.Config["timeout"].(string); raw != "" {
 			if _, err := time.ParseDuration(raw); err != nil {
@@ -460,6 +469,192 @@ func (c *Config) validateLLMClassifiers() error {
 		}
 	}
 	return nil
+}
+
+// validateDecisionsClassifiers checks every "decisions"-type classifier's
+// alias, questions, labels, escape labels, instructions and fallback reference.
+//
+// Same exception as validateLLMClassifiers and for the same reason: a
+// classifier's `config:` map is otherwise opaque to this package, but a bad
+// alias or a missing fallback would only ever surface as a silent runtime
+// fallback — every classification call failing and quietly deferring to the
+// wrapped classifier, with no load-time signal that anything is wrong.
+//
+// The one rule that is genuinely decisions-specific: a question's type must be
+// "choice". Only that primitive is built, and accepting "score" or "noul" in
+// config while the builder ignores them would be exactly the silent no-op this
+// package exists to catch.
+func (c *Config) validateDecisionsClassifiers() error {
+	classifierTypes := make(map[string]string, len(c.Classifiers)) // name -> type
+	for _, cc := range c.Classifiers {
+		classifierTypes[cc.Name] = cc.Type
+	}
+
+	for _, cc := range c.Classifiers {
+		if cc.Type != "decisions" {
+			continue
+		}
+		alias, _ := cc.Config["alias"].(string)
+		if alias == "" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"decisions\" requires \"alias\"", cc.Name), nil)
+		}
+		if _, ok := c.Aliases[alias]; !ok {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: alias %q is not configured", cc.Name, alias), nil)
+		}
+
+		// The alias must resolve to a provider that speaks the decisions
+		// protocol. A pinned alias naming an ordinary chat provider would
+		// otherwise send a `state`/`questions` body to /chat/completions and
+		// fail at request time with a translation error, which is a far worse
+		// place to learn it than config load.
+		if err := c.validateDecisionsAlias(cc.Name, alias); err != nil {
+			return err
+		}
+
+		raw, ok := cc.Config["questions"]
+		if !ok {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"decisions\" requires \"questions\"", cc.Name), nil)
+		}
+		questions, ok := raw.(map[string]interface{})
+		if !ok {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: \"questions\" must be a map of name -> question", cc.Name), nil)
+		}
+		if len(questions) == 0 {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"decisions\" requires at least one question", cc.Name), nil)
+		}
+
+		// Every question is asked in one call, so two questions filling the
+		// same axis would race for it with nothing to break the tie — the
+		// verdict would depend on map iteration order.
+		axesSeen := make(map[string]string, len(questions))
+		for qname, rawQ := range questions {
+			q, ok := rawQ.(map[string]interface{})
+			if !ok {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q must be a map", cc.Name, qname), nil)
+			}
+			qtype, _ := q["type"].(string)
+			if qtype != types.DecisionChoice {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q has type %q, which is not supported yet (want %q)", cc.Name, qname, qtype, types.DecisionChoice), nil)
+			}
+			axis, _ := q["axis"].(string)
+			if axis == "" {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q requires \"axis\"", cc.Name, qname), nil)
+			}
+			if !canonicalAxisSet[axis] {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q has unknown axis %q (want one of %v)", cc.Name, qname, axis, types.KnownAxes), nil)
+			}
+			if other, taken := axesSeen[axis]; taken {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: questions %q and %q both fill axis %q — they are asked in one call, so neither can win", cc.Name, other, qname, axis), nil)
+			}
+			axesSeen[axis] = qname
+
+			// Parsed with the same function the builder uses, so a shape
+			// validation accepts cannot be one construction drops.
+			labels, err := types.ParseLabels(q["labels"])
+			if err != nil {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: invalid labels: %v", cc.Name, qname, err), nil)
+			}
+			if len(labels) == 0 {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q requires a non-empty \"labels\" list", cc.Name, qname), nil)
+			}
+			seen := make(map[string]bool, len(labels))
+			for _, l := range labels {
+				if l.Name == "" {
+					return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: labels must not contain an empty name", cc.Name, qname), nil)
+				}
+				key := strings.ToLower(l.Name)
+				if seen[key] {
+					return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: label %q is declared more than once", cc.Name, qname, l.Name), nil)
+				}
+				seen[key] = true
+			}
+
+			// "other" is the name this codebase sends for the escape option, so
+			// a label of that name would collide with it: the criteria map is
+			// keyed by name, and the second write would win silently.
+			if seen["other"] {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: label \"other\" is reserved (it is the option name sent for the escape label)", cc.Name, qname), nil)
+			}
+
+			// An escape label must be one of the declared labels: it is the
+			// option the model is offered, so a name never sent could only be
+			// reached by coincidence.
+			if escape, _ := q["escape"].(string); escape != "" {
+				if !seen[strings.ToLower(escape)] {
+					return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: escape label %q is not one of the declared labels", cc.Name, qname, escape), nil)
+				}
+			}
+
+			if raw, ok := q["instructions"]; ok {
+				if _, isStr := raw.(string); !isStr {
+					return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: instructions must be a string", cc.Name, qname), nil)
+				}
+			}
+		}
+
+		fallback, _ := cc.Config["fallback"].(string)
+		if fallback == "" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"decisions\" requires \"fallback\"", cc.Name), nil)
+		}
+		fbType, ok := classifierTypes[fallback]
+		if !ok {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: fallback %q is not a configured classifier", cc.Name, fallback), nil)
+		}
+		// A decisions classifier MAY fall back to an llm classifier, unlike an
+		// llm classifier (see validateLLMClassifiers). The rule there exists to
+		// bound chains; decisions -> llm is depth 1 and terminates, because the
+		// llm classifier's own fallback must still be a non-model classifier.
+		// It is also the useful direction: a chat model asked the same question
+		// is exactly the escalation a failed decision call wants.
+		if fbType == "decisions" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: fallback %q must not itself be type \"decisions\" (no chained decision calls)", cc.Name, fallback), nil)
+		}
+		if raw, _ := cc.Config["timeout"].(string); raw != "" {
+			if _, err := time.ParseDuration(raw); err != nil {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: invalid timeout %q", cc.Name, raw), err)
+			}
+		}
+	}
+	return nil
+}
+
+// validateDecisionsAlias resolves a decisions classifier's alias and requires
+// every target it can reach to be a provider of type "decisions" — including a
+// group alias's members and any alias they resolve through.
+func (c *Config) validateDecisionsAlias(classifier, alias string) error {
+	seen := make(map[string]bool)
+	var walk func(name string) error
+	walk = func(name string) error {
+		if seen[name] {
+			// Cycles are rejected by validateAliases; stopping here keeps this
+			// walk from looping while that error is reported.
+			return nil
+		}
+		seen[name] = true
+
+		a, ok := c.Aliases[name]
+		if !ok {
+			return nil
+		}
+		if a.Type == "pinned" && a.Provider != "" {
+			// A member may itself name another alias, resolved recursively.
+			if _, isAlias := c.Aliases[a.Provider]; isAlias {
+				return walk(a.Provider)
+			}
+			if pc, ok := c.Providers[a.Provider]; ok && pc.Type != "decisions" {
+				return arbitererrors.NewConfigError(fmt.Sprintf(
+					"classifier %q: alias %q resolves to provider %q of type %q — a decisions classifier needs a provider of type \"decisions\" (its endpoint is called directly, not as a chat completion)",
+					classifier, name, a.Provider, pc.Type), nil)
+			}
+		}
+		for _, m := range a.Members {
+			if err := walk(m.Provider); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(alias)
 }
 
 // validateAliases checks the aliases block: names unique and disjoint from

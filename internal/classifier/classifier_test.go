@@ -129,3 +129,112 @@ func TestMergedClassifierPropagatesClassifierCalls(t *testing.T) {
 		t.Fatalf("ClassifierCalls = %v, want the LLM classifier's one call propagated", sig.ClassifierCalls)
 	}
 }
+
+// TestMergedClassifierZeroConfidenceFillsNoAxis pins a behaviour that is easy
+// to trip over: the merge only fills an axis when the score is strictly above
+// zero, so a verdict reported at confidence 0.00 fills NOTHING.
+//
+// That is the right default — "no confidence" and "no signal" should look the
+// same, or a classifier that is completely unsure would overwrite a better
+// answer — but it means a decisions model answering a question with a 0.00
+// probability produces no axis value at all rather than a value at zero
+// confidence. A zero-probability choice is not expected in practice (a
+// distribution is peaked on something), which is exactly why it is worth
+// pinning rather than discovering later.
+func TestMergedClassifierZeroConfidenceFillsNoAxis(t *testing.T) {
+	zero := fakeAxisClassifier{domain: "chat", confidence: 0}
+	merged := NewMergedClassifier("merged", []Classifier{zero})
+
+	sig, err := merged.Classify(context.Background(), req("anything"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.Domain != "" {
+		t.Fatalf("Domain = %q, want empty — a zero-confidence verdict must not fill an axis", sig.Domain)
+	}
+}
+
+// fakeAxisClassifier reports fixed axis values with fixed confidences, so a
+// merge can be tested without an upstream call.
+type fakeAxisClassifier struct {
+	domain, costClass string
+	confidence        float64
+	axisConfidence    map[string]float64
+}
+
+func (f fakeAxisClassifier) Classify(context.Context, *types.NormalizedRequest) (types.Signals, error) {
+	return types.Signals{
+		Domain: f.domain, CostClass: f.costClass,
+		Confidence: f.confidence, AxisConfidence: f.axisConfidence,
+	}, nil
+}
+
+// The whole point of AxisConfidence: a classifier that fills two axes from one
+// call must be scored on each axis's OWN confidence. Without this, a 0.98
+// domain verdict would also win cost_class at 0.98 and beat a legitimate
+// 0.70 classifier that actually looked at cost_class.
+func TestMergedClassifierScoresEachAxisOnItsOwnConfidence(t *testing.T) {
+	// One call, two answers: very sure about domain, much less sure about
+	// cost_class.
+	multi := fakeAxisClassifier{
+		domain: "code_generation", costClass: "budget",
+		confidence:     0.98, // the highest per-axis value
+		axisConfidence: map[string]float64{AxisDomain: 0.98, AxisCostClass: 0.61},
+	}
+	// A dedicated cost_class classifier, less sure overall but surer than the
+	// multi-axis call's cost_class answer.
+	costOnly := fakeAxisClassifier{costClass: "quality_first", confidence: 0.70}
+
+	merged := NewMergedClassifier("merged", []Classifier{multi, costOnly})
+	sig, err := merged.Classify(context.Background(), req("anything"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+
+	if sig.Domain != "code_generation" {
+		t.Fatalf("Domain = %q, want the multi-axis call's 0.98 verdict", sig.Domain)
+	}
+	// 0.70 must beat the multi-axis call's 0.61 on that axis — even though the
+	// multi-axis call reports 0.98 overall.
+	if sig.CostClass != "quality_first" {
+		t.Fatalf("CostClass = %q, want quality_first (0.70 must beat 0.61 on that axis, not 0.98)", sig.CostClass)
+	}
+	// The deciding scores are carried forward so a reader can see how sure each
+	// axis's winner was.
+	if sig.AxisConfidence[AxisCostClass] != 0.70 {
+		t.Fatalf("AxisConfidence[cost_class] = %v, want the winning 0.70", sig.AxisConfidence[AxisCostClass])
+	}
+}
+
+// A classifier with no per-axis map (every pre-existing type) must be scored on
+// its overall Confidence, exactly as it was before AxisConfidence existed.
+func TestMergedClassifierFallsBackToOverallConfidence(t *testing.T) {
+	weak := fakeAxisClassifier{domain: "chat", confidence: 0.30}
+	strong := fakeAxisClassifier{domain: "code_generation", confidence: 0.80}
+
+	merged := NewMergedClassifier("merged", []Classifier{weak, strong})
+	sig, err := merged.Classify(context.Background(), req("anything"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.Domain != "code_generation" {
+		t.Fatalf("Domain = %q, want the higher overall confidence to win", sig.Domain)
+	}
+}
+
+// A merge of one-axis classifiers must not grow an AxisConfidence map — the
+// field is additive, and populating it where nothing needed it would be a
+// silent change to what every existing classifier reports.
+func TestMergedClassifierLeavesAxisConfidenceNilWhenUnused(t *testing.T) {
+	a := fakeAxisClassifier{domain: "chat", confidence: 0.5}
+	b := fakeAxisClassifier{costClass: "budget", confidence: 0.5}
+
+	merged := NewMergedClassifier("merged", []Classifier{a, b})
+	sig, err := merged.Classify(context.Background(), req("anything"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.AxisConfidence != nil {
+		t.Fatalf("AxisConfidence = %v, want nil when no classifier reported per-axis values", sig.AxisConfidence)
+	}
+}

@@ -21,16 +21,29 @@ type fakeCallingClassifier struct {
 	calls  int
 	input  string
 	prompt string
+	// axes, when set, is what the call claims it filled (a multi-axis decisions
+	// call). Left nil, the pipeline must fall back to the merged sig.
+	axes map[string]string
+	// axisConfidence is what the call claims it was sure of, per axis.
+	axisConfidence map[string]float64
+	// verdict, when set, stands in for a classifier that supplies its own
+	// rationale wording.
+	verdict string
 }
 
 func (f *fakeCallingClassifier) Classify(context.Context, *types.NormalizedRequest) (types.Signals, error) {
 	f.calls++
+	// Confidence 1.0 like a real verdict: the merge only fills an axis when the
+	// score is strictly above zero, so a fake reporting 0 would fill nothing —
+	// see TestMergedClassifierZeroConfidenceFillsNoAxis.
 	return types.Signals{
-		Domain: "code_generation",
+		Domain:     "code_generation",
+		Confidence: 1.0,
 		ClassifierCalls: []*types.ClassifierCallInfo{
 			{
 				Provider: "cls-provider", Model: "cls-model", StatusCode: 200,
 				RawReply: "code_generation", Input: f.input, SystemPrompt: f.prompt,
+				Axes: f.axes, AxisConfidence: f.axisConfidence, Verdict: f.verdict,
 			},
 		},
 	}, nil
@@ -180,6 +193,81 @@ func TestClassifierRationaleNamesTheInput(t *testing.T) {
 	if !strings.Contains(rationale, "please fix this bug") {
 		t.Errorf("rationale = %q, want the classified input named alongside the verdict", rationale)
 	}
+}
+
+// TestClassifierRowCarriesEveryAxisTheCallFilled is the regression test for a
+// real report: a two-question decisions classifier answered cost_class AND
+// domain, the rationale named both, but the classifier's own row left
+// cost_class empty — the row read only the MERGED sig.Domain, so every other
+// axis a multi-axis call filled was stored as nothing.
+func TestClassifierRowCarriesEveryAxisTheCallFilled(t *testing.T) {
+	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
+	w := &capturingWriter{}
+	fc := &fakeCallingClassifier{
+		input: "please fix this bug", prompt: "Pick the category.",
+		axes:           map[string]string{"domain": "code_generation", "cost_class": "budget"},
+		axisConfidence: map[string]float64{"domain": 0.98, "cost_class": 0.91},
+		verdict: `decisions classifier answered domain="code_generation" (0.98), ` +
+			`cost_class="budget" (0.91)`,
+	}
+	p := NewPipeline(
+		nil, fakeNormalizer{model: ""}, fakeDenormalizer{},
+		[]classifier.Classifier{fc}, &fakeRouter{route: primaryRoute()}, fu, testProviders(), nil, nil, nil,
+		fakeLogger{}, time.Minute, nil, w, nil, nil, nil)
+
+	if _, err := p.Execute(context.Background(), []byte("please fix this bug in the parser"), "openai", "t1", "chat-1"); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var cls *store.Event
+	for i := range w.events {
+		if w.events[i].Kind == "classifier" {
+			cls = &w.events[i]
+		}
+	}
+	if cls == nil {
+		t.Fatal("no classifier event recorded")
+	}
+	if cls.Domain != "code_generation" {
+		t.Errorf("classifier row domain = %q, want code_generation", cls.Domain)
+	}
+	// The bug: this was empty, so cost_class was visible in the rationale text
+	// and unqueryable as a field.
+	if cls.CostClass != "budget" {
+		t.Errorf("classifier row cost_class = %q, want budget — a call's own axes must be recorded, not just the merged domain", cls.CostClass)
+	}
+	// And the other half of the same report: the row's confidence was written as
+	// nothing and read back as 0.0%, even though the call knew it was 0.98/0.91.
+	if cls.Confidence != 0.98 {
+		t.Errorf("classifier row confidence = %v, want the call's highest per-axis value 0.98", cls.Confidence)
+	}
+}
+
+// A classifier that reports no per-call axes (the LLM classifier's one-axis
+// case) still gets the merged sig written, so nothing that existed before
+// per-call axes changes what it records.
+func TestClassifierRowFallsBackToMergedAxes(t *testing.T) {
+	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
+	w := &capturingWriter{}
+	fc := &fakeCallingClassifier{input: "hi", prompt: "Classify."} // no Axes set
+	p := NewPipeline(
+		nil, fakeNormalizer{model: ""}, fakeDenormalizer{},
+		[]classifier.Classifier{fc}, &fakeRouter{route: primaryRoute()}, fu, testProviders(), nil, nil, nil,
+		fakeLogger{}, time.Minute, nil, w, nil, nil, nil)
+
+	if _, err := p.Execute(context.Background(), []byte("please fix this bug in the parser"), "openai", "t1", "chat-1"); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	for _, ev := range w.events {
+		if ev.Kind == "classifier" {
+			if ev.Domain != "code_generation" {
+				t.Errorf("classifier row domain = %q, want the merged sig's code_generation", ev.Domain)
+			}
+			return
+		}
+	}
+	t.Fatal("no classifier event recorded")
 }
 
 // TestEllipsizeCutsOnRuneBoundary is the reason the helper exists rather than a

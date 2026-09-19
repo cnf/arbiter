@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"sort"
 	"syscall"
 	"time"
 
@@ -475,14 +476,16 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 		costLookup = router.NewStaticCatalog(catalog)
 	}
 
-	// Built here rather than lower down: an "llm" classifier needs a real
-	// upstream.Client to route its own classification calls through, and
-	// resolver/providers to resolve the alias it's configured against — the
-	// same three things every other classifier type doesn't need at all.
+	// Built here rather than lower down: a model-backed classifier ("llm",
+	// "decisions") needs a real client to route its own classification calls
+	// through, and resolver/providers to resolve the alias it's configured
+	// against — the same three things every other classifier type doesn't need
+	// at all. One HTTPClient serves both roles: a decisions call is a third
+	// method on it, not a second client.
 	t := translator.NewDefaultTranslator()
 	u := upstream.NewHTTPClient(t)
 
-	classifiers, err := buildClassifiers(cfg.Classifiers, resolver, providers, u)
+	classifiers, err := buildClassifiers(cfg.Classifiers, resolver, providers, u, u)
 	if err != nil {
 		return nil, err
 	}
@@ -644,17 +647,18 @@ func configuredModels(cfg *config.Config) []arbiterhttp.Model {
 }
 
 // buildClassifiers builds every configured classifier in two passes: every
-// non-"llm" type first (indexed by name), then every "llm" type, resolving
-// its named `fallback` from that index. Two passes rather than one so an
-// "llm" classifier's fallback is guaranteed to exist regardless of which one
-// is declared first in config — the final list is still assembled in
-// declared order, only the dependency resolution is two-phase. A fallback
-// naming another "llm" classifier is rejected: no chained/nested LLM
-// fallbacks in v1.
-func buildClassifiers(ccs []config.ClassifierConfig, resolver *router.AliasResolver, providers map[string]types.ProviderConfig, u upstream.Client) ([]classifier.Classifier, error) {
+// non-model-backed type first (indexed by name), then every type that makes its
+// own upstream call ("llm", "decisions"), resolving its named `fallback` from
+// that index. Two passes rather than one so a model-backed classifier's
+// fallback is guaranteed to exist regardless of which one is declared first in
+// config — the final list is still assembled in declared order, only the
+// dependency resolution is two-phase. A fallback naming another model-backed
+// classifier is rejected for "llm"; a "decisions" classifier may fall back to
+// an "llm" one (see config's validateDecisionsClassifiers).
+func buildClassifiers(ccs []config.ClassifierConfig, resolver *router.AliasResolver, providers map[string]types.ProviderConfig, u upstream.Client, decisions upstream.DecisionClient) ([]classifier.Classifier, error) {
 	byName := make(map[string]classifier.Classifier, len(ccs))
 	for _, cc := range ccs {
-		if cc.Type == "llm" {
+		if isModelBackedClassifier(cc.Type) {
 			continue
 		}
 		c, err := buildClassifier(cc)
@@ -666,11 +670,20 @@ func buildClassifiers(ccs []config.ClassifierConfig, resolver *router.AliasResol
 
 	ordered := make([]classifier.Classifier, 0, len(ccs))
 	for _, cc := range ccs {
-		if cc.Type != "llm" {
+		if !isModelBackedClassifier(cc.Type) {
 			ordered = append(ordered, byName[cc.Name])
 			continue
 		}
-		c, err := buildLLMClassifier(cc, resolver, providers, u, byName)
+		var (
+			c   classifier.Classifier
+			err error
+		)
+		switch cc.Type {
+		case "decisions":
+			c, err = buildDecisionsClassifier(cc, resolver, providers, decisions, byName)
+		default:
+			c, err = buildLLMClassifier(cc, resolver, providers, u, byName)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("classifier %q: %w", cc.Name, err)
 		}
@@ -679,12 +692,19 @@ func buildClassifiers(ccs []config.ClassifierConfig, resolver *router.AliasResol
 	return ordered, nil
 }
 
+// isModelBackedClassifier reports whether a type makes its own upstream call
+// and therefore needs the second construction pass (and a non-model fallback).
+func isModelBackedClassifier(typeName string) bool {
+	return typeName == "llm" || typeName == "decisions"
+}
+
 // buildClassifier's axis defaulting preserves pre-axis behavior: a plain
 // "heuristic" classifier with no declared axis fills Domain, and the legacy
 // "capability_detector" type always fills Capabilities regardless of what's
-// declared (it never meant anything else). Does not handle "llm" — that type
-// needs the resolver/providers/upstream client buildClassifiers threads in,
-// which is why it has its own builder and its own pass.
+// declared (it never meant anything else). Does not handle the model-backed
+// types ("llm", "decisions") — those need the resolver/providers/upstream
+// client buildClassifiers threads in, which is why each has its own builder and
+// its own pass.
 func buildClassifier(cc config.ClassifierConfig) (classifier.Classifier, error) {
 	switch cc.Type {
 	case "heuristic":
@@ -745,6 +765,85 @@ func buildLLMClassifier(cc config.ClassifierConfig, resolver *router.AliasResolv
 		timeout = d
 	}
 	return classifier.NewLLMClassifier(cc.Name, cc.Axis, resolver, alias, u, providers, labels, escape, instructions, fallback, timeout), nil
+}
+
+// buildDecisionsClassifier builds a "decisions" classifier: alias (required)
+// names the configured alias its decision calls route through — which must
+// resolve to a provider of type "decisions" (config validation enforces that),
+// questions (required) are the typed questions asked in ONE call, each with its
+// own `axis` choosing the Signals field it fills, escape (optional) names the
+// label meaning "no option fits", instructions (optional) is the question's
+// framing sentence, fallback (required) names another classifier already built
+// in buildClassifiers' first pass, and timeout is an optional Go duration
+// (defaults inside NewDecisionsClassifier).
+//
+// Question order is sorted by name rather than taken from map iteration, so the
+// recorded prompt and the rationale are stable across calls — the same reason
+// the LLM classifier sorts its labels.
+func buildDecisionsClassifier(cc config.ClassifierConfig, resolver *router.AliasResolver, providers map[string]types.ProviderConfig, decisions upstream.DecisionClient, byName map[string]classifier.Classifier) (classifier.Classifier, error) {
+	alias, _ := cc.Config["alias"].(string)
+	if alias == "" {
+		return nil, fmt.Errorf(`"decisions" classifier requires "alias"`)
+	}
+	rawQuestions, ok := cc.Config["questions"].(map[string]interface{})
+	if !ok || len(rawQuestions) == 0 {
+		return nil, fmt.Errorf(`"decisions" classifier requires "questions"`)
+	}
+
+	names := make([]string, 0, len(rawQuestions))
+	for name := range rawQuestions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	questions := make([]classifier.DecisionQuestionConfig, 0, len(names))
+	for _, qname := range names {
+		q, ok := rawQuestions[qname].(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("question %q must be a map", qname)
+		}
+		axis, _ := q["axis"].(string)
+		if axis == "" {
+			return nil, fmt.Errorf("question %q requires \"axis\"", qname)
+		}
+		// The same parser config validation uses, so the two cannot disagree
+		// about what a labels block means (see types.ParseLabels).
+		labels, err := types.ParseLabels(q["labels"])
+		if err != nil {
+			return nil, fmt.Errorf("question %q: invalid labels: %w", qname, err)
+		}
+		if len(labels) == 0 {
+			return nil, fmt.Errorf("question %q requires a non-empty \"labels\" list", qname)
+		}
+		qtype, _ := q["type"].(string)
+		if qtype == "" {
+			qtype = types.DecisionChoice
+		}
+		escape, _ := q["escape"].(string)
+		instructions, _ := q["instructions"].(string)
+		questions = append(questions, classifier.DecisionQuestionConfig{
+			Name: qname, Axis: axis, Type: qtype,
+			Labels: labels, Escape: escape, Instructions: instructions,
+		})
+	}
+
+	fallbackName, _ := cc.Config["fallback"].(string)
+	if fallbackName == "" {
+		return nil, fmt.Errorf(`"decisions" classifier requires "fallback"`)
+	}
+	fallback, ok := byName[fallbackName]
+	if !ok {
+		return nil, fmt.Errorf("fallback %q is not a configured non-model classifier (must be declared, and must not itself be a model-backed type)", fallbackName)
+	}
+	var timeout time.Duration
+	if raw, _ := cc.Config["timeout"].(string); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid timeout %q: %w", raw, err)
+		}
+		timeout = d
+	}
+	return classifier.NewDecisionsClassifier(cc.Name, resolver, alias, decisions, providers, questions, fallback, timeout), nil
 }
 
 // buildAliasResolver builds the resolver used by policy routers to resolve

@@ -541,7 +541,7 @@ classifiers:
       labels: ["code_generation"]
       fallback: "domain-llm-a"
 `)
-	if err == nil || !strings.Contains(err.Error(), "must not itself be type") {
+	if err == nil || !strings.Contains(err.Error(), "must not itself be a model-backed classifier") {
 		t.Fatalf("Load: want a chained-llm-fallback error, got %v", err)
 	}
 }

@@ -140,6 +140,22 @@ func NewMergedClassifier(name string, classifiers []Classifier) *MergedClassifie
 	}
 }
 
+// axisScore is the confidence to compare one classifier's value for one axis
+// against. A classifier that fills several axes from one call reports a
+// confidence PER AXIS (AxisConfidence) — a single value would be a lie, and
+// would let a high-confidence verdict on one axis win a different axis it
+// barely considered. A classifier that fills one axis (every pre-existing type)
+// reports no per-axis map at all and is scored on its overall Confidence, which
+// is exactly the behaviour that shipped before AxisConfidence existed.
+func axisScore(sig types.Signals, axis string) float64 {
+	if sig.AxisConfidence != nil {
+		if v, ok := sig.AxisConfidence[axis]; ok {
+			return v
+		}
+	}
+	return sig.Confidence
+}
+
 // Classify merges signals from all classifiers. Each scalar axis (Domain,
 // Effort, CostClass) is filled by whichever sub-classifier reported the
 // highest confidence *for that axis* — keyed per-axis, not globally, so a
@@ -151,23 +167,27 @@ func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedR
 	var merged types.Signals
 	axisConfidence := make(map[string]float64)
 	capSeen := make(map[string]bool)
+	sawAxisConfidence := false
 
 	for _, c := range mc.classifiers {
 		sig, err := c.Classify(ctx, req)
 		if err != nil {
 			return types.Signals{}, err
 		}
+		if sig.AxisConfidence != nil {
+			sawAxisConfidence = true
+		}
 
-		if sig.Domain != "" && sig.Confidence > axisConfidence[AxisDomain] {
-			axisConfidence[AxisDomain] = sig.Confidence
+		if sig.Domain != "" && axisScore(sig, AxisDomain) > axisConfidence[AxisDomain] {
+			axisConfidence[AxisDomain] = axisScore(sig, AxisDomain)
 			merged.Domain = sig.Domain
 		}
-		if sig.Effort != "" && sig.Confidence > axisConfidence[AxisEffort] {
-			axisConfidence[AxisEffort] = sig.Confidence
+		if sig.Effort != "" && axisScore(sig, AxisEffort) > axisConfidence[AxisEffort] {
+			axisConfidence[AxisEffort] = axisScore(sig, AxisEffort)
 			merged.Effort = sig.Effort
 		}
-		if sig.CostClass != "" && sig.Confidence > axisConfidence[AxisCostClass] {
-			axisConfidence[AxisCostClass] = sig.Confidence
+		if sig.CostClass != "" && axisScore(sig, AxisCostClass) > axisConfidence[AxisCostClass] {
+			axisConfidence[AxisCostClass] = axisScore(sig, AxisCostClass)
 			merged.CostClass = sig.CostClass
 		}
 		for _, capability := range sig.RequiredCapabilities {
@@ -188,5 +208,17 @@ func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedR
 		merged.ClassifierCalls = append(merged.ClassifierCalls, sig.ClassifierCalls...)
 	}
 
+	// The per-axis scores that decided each axis are carried forward, so a
+	// downstream reader (the store's confidence column, the routing rationale)
+	// can see how sure each axis's winner was rather than only the single
+	// highest value.
+	//
+	// Only when some classifier actually reported per-axis values. A merge of
+	// one-axis classifiers is scored on their overall Confidence and leaves
+	// this nil, so nothing that existed before AxisConfidence changes what it
+	// reports — the field is additive in behaviour, not just in shape.
+	if sawAxisConfidence && len(axisConfidence) > 0 {
+		merged.AxisConfidence = axisConfidence
+	}
 	return merged, nil
 }

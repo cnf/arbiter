@@ -105,7 +105,15 @@ func (c *LLMClassifier) Classify(ctx context.Context, req *types.NormalizedReque
 		return sig, nil
 	}
 
-	sig := types.Signals{Confidence: 1.0, ClassifierCalls: []*types.ClassifierCallInfo{call}}
+	sig := types.Signals{
+		Confidence: 1.0,
+		// Reported per axis as well, so the classifier's own stored row carries
+		// a confidence. It is always 1.0 here — a matched label is a certain
+		// verdict by construction, which is exactly the limitation a decision
+		// model removes — but without it the row read back as 0.0%.
+		AxisConfidence:  map[string]float64{c.axis: 1.0},
+		ClassifierCalls: []*types.ClassifierCallInfo{call},
+	}
 	c.fillAxis(&sig, label)
 	return sig, nil
 }

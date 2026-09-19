@@ -74,6 +74,26 @@ func TestReadmeGuardrailExamplesLoad(t *testing.T) {
 	}
 }
 
+// TestReadmeDecisionsClassifierExampleLoads keeps the decisions classifier
+// section's config honest.
+//
+// It cannot use the fragment-grafting helper above: that helper replaces the
+// base example's empty `guardrails:` block, and this section documents a whole
+// config (providers, aliases and classifiers together — a decisions classifier
+// is meaningless without the provider type and the alias it routes through), so
+// grafting it would duplicate three top-level keys. It is loaded verbatim
+// instead, which still catches the failure that matters: a reader copying this
+// block and adding it to their config must not get a load error.
+func TestReadmeDecisionsClassifierExampleLoads(t *testing.T) {
+	readme := readReadme(t)
+	re := regexp.MustCompile("(?s)### Decision-model classification.*?```yaml\\n(.*?)```")
+	m := re.FindSubmatch(readme)
+	if m == nil {
+		t.Fatal("could not find the ```yaml example under '### Decision-model classification' in README.md")
+	}
+	loadReadmeFragment(t, string(m[1]))
+}
+
 func readReadme(t *testing.T) []byte {
 	t.Helper()
 	readme, err := os.ReadFile("../../README.md")
@@ -88,7 +108,7 @@ func readReadme(t *testing.T) []byte {
 // and no fragment may depend on a real secret to load.
 func loadReadmeFragment(t *testing.T, config string) {
 	t.Helper()
-	for _, v := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "LITELLM_URL", "LITELLM_API_KEY"} {
+	for _, v := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "LITELLM_URL", "LITELLM_API_KEY", "OPENROUTER_API_KEY"} {
 		t.Setenv(v, "test-"+strings.ToLower(v))
 	}
 

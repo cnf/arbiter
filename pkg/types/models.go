@@ -42,6 +42,22 @@ type Signals struct {
 	CostClass            string  // "free_only", "budget", "quality_first"
 	Confidence           float64 // 0.0-1.0
 
+	// AxisConfidence carries a confidence PER AXIS, for a classifier that fills
+	// more than one axis from a single call.
+	//
+	// Confidence above stays the "how sure was this classifier overall" number,
+	// which is exact for a one-axis classifier and a lie for a multi-axis one:
+	// a decision-model call answering domain at 0.98 and cost_class at 0.61 has
+	// no single honest value, and reporting 0.98 for both would let the
+	// cost_class verdict beat a legitimate 0.70 classifier on that axis.
+	//
+	// MergedClassifier keys its per-axis pick on this when present, falling back
+	// to Confidence when absent — so every existing classifier (which leaves
+	// this nil) keeps its exact current behaviour. Consumers that want "how sure
+	// was this request's classification" should keep reading Confidence, which
+	// is the highest per-axis value in that case.
+	AxisConfidence map[string]float64
+
 	// ClassifierCalls carries diagnostics for any sub-classifier that made its
 	// own upstream request to produce a signal (e.g. an LLM-backed domain
 	// classifier) — nil/empty for classifiers that don't (the heuristic ones).
@@ -76,6 +92,34 @@ type ClassifierCallInfo struct {
 	RawReply     string
 	Input        string
 	SystemPrompt string
+
+	// Verdict is a classifier-supplied one-line description of this call's
+	// outcome, used verbatim as the stored routing rationale (the pipeline
+	// appends the input preview). It exists so each classifier type owns its
+	// own wording: a decisions call's outcome is a set of axis values with
+	// probabilities, which the LLM classifier's "replied %q" phrasing cannot
+	// express. Empty means the pipeline falls back to that phrasing, which is
+	// what every pre-existing call site still gets.
+	Verdict string
+
+	// Axes are the axis values THIS call filled, keyed by axis name.
+	//
+	// Per-call, not the merged Signals: a classifier row describes one upstream
+	// call, and the merged value mixes in whatever other classifiers concluded.
+	// Without this a multi-axis decisions call recorded only its domain, so
+	// cost_class and effort were visible in the rationale text but empty as
+	// fields — stored, and unqueryable.
+	Axes map[string]string
+
+	// AxisConfidence is the confidence per axis THIS call reported, for the
+	// axes in Axes. A multi-axis call has no single honest confidence, so the
+	// row stores the highest of these (the same rule Signals.Confidence
+	// follows) rather than a value borrowed from another classifier.
+	//
+	// Without it a classifier row's confidence column was written as nothing at
+	// all and read back as 0.0% on the request detail page — the verdict and its
+	// certainty were both known and only the verdict was stored.
+	AxisConfidence map[string]float64
 }
 
 // KnownAxes lists the axis names a force-alias may target. Keys are the

@@ -426,16 +426,17 @@ func (p *Pipeline) record(ev store.Event) {
 //
 // This runs before the real request's own event (recorded on success or
 // failure, later in Execute), so a classifier call is visible even if
-// routing or the upstream call that follows never completes. sig.Domain is
-// attributed to every entry uniformly rather than per-call, which is exact
-// for today's one-axis-at-a-time configuration and an approximation the day
-// a second LLM-backed axis exists alongside this one.
+// routing or the upstream call that follows never completes.
+//
+// The row's axes come from the CALL when it reported its own (a decisions call
+// fills several axes and knows which), falling back to the merged sig for a
+// classifier that reports none — the LLM classifier's one-axis case, whose
+// single verdict is the merged value anyway. Reading only the merged sig meant
+// a multi-axis decisions call recorded its domain and nothing else, so
+// cost_class was in the rationale text but empty as a field.
 func (p *Pipeline) recordClassifierCalls(req *types.NormalizedRequest, sig types.Signals) {
 	for _, call := range sig.ClassifierCalls {
-		rationale := fmt.Sprintf("LLM classifier replied %q", call.RawReply)
-		if call.Error != "" {
-			rationale = fmt.Sprintf("LLM classifier failed (%s), fell back to heuristic", call.Error)
-		}
+		rationale := classifierRationale(call)
 		// The verdict alone doesn't say what was judged, and the rationale is
 		// what the request list shows before anyone opens the captured content
 		// — so the classified text rides here too. Without it, "replied
@@ -445,6 +446,20 @@ func (p *Pipeline) recordClassifierCalls(req *types.NormalizedRequest, sig types
 		if input := ellipsize(call.Input, rationalePreview); input != "" {
 			rationale += fmt.Sprintf(" — input %q", input)
 		}
+		axes := call.Axes
+		confidence := callConfidence(call)
+		if axes == nil {
+			axes = map[string]string{}
+			if sig.Domain != "" {
+				axes[classifier.AxisDomain] = sig.Domain
+			}
+			if sig.Effort != "" {
+				axes[classifier.AxisEffort] = sig.Effort
+			}
+			if sig.CostClass != "" {
+				axes[classifier.AxisCostClass] = sig.CostClass
+			}
+		}
 		p.record(store.Event{
 			TraceID:          req.TraceID,
 			SessionKey:       req.SessionKey,
@@ -453,7 +468,10 @@ func (p *Pipeline) recordClassifierCalls(req *types.NormalizedRequest, sig types
 			Provider:         call.Provider,
 			Model:            call.Model,
 			RoutingRationale: rationale,
-			Domain:           sig.Domain,
+			Domain:           axes[classifier.AxisDomain],
+			Effort:           axes[classifier.AxisEffort],
+			CostClass:        axes[classifier.AxisCostClass],
+			Confidence:       confidence,
 			Usage:            call.Usage,
 			LatencyMs:        call.LatencyMs,
 			StatusCode:       call.StatusCode,
@@ -463,11 +481,46 @@ func (p *Pipeline) recordClassifierCalls(req *types.NormalizedRequest, sig types
 	}
 }
 
+// callConfidence is the certainty to record for one classifier call. A
+// multi-axis call reports a confidence per axis and has no single honest value,
+// so the highest wins — the same rule Signals.Confidence follows, and the only
+// claim available without picking an arbitrary axis.
+//
+// A call reporting neither falls back to 0, which the page renders as "0.0%"
+// rather than blank. That is a real gap for a classifier that made no claim
+// about its certainty (the LLM classifier sets 1.0 on a match and reports
+// nothing on a failure), not a rendering problem — see the classifier row's
+// rationale for what actually happened.
+func callConfidence(call *types.ClassifierCallInfo) float64 {
+	var best float64
+	for _, c := range call.AxisConfidence {
+		if c > best {
+			best = c
+		}
+	}
+	return best
+}
+
 // rationalePreview bounds how much of a classifier's input is echoed into the
 // routing rationale. The rationale is rendered in a list row (and again in the
 // detail page's <pre>), so this is sized to be recognisable at a glance rather
 // than to carry the whole message — the full text is in the captured content.
 const rationalePreview = 120
+
+// classifierRationale renders one classifier call's outcome. A classifier that
+// supplied its own Verdict owns its wording — a decisions call's outcome is a
+// set of axis values with probabilities, which the LLM classifier's phrasing
+// cannot express. Every other caller gets that phrasing, unchanged from before
+// Verdict existed, so nothing already in the store reads differently.
+func classifierRationale(call *types.ClassifierCallInfo) string {
+	if call.Verdict != "" {
+		return call.Verdict
+	}
+	if call.Error != "" {
+		return fmt.Sprintf("LLM classifier failed (%s), fell back to heuristic", call.Error)
+	}
+	return fmt.Sprintf("LLM classifier replied %q", call.RawReply)
+}
 
 // ellipsize shortens s to at most max bytes on a rune boundary, marking that it
 // was cut. Byte-truncating alone would split a multi-byte rune and put invalid

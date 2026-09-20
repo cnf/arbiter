@@ -48,6 +48,7 @@ skip a row it already has. */}}
       <td class="num">{{usd .CostUSD}}</td>
       <td class="num">{{dur .LatencyMs}}</td>
       <td class="axes">
+        {{if .RequestKind}}<span class="tag reqkind" title="what this request is, not who sent it">{{.RequestKind}}</span>{{end}}
         {{if .Domain}}<span class="tag">{{.Domain}}</span>{{end}}
         {{if .Effort}}<span class="tag">{{.Effort}}</span>{{end}}
         {{if .CostClass}}<span class="tag">{{.CostClass}}</span>{{end}}

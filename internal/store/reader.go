@@ -140,6 +140,13 @@ type RequestFilter struct {
 	// doesn't.
 	Kind string
 
+	// RequestKind filters to an exact requests.request_kind value ("title",
+	// later "subagent"). Empty means no filter, like every other field here.
+	// It is a separate filter from Kind above because the two answer
+	// different questions: Kind is who sent the request, RequestKind is what
+	// it is.
+	RequestKind string
+
 	// SessionKeyless selects the requests that have *no* session key —
 	// `session_key IS NULL OR session_key = ''`. It exists because the zero
 	// value of SessionKey means "any" (above), so the absent case is otherwise
@@ -202,9 +209,14 @@ type RequestRow struct {
 	Stream           bool    `json:"stream"`
 	ConfigEpoch      string  `json:"config_epoch,omitempty"`
 	// Kind is "client" (real traffic, the default) or one of Arbiter's own
-	// internal request kinds ("classifier", and later "title_gen"/"subagent")
-	// — see store.Event.Kind.
+	// internal request kinds ("classifier", and later "subagent") — see
+	// store.Event.Kind.
 	Kind string `json:"kind"`
+
+	// RequestKind is what the request IS — "title" today, "subagent" later —
+	// as opposed to Kind above, which is who sent it. See
+	// store.Event.RequestKind.
+	RequestKind string `json:"request_kind,omitempty"`
 }
 
 // RequestDetail is the full record for one request. Unlike RequestRow it
@@ -663,7 +675,7 @@ LIMIT ?`
 const requestRowColumns = `
     id, trace_id, ts, CAST(ts AS TEXT), session_key, format, provider, model, actual_model, alias_used,
     routing_rationale, domain, effort, cost_class, input_tokens, output_tokens,
-    cost_usd, latency_ms, status_code, error, stream, config_epoch, kind`
+    cost_usd, latency_ms, status_code, error, stream, config_epoch, kind, request_kind`
 
 // ListRequests returns requests newest first, narrowed by f.
 //
@@ -703,6 +715,10 @@ func (r *Reader) ListRequests(ctx context.Context, f RequestFilter) ([]RequestRo
 	if f.Kind != "" {
 		where = append(where, "kind = ?")
 		args = append(args, f.Kind)
+	}
+	if f.RequestKind != "" {
+		where = append(where, "request_kind = ?")
+		args = append(args, f.RequestKind)
 	}
 	// Keyset continuation. The row-value comparison matches the ordering below
 	// exactly, which is what makes paging stable: an id-only cursor would skip
@@ -764,6 +780,7 @@ FROM requests WHERE id = ?`
 		costCl  sql.NullString
 		errText sql.NullString
 		epoch   sql.NullString
+		reqKind sql.NullString
 		conf    sql.NullFloat64
 		tools   sql.NullString
 		client  sql.NullString
@@ -772,7 +789,7 @@ FROM requests WHERE id = ?`
 	err := r.db.QueryRowContext(ctx, q, id).Scan(
 		&d.ID, &d.TraceID, &tsRaw, &d.TsRaw, &session, &d.Format, &d.Provider, &d.Model, &actual, &alias,
 		&d.RoutingRationale, &domain, &effort, &costCl, &d.InputTokens, &d.OutputTokens,
-		&d.CostUSD, &d.LatencyMs, &d.StatusCode, &errText, &d.Stream, &epoch, &d.Kind,
+		&d.CostUSD, &d.LatencyMs, &d.StatusCode, &errText, &d.Stream, &epoch, &d.Kind, &reqKind,
 		&conf, &d.CacheReadTokens, &d.CacheWriteTokens, &tools, &client, &headers)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RequestDetail{}, false, nil
@@ -790,6 +807,7 @@ FROM requests WHERE id = ?`
 	d.CostClass = costCl.String
 	d.Error = errText.String
 	d.ConfigEpoch = epoch.String
+	d.RequestKind = reqKind.String
 	d.Confidence = conf.Float64
 	d.ToolCalls = tools.String
 	d.ClientID = client.String
@@ -820,11 +838,12 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 		costCl  sql.NullString
 		errText sql.NullString
 		epoch   sql.NullString
+		reqKind sql.NullString
 	)
 	if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &s.TsRaw, &session, &s.Format, &s.Provider,
 		&s.Model, &actual, &alias, &s.RoutingRationale, &domain, &effort, &costCl,
 		&s.InputTokens, &s.OutputTokens, &s.CostUSD, &s.LatencyMs, &s.StatusCode,
-		&errText, &s.Stream, &epoch, &s.Kind); err != nil {
+		&errText, &s.Stream, &epoch, &s.Kind, &reqKind); err != nil {
 		return RequestRow{}, fmt.Errorf("scan request row: %w", err)
 	}
 	s.Ts = formatTime(tsRaw)
@@ -836,6 +855,7 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 	s.CostClass = costCl.String
 	s.Error = errText.String
 	s.ConfigEpoch = epoch.String
+	s.RequestKind = reqKind.String
 	return s, nil
 }
 

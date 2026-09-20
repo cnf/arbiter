@@ -129,7 +129,14 @@ func (hc *HeuristicClassifier) Classify(ctx context.Context, req *types.Normaliz
 		sig := types.Signals{
 			EstimatedTokens: estimateTokens(req),
 			Confidence:      1.0,
-			AxisConfidence:  map[string]float64{hc.axis: 1.0},
+			RequestKind:     hc.matcher.Kind(),
+		}
+		// Per-axis confidence is reported only when the matcher fills an
+		// axis. A kind-only signature fills none, and claiming certainty
+		// about an axis it left empty would let it win that axis in the
+		// merge on the strength of a value it never produced.
+		if hc.matcher.Value() != "" {
+			sig.AxisConfidence = map[string]float64{hc.axis: 1.0}
 		}
 		hc.fillAxis(&sig, hc.matcher.Value())
 		return sig, nil
@@ -360,6 +367,15 @@ func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedR
 				capSeen[capability] = true
 				merged.RequiredCapabilities = append(merged.RequiredCapabilities, capability)
 			}
+		}
+		// RequestKind is first-non-empty-wins rather than a confidence
+		// contest: a signature that identified the request outright is a
+		// fact, not a guess to be outbid. Declared order is priority order
+		// (buildClassifiers preserves it), so the first classifier that
+		// recognizes the request names it. Recorded before the decisive
+		// break below, like every other signal from this classifier.
+		if merged.RequestKind == "" && sig.RequestKind != "" {
+			merged.RequestKind = sig.RequestKind
 		}
 		if sig.EstimatedTokens > merged.EstimatedTokens {
 			merged.EstimatedTokens = sig.EstimatedTokens

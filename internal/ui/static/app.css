@@ -246,6 +246,11 @@ td.axes { white-space: nowrap; }
 }
 .tag.kind { color: var(--note); border-color: color-mix(in srgb, var(--note) 40%, transparent); }
 
+/* A request kind is not an axis. It sits in the same column because that is
+   where "what is this row" is read, but it is coloured as its own thing so a
+   `title` is never mistaken for a domain the router matched on. */
+.tag.reqkind { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+
 .empty { padding: 1rem; border: 1px dashed var(--line); border-radius: 4px; color: var(--muted); }
 .fail h1 { font-size: 2rem; margin: 2rem 1rem 0; }
 .fail p.error { margin: 0.5rem 1rem; font-family: var(--mono); }

@@ -45,19 +45,37 @@ func hermesTitleRequest() *types.NormalizedRequest {
 	}
 }
 
+// titleKindMatcher is the shape the deployment config uses: a signature that
+// records the request KIND and fills no content axis.
+//
+// It fills no domain deliberately. "What is this request about" has no
+// meaningful answer for a title generator — the conversation being titled is
+// the payload, not the request's subject — and letting the signature claim
+// `domain` would put a value in the axis column that no router rule should
+// ever match on.
+func titleKindMatcher(t *testing.T) *RequestMatcher {
+	t.Helper()
+	return mustKindMatcher(t, []types.MatchPattern{{Pattern: "You name chat sessions."}}, "title", nil, true)
+}
+
 // The real Hermes title prompt, matched by its actual opening. This is the
 // pattern to deploy; the test exists so a future edit to the prompt is caught
 // here rather than in production traffic.
 func TestMatcherOnRealHermesTitlePrompt(t *testing.T) {
-	hc := NewHeuristicClassifierWithMatch("request-kind", AxisDomain, nil,
-		mustMatcher(t, []types.MatchPattern{{Pattern: "You name chat sessions."}}, "title_generation", nil, true))
+	hc := NewHeuristicClassifierWithMatch("request-kind", AxisDomain, nil, titleKindMatcher(t))
 
 	sig, err := hc.Classify(context.Background(), hermesTitleRequest())
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	if sig.Domain != "title_generation" {
-		t.Fatalf("Domain = %q, want title_generation — the real prompt did not match", sig.Domain)
+	if sig.RequestKind != "title" {
+		t.Fatalf("RequestKind = %q, want title — the real prompt did not match", sig.RequestKind)
+	}
+	// The other half of the shape: a kind-only signature must not also fill
+	// the axis it is declared on. A value there would show in the axes column
+	// as though the request had a content domain.
+	if sig.Domain != "" {
+		t.Fatalf("Domain = %q, want empty — a kind-only signature must fill no axis", sig.Domain)
 	}
 }
 
@@ -67,13 +85,13 @@ func TestMatcherOnRealHermesTitlePrompt(t *testing.T) {
 // OR-list is exactly the mechanism for that.
 func TestUnrelatedSignatureDoesNotMatchHermesPrompt(t *testing.T) {
 	hc := NewHeuristicClassifierWithMatch("request-kind", AxisDomain, nil,
-		mustMatcher(t, []types.MatchPattern{{Pattern: "You are a title generator."}}, "title_generation", nil, true))
+		mustKindMatcher(t, []types.MatchPattern{{Pattern: "You are a title generator."}}, "title", nil, true))
 
 	sig, err := hc.Classify(context.Background(), hermesTitleRequest())
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	if sig.Domain == "title_generation" {
+	if sig.RequestKind == "title" {
 		t.Fatal("a pattern for a different client's prompt matched Hermes' prompt — the test fixture is not the real string")
 	}
 }
@@ -82,16 +100,16 @@ func TestUnrelatedSignatureDoesNotMatchHermesPrompt(t *testing.T) {
 // Tested against the real prompt so it is known to cover it, not assumed to.
 func TestBroadenedRegexCoversTheRealPrompt(t *testing.T) {
 	hc := NewHeuristicClassifierWithMatch("request-kind", AxisDomain, nil,
-		mustMatcher(t, []types.MatchPattern{
+		mustKindMatcher(t, []types.MatchPattern{
 			{Pattern: "(?i)^\\s*you (name|title|summari[sz]e) (chat )?sessions?\\b", Mode: "regex"},
-		}, "title_generation", nil, true))
+		}, "title", nil, true))
 
 	sig, err := hc.Classify(context.Background(), hermesTitleRequest())
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	if sig.Domain != "title_generation" {
-		t.Fatalf("Domain = %q, want the broadened regex to cover the real prompt", sig.Domain)
+	if sig.RequestKind != "title" {
+		t.Fatalf("RequestKind = %q, want the broadened regex to cover the real prompt", sig.RequestKind)
 	}
 
 	// And it must not fire on an ordinary assistant preamble.
@@ -103,23 +121,32 @@ func TestBroadenedRegexCoversTheRealPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	if sig.Domain == "title_generation" {
+	if sig.RequestKind == "title" {
 		t.Fatal("the broadened regex matched an ordinary assistant preamble")
 	}
 }
 
 // A decisive match on the real prompt must stop the merge, so a title-gen
 // request never pays for a domain classification it already knows the answer to.
+//
+// This is what keeps classification affordable on the literal-model path: the
+// signature is free, and everything behind it — the decisions call, the LLM
+// classifiers — is skipped for every request it identifies.
 func TestDecisiveMatchOnRealPromptSkipsTheRest(t *testing.T) {
 	counter := &countingClassifier{}
-	probe := NewHeuristicClassifierWithMatch("request-kind", AxisDomain, nil,
-		mustMatcher(t, []types.MatchPattern{{Pattern: "You name chat sessions."}}, "title_generation", nil, true))
+	probe := NewHeuristicClassifierWithMatch("request-kind", AxisDomain, nil, titleKindMatcher(t))
 	merged := NewMergedClassifier("merged", []Classifier{probe, counter})
 
-	if _, err := merged.Classify(context.Background(), hermesTitleRequest()); err != nil {
+	sig, err := merged.Classify(context.Background(), hermesTitleRequest())
+	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
 	if counter.calls != 0 {
 		t.Fatalf("downstream classifier ran %d times, want 0 for a real title-gen request", counter.calls)
+	}
+	// The kind has to survive the merge, or the row still cannot say what it
+	// was — which is the entire point of recording it.
+	if sig.RequestKind != "title" {
+		t.Fatalf("merged RequestKind = %q, want title", sig.RequestKind)
 	}
 }

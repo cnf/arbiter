@@ -334,6 +334,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 			AliasUsed:        p.aliasName(req.Model),
 			RoutingRationale: route.Rationale,
 			Domain:           sig.Domain,
+			RequestKind:      sig.RequestKind,
 			Effort:           sig.Effort,
 			CostClass:        sig.CostClass,
 			Confidence:       sig.Confidence,
@@ -394,6 +395,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		AliasUsed:        p.aliasName(req.Model),
 		RoutingRationale: served.Rationale,
 		Domain:           sig.Domain,
+		RequestKind:      sig.RequestKind,
 		Effort:           sig.Effort,
 		CostClass:        sig.CostClass,
 		Confidence:       sig.Confidence,
@@ -751,10 +753,15 @@ func upstreamFailure(err error) (status int, provider string) {
 // req.Model == "" is not special-cased: it can never match a recorded
 // requested-model (pins are always recorded under a non-empty model), so an
 // empty model simply never hits a pin.
+//
+// Rule 1 has one exception: a request that is NOT YET part of a session is
+// classified for its signals even though its route is already decided. The
+// signals are recorded, never applied — see classifyLiteral.
 func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedRequest, hasKey bool) (types.Route, types.Signals, error) {
 	if route, ok := p.literalModelRoute(req.Model); ok {
-		p.logger.LogRouting(ctx, route, types.Signals{}, 0)
-		return route, types.Signals{}, nil
+		sig := p.classifyLiteral(ctx, req, hasKey)
+		p.logger.LogRouting(ctx, route, sig, 0)
+		return route, sig, nil
 	}
 
 	if hasKey {
@@ -809,6 +816,60 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 	}
 	p.logger.LogRouting(ctx, route, sig, time.Since(routeStart))
 	return route, sig, nil
+}
+
+// classifyLiteral produces signals for a request whose route is already
+// decided by its own model name (resolveRoute rule 1).
+//
+// The signals are for the RECORD, never for the route: the client named a
+// concrete model and goes exactly where it asked. What they buy is
+// identification — without this, a title-generation request is
+// indistinguishable on its row from ordinary traffic, because it shares the
+// main model's name, fills no axis, and carries the generic
+// `explicit model "..." -> provider "..."` rationale. The operator's own
+// words: "if it happened, it should be shown."
+//
+// It runs only when the request is NOT YET part of a session (hasKey false, or
+// no pin recorded yet). That is the rule from #1 — "every request that is not
+// yet part of a session gets classified" — and it is also what keeps the cost
+// bounded: the pin recorded after a successful call means turn 2 onward of a
+// normal conversation skips this entirely. A title-gen request is the case
+// that keeps classifying, and correctly so: its session key is derived from
+// conversation text that changes on every call, so it is never part of a
+// session and every one of its requests is a first request.
+//
+// A decisive signature (a title-gen matcher, say) ends the merge, so the
+// model-backed classifiers behind it never run: an identified request costs no
+// upstream call at all. Anything else pays for classification once per
+// session, which is the accepted cost of #1.
+//
+// A classification failure is not fatal here, unlike on the classify+rules
+// path. There the signals decide the route, so failing to produce them must
+// fail the request; here the route is already known and only the row's
+// annotations are lost, and failing a request the client would otherwise have
+// been served is the worse outcome.
+func (p *Pipeline) classifyLiteral(ctx context.Context, req *types.NormalizedRequest, hasKey bool) types.Signals {
+	if hasKey {
+		// A pin is the proof that this session already exists, whatever model
+		// it was recorded under. Deliberately not affinity.get: that returns a
+		// hit only when the client is still requesting the model the pin was
+		// recorded under, so a client that switched models would look like a
+		// brand-new session and be re-classified on every turn.
+		if _, ok := p.affinity.pinned(ctx, req.SessionKey); ok {
+			return types.Signals{}
+		}
+	}
+
+	sig, err := p.classify(ctx, req)
+	if err != nil {
+		p.logger.LogError(ctx, "warn", err,
+			map[string]interface{}{"stage": "classify_literal_model", "model": req.Model})
+		return types.Signals{}
+	}
+	p.recordClassifierCalls(req, sig)
+	// applyForceAlias is deliberately NOT called: a force alias exists to
+	// shape what the router matches on, and nothing is matched here.
+	return sig
 }
 
 // literalModelRoute returns a direct route when req.Model is a model actually
@@ -931,6 +992,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 			AliasUsed:        p.aliasName(req.Model),
 			RoutingRationale: route.Rationale,
 			Domain:           sig.Domain,
+			RequestKind:      sig.RequestKind,
 			Effort:           sig.Effort,
 			CostClass:        sig.CostClass,
 			Confidence:       sig.Confidence,
@@ -1047,6 +1109,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 			AliasUsed:        p.aliasName(req.Model),
 			RoutingRationale: served.Rationale,
 			Domain:           sig.Domain,
+			RequestKind:      sig.RequestKind,
 			Effort:           sig.Effort,
 			CostClass:        sig.CostClass,
 			Confidence:       sig.Confidence,

@@ -42,6 +42,24 @@ type Signals struct {
 	CostClass            string  // "free_only", "budget", "quality_first"
 	Confidence           float64 // 0.0-1.0
 
+	// RequestKind says WHAT the request is, as opposed to what it is about:
+	// "title" for a client's title-generation call, and later "subagent" for
+	// a delegated worker's own traffic.
+	//
+	// It is deliberately NOT an axis. Domain/Effort/CostClass are *routing*
+	// inputs — they are contested in the merge by confidence and a force-alias
+	// may override them — whereas a request's kind is a fact about the request
+	// that routing does not consume. So it carries no confidence, is not in
+	// KnownAxes, and no force-alias can target it. What it buys is
+	// identification: a title request has no meaningful content domain, and
+	// before this existed the only way to spot one on a row was to read its
+	// system prompt.
+	//
+	// Distinct from store.Event.Kind, which is *who sent* the request
+	// ("client" traffic vs Arbiter's own "classifier" calls). A title request
+	// is a client request with kind "client" and RequestKind "title".
+	RequestKind string
+
 	// AxisConfidence carries a confidence PER AXIS, for a classifier that fills
 	// more than one axis from a single call.
 	//

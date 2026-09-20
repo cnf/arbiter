@@ -57,6 +57,12 @@ type requestFilterView struct {
 	// re-rendering which option is selected.
 	KindRaw string
 
+	// ReqKindRaw is ?request_kind= as typed: what the request IS ("title",
+	// later "subagent"), which is a different question from KindRaw's who
+	// sent it. Free text rather than a fixed list, because the set of kinds
+	// is open — a new one is a config edit, not a code change.
+	ReqKindRaw string
+
 	// Any records whether any filter is set, so the empty state can offer
 	// "widen" only when there is something to widen.
 	Any bool
@@ -139,6 +145,7 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 		SessionKey: q.Get("session"),
 		LimitRaw:   q.Get("limit"),
 		KindRaw:    q.Get("kind"),
+		ReqKindRaw: q.Get("request_kind"),
 	}
 
 	f := store.RequestFilter{
@@ -149,6 +156,7 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 		ErrorsOnly:     q.Has("errors"),
 		Limit:          defaultListLimit,
 		Kind:           requestKindFilter(q.Get("kind")),
+		RequestKind:    fv.ReqKindRaw,
 	}
 	// since: a Go duration, matching the JSON surface's own parameter so the
 	// two read surfaces describe one window the same way.
@@ -191,7 +199,7 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 	// shows it; but it *is* part of "is anything filtered", because a cursor
 	// means this is a later page rather than the first.
 	fv.Any = f.Provider != "" || f.Alias != "" || f.SessionKey != "" || f.StatusCode != 0 ||
-		f.ErrorsOnly || f.SessionKeyless || !f.Since.IsZero() || fv.KindRaw != ""
+		f.ErrorsOnly || f.SessionKeyless || !f.Since.IsZero() || fv.KindRaw != "" || fv.ReqKindRaw != ""
 
 	view := requestsView{viewBase: h.base("Requests"), rowsView: rowsView{F: fv}}
 

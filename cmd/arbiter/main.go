@@ -741,12 +741,13 @@ func buildHeuristicClassifier(cc config.ClassifierConfig, axis string) (classifi
 			return nil, fmt.Errorf("match: %w", err)
 		}
 		value, _ := cc.Config["value"].(string)
+		kind, _ := cc.Config["kind"].(string)
 		where, err := stringList(cc.Config, "where")
 		if err != nil {
 			return nil, err
 		}
 		decisive, _ := cc.Config["decisive"].(bool)
-		matcher, err = classifier.NewRequestMatcher(patterns, value, where, decisive)
+		matcher, err = classifier.NewRequestMatcher(patterns, value, kind, where, decisive)
 		if err != nil {
 			return nil, fmt.Errorf("match: %w", err)
 		}

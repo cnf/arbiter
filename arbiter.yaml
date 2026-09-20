@@ -106,11 +106,32 @@ providers:
 #     mode:       exact | prefix | regex (default prefix). Same vocabulary and
 #                 the same code as the prompt_rewrite guardrail's.
 #     pattern:    the text to look for.
-#   value:        required — the axis value a hit fills.
+#   value:        the axis value a hit fills. One of value/kind is required.
+#   kind:         the request KIND a hit records — "title", later "subagent".
+#                 Not an axis: it is what the request IS, not what it is about,
+#                 so it carries no confidence, no force-alias can target it, and
+#                 a kind-only matcher (no `value`) fills no axis at all. That is
+#                 the normal shape for a signature like a title generator's,
+#                 whose "domain" has no meaningful answer.
 #   where:        system | messages | all (default system).
 #   decisive:     optional bool — a HIT ends classification, so classifiers
 #                 declared after this one do not run. A MISS falls through
 #                 normally.
+#
+# A `kind:` signature is what makes an internal-looking request identifiable on
+# its row without changing where it routes. It also bounds the cost: declared
+# first and decisive, it skips every model-backed classifier behind it, so an
+# identified request pays for no classification call at all.
+#
+# classifiers:
+#   - name: "request-kind"
+#     type: "heuristic"
+#     config:
+#       match:
+#         - mode: "prefix"
+#           pattern: "You name chat sessions."
+#       kind: "title"
+#       decisive: true
 #
 # A `capability_detector` may take `detect:`, which proves capabilities from the
 # request's shape rather than from its words:

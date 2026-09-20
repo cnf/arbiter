@@ -68,6 +68,11 @@ type Event struct {
 	CostClass  string
 	Confidence float64
 
+	// RequestKind is what the request IS ("title", later "subagent"), as
+	// opposed to who sent it — that is Kind below. See
+	// types.Signals.RequestKind for why the two are not the same column.
+	RequestKind string
+
 	Usage      types.Usage
 	LatencyMs  int64
 	StatusCode int
@@ -178,7 +183,7 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 	// added to schema.sql after a database was first created never appears on
 	// it. Add the ones we know about explicitly; an insert referencing a
 	// missing column fails every time, which would silently lose events.
-	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT", "actual_model TEXT", "kind TEXT NOT NULL DEFAULT 'client'"} {
+	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT", "actual_model TEXT", "kind TEXT NOT NULL DEFAULT 'client'", "request_kind TEXT"} {
 		if err := addColumnIfMissing(db, "requests", col); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate event store schema: %w", err)
@@ -381,13 +386,13 @@ INSERT INTO requests (
     alias_used, routing_rationale, domain, effort, cost_class, confidence,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
     cost_usd, latency_ms, status_code, error, stream, tool_calls_json,
-    config_epoch, headers_json, kind
+    config_epoch, headers_json, kind, request_kind
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?,
-    ?, ?
+    ?, ?, ?
 )`
 
 	// kind is NOT NULL with a schema default, but this INSERT always binds it
@@ -427,7 +432,8 @@ INSERT INTO requests (
 		toolCallsJSON(ev.ToolCalls),
 		nullStr(ev.ConfigEpoch),
 		headersJSON(ev.Headers),
-		kind)
+		kind,
+		nullStr(ev.RequestKind))
 	if err != nil {
 		return 0, fmt.Errorf("insert request: %w", err)
 	}

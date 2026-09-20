@@ -19,9 +19,22 @@ func titleGenRequest() *types.NormalizedRequest {
 	}
 }
 
+// mustMatcher builds a matcher that fills an axis value, the pre-kind shape.
+// kindMatcher below is its kind-only counterpart.
 func mustMatcher(t *testing.T, patterns []types.MatchPattern, value string, where []string, decisive bool) *RequestMatcher {
 	t.Helper()
-	m, err := NewRequestMatcher(patterns, value, where, decisive)
+	m, err := NewRequestMatcher(patterns, value, "", where, decisive)
+	if err != nil {
+		t.Fatalf("NewRequestMatcher: %v", err)
+	}
+	return m
+}
+
+// mustKindMatcher builds a matcher that records a request kind and fills no
+// axis — the shape a title-gen signature uses.
+func mustKindMatcher(t *testing.T, patterns []types.MatchPattern, kind string, where []string, decisive bool) *RequestMatcher {
+	t.Helper()
+	m, err := NewRequestMatcher(patterns, "", kind, where, decisive)
 	if err != nil {
 		t.Fatalf("NewRequestMatcher: %v", err)
 	}

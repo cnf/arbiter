@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -200,6 +201,94 @@ func TestDuplicateTraceIDIsKept(t *testing.T) {
 func TestSchemaIsIdempotent(t *testing.T) {
 	db := openMemory(t)
 	applySchema(t, db)
+}
+
+// TestMigrationAddsRequestKindToAnExistingTable is the upgrade path, and it is
+// the one that matters in production: the deployment's database was created
+// before request_kind existed, and CREATE TABLE IF NOT EXISTS is a no-op on an
+// existing table — so the column only ever appears via the explicit
+// addColumnIfMissing pass. Without that pass the insert references a missing
+// column and EVERY event is silently lost, which is the failure mode the
+// migration loop's own comment warns about.
+//
+// It builds the pre-change table shape, migrates it, and proves both that the
+// column appears and that the new insert writes to it.
+func TestMigrationAddsRequestKindToAnExistingTable(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+
+	// A database as it existed before this change: the real pre-change table
+	// shape, minus request_kind. The full column list rather than a minimal
+	// stub, because the schema's own indexes reference these columns and are
+	// applied on top of it.
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `CREATE TABLE requests (
+		id                    INTEGER PRIMARY KEY,
+		trace_id              TEXT NOT NULL,
+		session_key           TEXT,
+		client_id             TEXT,
+		ts                    TIMESTAMP NOT NULL,
+		format                TEXT NOT NULL,
+		provider              TEXT NOT NULL,
+		model                 TEXT NOT NULL,
+		actual_model          TEXT,
+		alias_used            TEXT,
+		routing_rationale     TEXT NOT NULL,
+		domain                TEXT,
+		effort                TEXT,
+		cost_class            TEXT,
+		confidence            REAL,
+		input_tokens          INTEGER NOT NULL DEFAULT 0,
+		output_tokens         INTEGER NOT NULL DEFAULT 0,
+		cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+		cache_write_tokens    INTEGER NOT NULL DEFAULT 0,
+		cost_usd              REAL NOT NULL DEFAULT 0,
+		latency_ms            INTEGER NOT NULL,
+		status_code           INTEGER NOT NULL,
+		error                 TEXT,
+		stream                BOOLEAN NOT NULL,
+		tool_calls_json       TEXT,
+		config_epoch          TEXT,
+		headers_json          TEXT,
+		kind                  TEXT NOT NULL DEFAULT 'client'
+	)`); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	// Startup: this applies the schema (a no-op on the existing table) and
+	// then the explicit column pass.
+	w, err := NewSQLiteWriter(path, &recordingLogger{})
+	if err != nil {
+		t.Fatalf("NewSQLiteWriter on a pre-change database: %v", err)
+	}
+
+	w.Record(Event{
+		TraceID:          "trace-migrated",
+		Format:           "openai",
+		Provider:         "openrouter",
+		Model:            "@preset/deepseek-flash",
+		RoutingRationale: `explicit model "@preset/deepseek-flash" -> provider "openrouter"`,
+		RequestKind:      "title",
+		StatusCode:       502,
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	r := &Reader{db: reopenReads(t, path)}
+	rows, err := r.ListRequests(ctx, RequestFilter{RequestKind: "title"})
+	if err != nil {
+		t.Fatalf("ListRequests after migration: %v", err)
+	}
+	if len(rows) != 1 || rows[0].RequestKind != "title" {
+		t.Fatalf("after migration rows = %+v, want one row with request_kind=title", rows)
+	}
 }
 
 // TestEmptyStringsBecomeNull proves an Event's unset nullable fields are

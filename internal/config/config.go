@@ -713,8 +713,9 @@ func validateClassifierMatch(cs []ClassifierConfig) error {
 			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: match needs at least one pattern", cc.Name), nil)
 		}
 		value, _ := cc.Config["value"].(string)
-		if value == "" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: match requires \"value\" (the axis value a hit fills)", cc.Name), nil)
+		kind, _ := cc.Config["kind"].(string)
+		if value == "" && kind == "" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: match requires \"value\" (the axis value a hit fills) or \"kind\" (the request kind a hit records)", cc.Name), nil)
 		}
 		if raw, ok := cc.Config["where"]; ok {
 			where, err := matchStringList(raw, "where")

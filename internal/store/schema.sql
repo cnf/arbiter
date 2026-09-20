@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS requests (
     tool_calls_json       TEXT,                -- JSON array of tool names used
     config_epoch          TEXT,
     headers_json          TEXT,                -- JSON object of inbound headers, credentials redacted
-    kind                  TEXT NOT NULL DEFAULT 'client' -- "client" (real traffic) | "classifier" | future: "title_gen", "subagent"
+    kind                  TEXT NOT NULL DEFAULT 'client', -- who sent it: "client" (real traffic) | "classifier"
+    request_kind          TEXT                 -- what it IS: "title" | future: "subagent". Distinct from `kind` above, which says who sent it
 );
 
 CREATE INDEX IF NOT EXISTS idx_requests_trace ON requests(trace_id);

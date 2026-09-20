@@ -90,6 +90,59 @@ func (s *affinityStore) get(ctx context.Context, key, requestedModel string) (pr
 	return pin.Provider, pin.Model, true
 }
 
+// pinned reports whether ANY pin is recorded for key, regardless of which
+// model the client is currently requesting. It answers "does this session
+// exist yet", which is the question classification-on-the-literal-path turns
+// on — see Pipeline.classifyLiteral.
+//
+// Distinct from get, which answers "can this pin serve THIS request" and
+// therefore returns a miss whenever the client switched models. Using get
+// there would make a client that switched models look like a brand-new session
+// on every single turn, and re-classify it forever.
+//
+// No TTL refresh: this is a read for a decision, not a use of the pin. A hit
+// refreshes because the conversation is demonstrably continuing; merely asking
+// whether it exists must not extend its life.
+func (s *affinityStore) pinned(ctx context.Context, key string) (affinityPin, bool) {
+	if key == "" {
+		return affinityPin{}, false
+	}
+
+	s.mu.Lock()
+	pin, found := s.pins[key]
+	s.mu.Unlock()
+	if found && !time.Now().After(pin.ExpiresAt) {
+		return pin, true
+	}
+
+	// A miss consults the store: a pin recorded by a previous pipeline (before
+	// a reload) or a previous process (before a restart) still proves the
+	// session exists.
+	if s.pinner == nil {
+		return affinityPin{}, false
+	}
+	rec, ok, err := s.pinner.LoadPin(ctx, key)
+	if err != nil || !ok {
+		return affinityPin{}, false
+	}
+	if time.Now().After(rec.ExpiresAt) {
+		// Expired: drop the row so it cannot be loaded again. Deleting is safe
+		// here — the pin is already dead.
+		s.forget(ctx, key)
+		return affinityPin{}, false
+	}
+	pin = affinityPin{
+		Provider:       rec.Provider,
+		Model:          rec.Model,
+		RequestedModel: rec.RequestedModel,
+		ExpiresAt:      rec.ExpiresAt,
+	}
+	s.mu.Lock()
+	s.pins[key] = pin
+	s.mu.Unlock()
+	return pin, true
+}
+
 // load reads a pin from the store, applying the same rules the cache does.
 //
 // The expiry check is repeated here rather than trusted to the store, and this is

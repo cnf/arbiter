@@ -62,6 +62,80 @@ func reopenReads(t *testing.T, path string) *sql.DB {
 	return db
 }
 
+// TestRecordPersistsRequestKind proves the request-kind column round-trips,
+// and — the load-bearing half — that it is INDEPENDENT of `kind`. A title
+// request is ordinary client traffic (kind "client") that happens to be
+// identifiable as a title request; conflating the two columns would put
+// Arbiter's own internal calls in the same bucket as a client's title
+// generation, which is exactly the confusion this column exists to remove.
+func TestRecordPersistsRequestKind(t *testing.T) {
+	w, path := newTestWriter(t)
+
+	w.Record(Event{
+		TraceID:     "trace-title",
+		Format:      "openai",
+		Provider:    "openrouter",
+		Model:       "@preset/deepseek-flash",
+		RequestKind: "title",
+		// No domain: a title request has no meaningful content domain, and
+		// the whole point is that the kind says what it is without one.
+		StatusCode: 502,
+	})
+	// And a classifier call, whose KIND differs but which has no request kind.
+	w.Record(Event{
+		TraceID:    "trace-classifier",
+		Format:     "openai",
+		Provider:   "openrouter-decisions",
+		Model:      "~typesafe/jev-latest",
+		Kind:       "classifier",
+		StatusCode: 200,
+	})
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	r := &Reader{db: reopenReads(t, path)}
+
+	// Filtering by request_kind finds the title request and nothing else.
+	titles, err := r.ListRequests(context.Background(), RequestFilter{RequestKind: "title"})
+	if err != nil {
+		t.Fatalf("ListRequests(request_kind=title): %v", err)
+	}
+	if len(titles) != 1 {
+		t.Fatalf("request_kind=title returned %d rows, want 1", len(titles))
+	}
+	got := titles[0]
+	if got.RequestKind != "title" {
+		t.Errorf("RequestKind = %q, want title", got.RequestKind)
+	}
+	if got.Domain != "" {
+		t.Errorf("Domain = %q, want empty — a title request fills no content axis", got.Domain)
+	}
+	// The two columns are independent: this is client traffic.
+	if got.Kind != "client" {
+		t.Errorf("Kind = %q, want client — a title request is still client traffic", got.Kind)
+	}
+
+	// The classifier call has a kind but no request kind, so the filter
+	// excludes it. That separation is the reason the column is not reused.
+	//
+	// No Kind here: the store treats an empty kind as "no filter" ("all" is
+	// the UI layer's own spelling, resolved before a filter reaches here).
+	all, err := r.ListRequests(context.Background(), RequestFilter{})
+	if err != nil {
+		t.Fatalf("ListRequests(unfiltered): %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("unfiltered list returned %d rows, want 2", len(all))
+	}
+	for _, row := range all {
+		if row.Kind == "classifier" && row.RequestKind != "" {
+			t.Errorf("classifier row has request_kind %q, want empty", row.RequestKind)
+		}
+	}
+}
+
 // TestRecordPersistsFullEvent is the load-bearing test: an event recorded
 // through the writer's queue must land in the database with every field
 // intact, including the empty-string→NULL conversions.

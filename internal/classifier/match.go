@@ -7,7 +7,8 @@ import (
 )
 
 // RequestMatcher matches a request's own text — its system prompt or its
-// messages — and reports the axis value to fill when it hits.
+// messages — and reports what a hit means: an axis value to fill, a request
+// kind, or both.
 //
 // This exists because the text that identifies WHAT a request is can live
 // somewhere no classifier read. A title generator's system prompt begins
@@ -35,8 +36,15 @@ type RequestMatcher struct {
 	// client's signature is a one-line edit rather than a code change.
 	patterns []*types.TextMatcher
 
-	// value is the axis value filled on a match.
+	// value is the axis value filled on a match. May be empty when the
+	// signature identifies a kind rather than a content axis (see kind).
 	value string
+
+	// kind is the request kind recorded on a match — "title", later
+	// "subagent". Independent of value: a title request fills a kind and no
+	// domain, because "what is this request about" has no meaningful answer
+	// for a title generator. See types.Signals.RequestKind.
+	kind string
 
 	// where selects which parts of the request are searched. Defaults to
 	// system-only, matching the guardrail's default and for the same reason:
@@ -52,14 +60,19 @@ type RequestMatcher struct {
 // NewRequestMatcher compiles a matcher from already-parsed config values. An
 // empty pattern list is an error rather than a no-op: a matcher that can never
 // match is config the operator believes is doing something.
-func NewRequestMatcher(patterns []types.MatchPattern, value string, where []string, decisive bool) (*RequestMatcher, error) {
+//
+// value and kind are each optional but at least one is required — a matcher
+// that hits and reports nothing is that same no-op by another route. A kind-only
+// matcher is the normal shape for a signature that identifies what a request IS
+// rather than what it is about.
+func NewRequestMatcher(patterns []types.MatchPattern, value, kind string, where []string, decisive bool) (*RequestMatcher, error) {
 	if len(patterns) == 0 {
 		return nil, fmt.Errorf("match needs at least one pattern")
 	}
-	if value == "" {
-		return nil, fmt.Errorf("match needs a \"value\" — the axis value a hit fills")
+	if value == "" && kind == "" {
+		return nil, fmt.Errorf("match needs a %q (the axis value a hit fills) or a %q (the request kind a hit records)", "value", "kind")
 	}
-	m := &RequestMatcher{value: value, decisive: decisive}
+	m := &RequestMatcher{value: value, kind: kind, decisive: decisive}
 	for _, p := range patterns {
 		tm, err := types.NewTextMatcher(p.Pattern, types.MatchMode(p.Mode))
 		if err != nil {
@@ -124,12 +137,22 @@ func (m *RequestMatcher) Match(req *types.NormalizedRequest) bool {
 	return false
 }
 
-// Value is the axis value a hit fills.
+// Value is the axis value a hit fills. Empty for a kind-only matcher, which
+// fills no axis — see Kind.
 func (m *RequestMatcher) Value() string {
 	if m == nil {
 		return ""
 	}
 	return m.value
+}
+
+// Kind is the request kind a hit records — "title", later "subagent". Empty
+// for a matcher that only fills an axis. See types.Signals.RequestKind.
+func (m *RequestMatcher) Kind() string {
+	if m == nil {
+		return ""
+	}
+	return m.kind
 }
 
 // Decisive reports whether a hit should end classification.

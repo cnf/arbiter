@@ -1175,7 +1175,7 @@ inbound headers); `404` for an unknown id, `400` for a malformed one.
 
 Every row carries a `kind`: `"client"` for real traffic (the default and, so
 far, the only kind that exists in practice — `"classifier"` lands with the
-LLM-backed domain classifier), and later `"title_gen"`/`"subagent"` will reuse
+LLM-backed domain classifier), and later `"subagent"` will reuse
 the same column rather than each inventing their own flag. A non-client
 request is never hidden from the store or the detail/session views — the
 point is debuggability, not opacity — but it *is* excluded by default from
@@ -1187,6 +1187,39 @@ describe what a client actually asked for. The per-session trajectory
 (`/admin/ui/session?key=`) and a single request's own detail page are the
 exception — they show every kind, tagged, because a classifier call is most
 useful to see *in the context of the turn it informed*.
+
+`kind` says **who sent** the request. A separate `request_kind` column says
+**what the request is** — `"title"` for a client's title-generation call, later
+`"subagent"`. The two are independent: a title request is client traffic
+(`kind="client"`) that is *identifiable* as a title request. It is filled by a
+classifier's `match:` block via `kind:`, not by an axis, because "what is this
+request about" has no meaningful answer for a title generator — the conversation
+being titled is its payload, not its subject. That is also why it does not go
+in `domain`: an axis is a *routing* input, contested by confidence and
+overridable by a force-alias, and a request's kind is a fact no rule should
+match on.
+
+`?request_kind=<kind>` filters the list by it (free text, since the set of
+kinds is open), and the axes column renders it in its own colour so it is never
+mistaken for a domain the router matched on. **Why it exists:** a request that
+names a concrete model used to be indistinguishable from ordinary traffic on its
+row — same `model` value, empty axes, and the generic `explicit model "…" ->
+provider "…"` rationale — so a Hermes title-generation request could be sitting
+in the list and still unreadable. Requests that name a concrete model are now
+classified **when they are not yet part of a session** (see below), which is
+what fills this column.
+
+A concrete model still routes exactly where the client asked: classification on
+that path is for the record, never for the route, and `ExplicitModel` semantics
+are unchanged. It costs at most one classifier call per session, because a pin
+recorded after the first successful call means later turns skip it. A
+title-gen request is the exception that keeps classifying — its session key is
+derived from the conversation text, which changes on every call, so it is never
+part of a session and every one of its requests is a first request. That is
+correct rather than unfortunate: it is the only way to know it is a title
+request. Declared first and `decisive: true`, a `kind:` signature also skips
+every model-backed classifier behind it, so an identified request pays for no
+classification call at all.
 
 Every request's inbound headers are captured and shown on its detail page —
 `User-Agent` is what tells two otherwise-identical requests apart by client.

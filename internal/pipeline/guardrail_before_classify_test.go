@@ -42,7 +42,7 @@ func TestMatchBlockSurvivesASystemPromptGuardrailPrepending(t *testing.T) {
 
 	matcher, err := classifier.NewRequestMatcher(
 		[]types.MatchPattern{{Pattern: "You name chat sessions.", Mode: "prefix"}},
-		"title_generation", nil, true)
+		"title_generation", "", nil, true)
 	if err != nil {
 		t.Fatalf("NewRequestMatcher: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestMatchBlockSurvivesASystemPromptGuardrailPrepending(t *testing.T) {
 func TestMatcherFallsBackToSystemPromptWhenNoSnapshot(t *testing.T) {
 	matcher, err := classifier.NewRequestMatcher(
 		[]types.MatchPattern{{Pattern: "You name chat sessions.", Mode: "prefix"}},
-		"title_generation", nil, false)
+		"title_generation", "", nil, false)
 	if err != nil {
 		t.Fatalf("NewRequestMatcher: %v", err)
 	}

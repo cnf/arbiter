@@ -42,7 +42,8 @@ func mustKindMatcher(t *testing.T, patterns []types.MatchPattern, kind string, w
 }
 
 // The point of the whole feature: the identifying text is in the system prompt,
-// which no classifier read before — LastUserText walks messages only. This is
+// which no classifier read before — the user-message text is messages-only, and
+// the identifying text is not in a message at all. This is
 // the case where the two disagree by construction, so a matcher that silently
 // searched the last user message instead would pass every other test here and
 // fail only on real traffic.

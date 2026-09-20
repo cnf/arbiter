@@ -53,17 +53,33 @@ type LLMClassifier struct {
 
 	fallback Classifier
 	timeout  time.Duration
+
+	// maxInputChars caps the text sent as the user message, in characters.
+	// 0 means unlimited; NewLLMClassifierFull applies the default, so a
+	// zero here is only reachable by asking for it.
+	maxInputChars int
 }
 
-// NewLLMClassifier creates an LLM-backed classifier. alias names a configured
-// alias (pinned or group) that routes the classification call — resolved the
-// same way a client-named alias would be, including a group alias's member
-// selection and fallback siblings. labels carries each category's optional
-// rubric description; escape names the label that means "no category fits",
-// whose verdict fills no axis at all. instructions, when non-empty, replaces
-// the default framing sentence. fallback is used whenever the call fails
-// outright; timeout <= 0 defaults to 10s.
+// NewLLMClassifier creates an LLM-backed classifier with the default input cap.
+// alias names a configured alias (pinned or group) that routes the
+// classification call — resolved the same way a client-named alias would be,
+// including a group alias's member selection and fallback siblings. labels
+// carries each category's optional rubric description; escape names the label
+// that means "no category fits", whose verdict fills no axis at all.
+// instructions, when non-empty, replaces the default framing sentence. fallback
+// is used whenever the call fails outright; timeout <= 0 defaults to 10s.
+//
+// Kept alongside NewLLMClassifierFull the way NewHeuristicClassifier sits beside
+// its Full variant: the short form is what most call sites want, and leaving it
+// unchanged keeps every existing test exercising the same construction.
 func NewLLMClassifier(name, axis string, resolver *router.AliasResolver, alias string, u upstream.Client, providers map[string]types.ProviderConfig, labels []types.Label, escape, instructions string, fallback Classifier, timeout time.Duration) *LLMClassifier {
+	return NewLLMClassifierFull(name, axis, resolver, alias, u, providers, labels, escape, instructions, fallback, timeout, 0)
+}
+
+// NewLLMClassifierFull is NewLLMClassifier with an explicit input cap:
+// maxInputChars bounds the text sent as the user message (see
+// effectiveMaxInputChars — 0 takes the default, negative means unlimited).
+func NewLLMClassifierFull(name, axis string, resolver *router.AliasResolver, alias string, u upstream.Client, providers map[string]types.ProviderConfig, labels []types.Label, escape, instructions string, fallback Classifier, timeout time.Duration, maxInputChars int) *LLMClassifier {
 	if axis == "" {
 		axis = AxisDomain
 	}
@@ -71,17 +87,18 @@ func NewLLMClassifier(name, axis string, resolver *router.AliasResolver, alias s
 		timeout = 10 * time.Second
 	}
 	return &LLMClassifier{
-		name:         name,
-		axis:         axis,
-		resolver:     resolver,
-		alias:        alias,
-		upstream:     u,
-		providers:    providers,
-		labels:       labels,
-		escape:       escape,
-		instructions: instructions,
-		fallback:     fallback,
-		timeout:      timeout,
+		name:          name,
+		axis:          axis,
+		resolver:      resolver,
+		alias:         alias,
+		upstream:      u,
+		providers:     providers,
+		labels:        labels,
+		escape:        escape,
+		instructions:  instructions,
+		fallback:      fallback,
+		timeout:       timeout,
+		maxInputChars: effectiveMaxInputChars(maxInputChars),
 	}
 }
 
@@ -164,6 +181,16 @@ func (c *LLMClassifier) tryClassify(ctx context.Context, req *types.NormalizedRe
 		return nil, nil, false
 	}
 
+	// Nothing to classify means no call. Asking a model to classify an empty
+	// string does not return "no signal" — it returns a verdict, at whatever
+	// confidence the model feels, indistinguishable in the store from one
+	// reached on real text. Skipping costs nothing and is the only way the
+	// absence stays visible as an absence.
+	text := classifierInput(req, c.maxInputChars)
+	if text == "" {
+		return nil, nil, false
+	}
+
 	candidates, err := c.candidates()
 	if err != nil || len(candidates) == 0 {
 		return &types.ClassifierCallInfo{Error: errString(err, "no route for classifier alias")}, nil, false
@@ -173,7 +200,6 @@ func (c *LLMClassifier) tryClassify(ctx context.Context, req *types.NormalizedRe
 	// failure: a wrong verdict is only debuggable against the text that
 	// produced it, and a failed call's prompt is how you tell "the rubric is
 	// ambiguous" from "the provider was down".
-	text := types.LastUserText(req)
 	prompt := c.systemPrompt()
 	classifyReq := &types.NormalizedRequest{
 		SystemPrompt: prompt,

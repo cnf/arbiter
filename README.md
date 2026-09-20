@@ -1024,14 +1024,48 @@ classifier's, with the same captured-content behaviour — so the row's
 `routing_rationale` and the captured prompt/input are the evidence trail for a
 verdict that came from a distribution rather than from text.
 
+### What a classifier reads, and how much of it
+
+Every classifier reads the **first user turn that actually has text**
+(`types.FirstUserText`). Three things follow from that, and each was a defect
+when the rule was different:
+
+- **It is not the last user turn.** An agentic client sends turns whose only
+  content is a `tool_result` block, and a turn like that has no text at all. A
+  classifier reading the last user turn therefore classified the empty string on
+  most turns of a tool-using conversation — and a model asked to classify
+  nothing answers anyway, at high confidence. Twelve identical "none of the
+  options fit" verdicts at ~0.8 confidence, all on one session, is what that
+  looked like in the store.
+- **Nothing to classify means no call.** An empty input is not a no-op: it costs
+  money and returns a verdict indistinguishable from a real one. The call is
+  skipped instead, and the absence stays visible as an absence.
+- **The input is capped.** `max_input_chars` bounds the text sent, in
+  characters — not tokens, because the only estimator here is the documented
+  char/4 heuristic and a token cap would imply a precision nothing has. The cap
+  keeps the head, drops the tail, and marks the cut with `…`.
+
+```yaml
+classifiers:
+  - name: "routing-decisions"
+    type: "decisions"
+    config:
+      alias: "classifier"
+      max_input_chars: 4096     # optional; default 8192, negative = unlimited
+      questions: ...
+```
+
+The default applies when the field is absent. A negative value is the explicit
+opt-out; `0` is rejected at load, because it would read as "unset" and quietly
+take the default while the operator believed they had set a cap.
+
 ### Matching a request's own text (`match`)
 
-Every classifier above reads `types.LastUserText(req)` — the last **user**
-message. Some requests are identified by text that lives somewhere else: a
-title generator's system prompt begins `"You are a title generator."`, and for
-such a request the last user message is the conversation being titled, which
-looks like ordinary chat. The identifying text was not merely unmatched, it was
-invisible by construction.
+A classifier's input is one user message. Some requests are identified by text
+that lives somewhere else: a title generator's system prompt begins
+`"You are a title generator."`, and for such a request the user message is the
+conversation being titled, which looks like ordinary chat. The identifying text
+was not merely unmatched, it was invisible by construction.
 
 `match` searches the request's own text instead, on **any** classifier type:
 

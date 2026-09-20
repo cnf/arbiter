@@ -144,21 +144,18 @@ func ExtractText(msg Message) string {
 	return out
 }
 
-// LastUserText returns the plain text of the last user message, or "" if
-// there isn't one. Used by classifiers as the primary signal source.
-func LastUserText(req *NormalizedRequest) string {
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == "user" {
-			return ExtractText(req.Messages[i])
-		}
-	}
-	return ""
-}
-
 // FirstUserText returns the plain text of the first user message that
 // actually has text content, skipping user turns whose only content is a
 // tool_result block (agentic clients send those; ExtractText yields "" for
 // them, and a turn with no text carries no useful entropy for the caller).
+//
+// This is the one text selector for "what is this request about": session-key
+// derivation and every classifier read it. A LastUserText counterpart existed
+// and returned the last user turn's text even when that turn was
+// tool_result-only, so an agentic request handed classifiers an empty string —
+// and a model asked to classify nothing answers anyway, at high confidence.
+// The helper is gone rather than deprecated: two selectors side by side is how
+// the split re-emerges, and the safe one has to be the only one.
 func FirstUserText(req *NormalizedRequest) string {
 	for _, m := range req.Messages {
 		if m.Role != "user" {

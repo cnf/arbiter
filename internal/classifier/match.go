@@ -13,7 +13,7 @@ import (
 // This exists because the text that identifies WHAT a request is can live
 // somewhere no classifier read. A title generator's system prompt begins
 // "You are a title generator.", and that signature is in req.SystemPrompt,
-// while every classifier up to now matched types.LastUserText(req) — messages
+// while every classifier up to now matched the user's message text — messages
 // only. For a title-gen request the last user message is the conversation
 // itself, which looks like ordinary chat, so the identifying text was invisible
 // by construction rather than merely unmatched.

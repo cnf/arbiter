@@ -812,7 +812,7 @@ func buildLLMClassifier(cc config.ClassifierConfig, resolver *router.AliasResolv
 		}
 		timeout = d
 	}
-	return classifier.NewLLMClassifier(cc.Name, cc.Axis, resolver, alias, u, providers, labels, escape, instructions, fallback, timeout), nil
+	return classifier.NewLLMClassifierFull(cc.Name, cc.Axis, resolver, alias, u, providers, labels, escape, instructions, fallback, timeout, maxInputChars(cc)), nil
 }
 
 // buildDecisionsClassifier builds a "decisions" classifier: alias (required)
@@ -891,7 +891,18 @@ func buildDecisionsClassifier(cc config.ClassifierConfig, resolver *router.Alias
 		}
 		timeout = d
 	}
-	return classifier.NewDecisionsClassifier(cc.Name, resolver, alias, decisions, providers, questions, fallback, timeout), nil
+	return classifier.NewDecisionsClassifierFull(cc.Name, resolver, alias, decisions, providers, questions, fallback, timeout, maxInputChars(cc)), nil
+}
+
+// maxInputChars reads a model-backed classifier's optional `max_input_chars`.
+//
+// The return is passed straight to the Full constructors, which own the
+// default: 0 (unset) takes the safe built-in cap, and a negative value means
+// unlimited explicitly. Config validation rejects the shapes this would
+// otherwise silently swallow, so an unparseable value cannot read as "unset"
+// and quietly get the default while the operator believes they set a cap.
+func maxInputChars(cc config.ClassifierConfig) int {
+	return intFromConfig(cc.Config, "max_input_chars")
 }
 
 // buildAliasResolver builds the resolver used by policy routers to resolve

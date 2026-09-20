@@ -65,6 +65,14 @@ providers:
 #   fallback:     required — another (non-llm) classifier to defer to whenever
 #                 the call fails outright.
 #   timeout:      optional — Go duration, defaults to 10s.
+#   max_input_chars: optional — caps the classified text in characters
+#                 (default 8192, ~2K tokens at the char/4 heuristic this repo
+#                 documents). The cap truncates the tail and marks the cut. A
+#                 negative value means unlimited, asked for explicitly; 0 is a
+#                 load error, because it would read as "unset" and take the
+#                 default while the operator believed they had set a cap.
+#                 Unset meaning "unlimited" is not offered: an uncapped input
+#                 sent a 111KB turn that the upstream rejected outright.
 #
 # A `type: "decisions"` classifier asks a decision model (TypeSafe's System One
 # / Jev) typed questions instead of asking a chat model for one word. Nothing is
@@ -91,6 +99,7 @@ providers:
 #                 an llm classifier's own fallback (a chat model is the natural
 #                 escalation for a failed decision call).
 #   timeout:      optional — Go duration, defaults to 10s.
+#   max_input_chars: optional — same meaning as on an `llm` classifier above.
 #
 # Every call is recorded as its own kind="classifier" row. With capture_content
 # on, that row also carries the text it classified and the prompt it was given,

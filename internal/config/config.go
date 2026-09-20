@@ -304,6 +304,9 @@ func (c *Config) Validate() error {
 	if err := validateClassifierMatch(c.Classifiers); err != nil {
 		return err
 	}
+	if err := validateClassifierInputCap(c.Classifiers); err != nil {
+		return err
+	}
 	if err := validateUniqueNames("router", routerNames(c.Routers)); err != nil {
 		return err
 	}
@@ -738,6 +741,38 @@ func validateClassifierMatch(cs []ClassifierConfig) error {
 			if _, err := types.NewTextMatcher(p.Pattern, types.MatchMode(p.Mode)); err != nil {
 				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: match pattern %q: %v", cc.Name, p.Pattern, err), nil)
 			}
+		}
+	}
+	return nil
+}
+
+// validateClassifierInputCap checks a model-backed classifier's optional
+// `max_input_chars`.
+//
+// The builder reads it with intFromConfig, which returns 0 for any shape it
+// does not recognise — and 0 means "unset, take the default". So a value that
+// is a string, a float or a map would silently become the default cap while the
+// operator believes they set one. Caught here because cmd/arbiter cannot report
+// it: by the time the builder runs, "unset" and "unreadable" are the same 0.
+func validateClassifierInputCap(cs []ClassifierConfig) error {
+	for _, cc := range cs {
+		raw, ok := cc.Config["max_input_chars"]
+		if !ok {
+			continue
+		}
+		n, isInt := raw.(int)
+		if !isInt {
+			return arbitererrors.NewConfigError(fmt.Sprintf(
+				"classifier %q: max_input_chars must be a whole number of characters (got %T); 0 is rejected too — omit the field for the default, or use a negative value to mean unlimited",
+				cc.Name, raw), nil)
+		}
+		if n == 0 {
+			// 0 would read as "unset" and take the default, so an operator
+			// writing it expects either no limit or no input at all — both
+			// different from what they would get.
+			return arbitererrors.NewConfigError(fmt.Sprintf(
+				"classifier %q: max_input_chars of 0 is ambiguous — omit the field for the default, or use a negative value for unlimited",
+				cc.Name), nil)
 		}
 	}
 	return nil

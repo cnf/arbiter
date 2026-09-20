@@ -45,6 +45,11 @@ type DecisionsClassifier struct {
 
 	fallback Classifier
 	timeout  time.Duration
+
+	// maxInputChars caps the text sent as the decision call's state, in
+	// characters. 0 means unlimited; the constructor applies the default, so
+	// a zero here is only reachable by asking for it.
+	maxInputChars int
 }
 
 // DecisionQuestionConfig is one question as config and construction express it.
@@ -85,6 +90,13 @@ type decisionQuestion struct {
 // fallback is used whenever the call fails outright; timeout <= 0 defaults to
 // 10s.
 func NewDecisionsClassifier(name string, resolver *router.AliasResolver, alias string, client upstream.DecisionClient, providers map[string]types.ProviderConfig, questions []DecisionQuestionConfig, fallback Classifier, timeout time.Duration) *DecisionsClassifier {
+	return NewDecisionsClassifierFull(name, resolver, alias, client, providers, questions, fallback, timeout, 0)
+}
+
+// NewDecisionsClassifierFull is NewDecisionsClassifier with an explicit input
+// cap: maxInputChars bounds the state sent to the decision endpoint (see
+// effectiveMaxInputChars — 0 takes the default, negative means unlimited).
+func NewDecisionsClassifierFull(name string, resolver *router.AliasResolver, alias string, client upstream.DecisionClient, providers map[string]types.ProviderConfig, questions []DecisionQuestionConfig, fallback Classifier, timeout time.Duration, maxInputChars int) *DecisionsClassifier {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
@@ -100,14 +112,15 @@ func NewDecisionsClassifier(name string, resolver *router.AliasResolver, alias s
 		})
 	}
 	return &DecisionsClassifier{
-		name:      name,
-		resolver:  resolver,
-		alias:     alias,
-		client:    client,
-		providers: providers,
-		questions: qs,
-		fallback:  fallback,
-		timeout:   timeout,
+		name:          name,
+		resolver:      resolver,
+		alias:         alias,
+		client:        client,
+		providers:     providers,
+		questions:     qs,
+		fallback:      fallback,
+		timeout:       timeout,
+		maxInputChars: effectiveMaxInputChars(maxInputChars),
 	}
 }
 
@@ -196,6 +209,17 @@ func (c *DecisionsClassifier) tryDecide(ctx context.Context, req *types.Normaliz
 		return nil, nil, false
 	}
 
+	// Nothing to decide on means no call. This is the case that produced a
+	// burst of identical "none of the options fit" verdicts at ~0.8
+	// confidence: an agentic request whose last user turn was tool_result-only
+	// gave the endpoint an empty state, and it answered anyway. A verdict on
+	// nothing is worse than no verdict, because it is stored and rendered like
+	// any other.
+	text := classifierInput(req, c.maxInputChars)
+	if text == "" {
+		return nil, nil, false
+	}
+
 	candidates, err := c.candidates()
 	if err != nil || len(candidates) == 0 {
 		return nil, &types.ClassifierCallInfo{Error: errString(err, "no route for classifier alias")}, false
@@ -205,7 +229,6 @@ func (c *DecisionsClassifier) tryDecide(ctx context.Context, req *types.Normaliz
 	// failure: a wrong verdict is only debuggable against the text that
 	// produced it, and a failed call's prompt is how you tell "the rubric is
 	// ambiguous" from "the endpoint was down".
-	text := types.LastUserText(req)
 	decisionReq := &types.DecisionRequest{
 		State:     text,
 		Questions: c.wireQuestions(),

@@ -142,7 +142,11 @@ func (hc *HeuristicClassifier) Classify(ctx context.Context, req *types.Normaliz
 		return sig, nil
 	}
 
-	text := strings.ToLower(types.LastUserText(req))
+	// The FIRST user turn with text, matching what the model-backed
+	// classifiers classify. Reading the last user turn meant an agentic
+	// request whose final turn was tool_result-only matched no keyword at all
+	// — the same empty-selection bug, one layer cheaper.
+	text := strings.ToLower(types.FirstUserText(req))
 
 	var bestValue string
 	var bestHits int

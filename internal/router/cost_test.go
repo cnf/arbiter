@@ -101,3 +101,28 @@ func TestSelectEmptyMembersReturnsZero(t *testing.T) {
 		t.Errorf("empty member list should yield zero AliasMember, got %+v", got)
 	}
 }
+
+func TestSelectOrderedPicksFirstListed(t *testing.T) {
+	// "ordered" is the strategy that needs no catalog: the declared order IS
+	// the preference. costMembers lists the pricey member first, so ordered
+	// must pick it even though a cost strategy would pick "cheap".
+	//
+	// NOTE: this passes with the `case "ordered"` dispatch removed, because
+	// `default:` already returns members[0] — so it documents the behavior but
+	// does NOT prove the case exists. TestOrderedIsARegisteredSelectStrategy in
+	// internal/config is the test that actually gates the feature.
+	got := selectMember(costMembers, "ordered", testCatalog())
+	if got.Provider != "pricey" {
+		t.Errorf("ordered picked %q, want pricey (first-listed, regardless of cost)", got.Provider)
+	}
+}
+
+func TestSelectOrderedIgnoresCatalog(t *testing.T) {
+	// A nil catalog must not change an ordered pick — unlike every other
+	// non-random strategy, ordered has no catalog dependency at all.
+	withCat := selectMember(costMembers, "ordered", testCatalog())
+	withoutCat := selectMember(costMembers, "ordered", nil)
+	if withCat != withoutCat {
+		t.Errorf("ordered differs by catalog presence: %+v vs %+v", withCat, withoutCat)
+	}
+}

@@ -279,7 +279,7 @@ model_catalog:
 }
 
 func TestAliasGroupAcceptsCostSelectStrategies(t *testing.T) {
-	for _, sel := range []string{"cheapest_input", "cheapest_output", "fastest"} {
+	for _, sel := range []string{"cheapest_input", "cheapest_output", "fastest", "ordered"} {
 		err := loadConfig(t, baseConfig+`
 aliases:
   budget:
@@ -691,5 +691,28 @@ classifiers:
 `)
 	if err == nil || !strings.Contains(err.Error(), "instructions") {
 		t.Fatalf("Load: want an instructions-must-be-a-string error, got %v", err)
+	}
+}
+
+// TestOrderedIsARegisteredSelectStrategy is the load-bearing test for
+// select: "ordered". Without the strategy being registered, config validation
+// rejects it outright ("unknown select") — and that is the ONLY way ordered can
+// fail, because router.selectMember's `default:` branch already returns
+// members[0] for any unrecognized name. A behavior test on the router alone
+// therefore cannot distinguish "ordered implemented" from "ordered missing";
+// it passes either way. This asserts the part that genuinely gates the feature.
+func TestOrderedIsARegisteredSelectStrategy(t *testing.T) {
+	if !validSelect("ordered") {
+		t.Error("validSelect(\"ordered\") = false, want true — the strategy is not registered, " +
+			"so every config using select: \"ordered\" is rejected at load time")
+	}
+	var found bool
+	for _, s := range selectStrategies {
+		if s == "ordered" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("selectStrategies does not contain \"ordered\": %v", selectStrategies)
 	}
 }

@@ -49,6 +49,12 @@ type picker func(members []AliasMember, selectName string, lookup CostLatencyLoo
 // strategies with no usable catalog data both fall back to the first
 // member: deterministic, so a missing catalog row shows up as a routing
 // decision to investigate rather than as silent random spread.
+//
+// "ordered" makes that first-listed behavior explicit rather than incidental:
+// the declared member order IS the preference, and because GroupFallbacks
+// preserves declared order too, the members after the chosen one are tried in
+// the same order. That is what makes a hand-curated tier list expressible —
+// "these, in this order, degrade downward" — with no catalog data required.
 func selectMember(members []AliasMember, selectName string, lookup CostLatencyLookup) AliasMember {
 	if len(members) == 0 {
 		return AliasMember{}
@@ -60,6 +66,8 @@ func selectMember(members []AliasMember, selectName string, lookup CostLatencyLo
 	switch strategy {
 	case "random":
 		return randomPick(members)
+	case "ordered":
+		return members[0]
 	case "cheapest_input":
 		return bestBy(members, lookup, func(mc types.ModelCost) float64 { return mc.InputCostPerMTok })
 	case "cheapest_output":

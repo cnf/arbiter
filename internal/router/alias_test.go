@@ -251,3 +251,50 @@ func TestAliasResolverGroupFallbacks(t *testing.T) {
 		t.Errorf("expected nil fallbacks for unknown name, got %v", got)
 	}
 }
+
+// TestAliasResolverGroupOrderedDegradesInDeclaredOrder is the load-bearing test
+// for select: "ordered". Asserting only the primary would pass even if the
+// fallback chain were shuffled, and the ordering IS the feature — so this
+// asserts the primary AND the full degradation sequence.
+func TestAliasResolverGroupOrderedDegradesInDeclaredOrder(t *testing.T) {
+	aliases := map[string]Alias{
+		"tiered": {
+			Name:   "tiered",
+			Type:   "group",
+			Select: "ordered",
+			Members: []AliasMember{
+				{Provider: "gpt4", Model: "gpt-4o"},
+				{Provider: "local", Model: "llama2"},
+				{Provider: "claude", Model: "claude-3-haiku-20250307"},
+			},
+		},
+	}
+	r := NewAliasResolver(aliases, aliasProviders(), nil, nil)
+
+	provider, model, ok, err := r.Resolve("tiered")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected tiered to resolve")
+	}
+	if provider != "gpt4" || model != "gpt-4o" {
+		t.Fatalf("ordered primary = %s/%s, want gpt4/gpt-4o (first-listed)", provider, model)
+	}
+
+	// The degradation path must be the remaining members, in declared order.
+	fallbacks := r.GroupFallbacks("tiered", AliasMember{Provider: provider, Model: model})
+	if len(fallbacks) != 2 {
+		t.Fatalf("expected 2 fallbacks, got %d: %+v", len(fallbacks), fallbacks)
+	}
+	want := []AliasMember{
+		{Provider: "local", Model: "llama2"},
+		{Provider: "claude", Model: "claude-3-haiku-20250307"},
+	}
+	for i, w := range want {
+		if fallbacks[i].Provider != w.Provider || fallbacks[i].Model != w.Model {
+			t.Errorf("fallback[%d] = %s/%s, want %s/%s (declared order)",
+				i, fallbacks[i].Provider, fallbacks[i].Model, w.Provider, w.Model)
+		}
+	}
+}

@@ -195,7 +195,7 @@ type AliasConfig struct {
 	Model    string `yaml:"model,omitempty"`
 
 	Members []AliasMemberConfig `yaml:"members,omitempty"`
-	Select  string              `yaml:"select,omitempty"` // "random" (P1)
+	Select  string              `yaml:"select,omitempty"` // "random" | "ordered" | "cheapest_input" | "cheapest_output" | "fastest"
 }
 
 // AliasMemberConfig is one candidate within a group alias. Provider may
@@ -847,8 +847,11 @@ func (c *Config) validateAliases() error {
 
 // selectStrategies are the values a group alias's `select:` accepts. The
 // cost/latency ones require catalog entries to be useful; without them they
-// degrade to first-listed (see router.selectMember).
-var selectStrategies = []string{"random", "cheapest_input", "cheapest_output", "fastest"}
+// degrade to first-listed (see router.selectMember). "ordered" is the one
+// strategy that needs no catalog at all: it takes the members exactly as
+// written, so the declared list *is* the preference order and the remaining
+// members become the degradation path.
+var selectStrategies = []string{"random", "cheapest_input", "cheapest_output", "fastest", "ordered"}
 
 // validSelect reports whether s is a known strategy. Empty means the default
 // (random).

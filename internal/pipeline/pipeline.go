@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"slices"
 	"time"
-	"unicode/utf8"
 
 	"github.com/cnf/arbiter/internal/classifier"
 	"github.com/cnf/arbiter/internal/guardrail"
@@ -533,20 +532,11 @@ func classifierRationale(call *types.ClassifierCallInfo) string {
 	return fmt.Sprintf("LLM classifier replied %q", call.RawReply)
 }
 
-// ellipsize shortens s to at most max bytes on a rune boundary, marking that it
-// was cut. Byte-truncating alone would split a multi-byte rune and put invalid
-// UTF-8 into the store and onto the page; the cut is marked with "…" so a
-// truncated preview is never mistaken for the whole message.
+// ellipsize shortens s to at most max bytes on a rune boundary. Thin wrapper
+// over types.Ellipsize, which is where the rune-boundary logic lives so a
+// classifier's outbound input cap and this preview cannot disagree about it.
 func ellipsize(s string, max int) string {
-	if max <= 0 || len(s) <= max {
-		return s
-	}
-	// Walk back to the start of the rune straddling the boundary.
-	cut := max
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + "…"
+	return types.Ellipsize(s, max)
 }
 
 // classifierContent builds the captured content for one classifier call: the

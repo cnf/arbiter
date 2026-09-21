@@ -9,7 +9,8 @@ trust. The board is authoritative for work items; the code is authoritative for
 behaviour.
 
 Written 2026-09-20, at `develop` = `0327600`; §5 and §9 updated 2026-09-21 at
-`develop` = `6ef15bf`. Run `git log --oneline -1` for the truth.
+`develop` = `6ef15bf`; §5, §6, and new §10 updated 2026-09-21 at `develop` =
+`3124670`. Run `git log --oneline -1` for the truth.
 
 ---
 
@@ -83,6 +84,8 @@ here — say so when you see it proposed, including by yourself.
   ```
 - **Do not `git stash push -u`.** It swallows `devenv.yaml`, which breaks devenv
   entirely (`File devenv.nix does not exist`). It has cost a session once already.
+
+- use the Codebase Search MCP to read/search through source files.
 
 ### Hard boundaries
 
@@ -165,47 +168,39 @@ a fresh title request rather than a code change.
 
 ## 6. Open work, in priority order
 
-Run `gh issue list` for the live list. This is the shape of it:
+Run `gh issue list --state open` for the live list. As of this write, open:
+**#4, #5, #8, #9, #11, #13, #14, #17, #18, #20, #21, #22, #23, #24, #26, #27,
+#28, #31, #34, #35, #36**. Closed since §5 was last accurate: **#6, #12, #33**
+— see §10 for why, don't re-open them without reading it.
 
-**Blocking anything else being verifiable**
-- *(none — the config half is done)*
-
-**High — the visibility goal (the project's whole point)**
-- **#4** — META umbrella, "it is hard to see what is going on". Three stacked causes,
-  one fixed, two open (#8 rows sort by finish time; #9 no client column).
-- **#5** — a request that fails routing or is rejected by a guardrail gets **no row at
-  all**. `recordRejected` writes content refs under `owner_kind="rejected"` and
-  nothing else. This is the biggest single hole in the visibility goal.
-- **#7** — the title-gen match pattern covered only Hermes, and opencode's prompt never
-  matched. **The evidence it was blocked on is now in §9**: opencode's real prompt
-  (`You are a title generator. You output ONLY a thread title.`), Hermes', and Claude
-  Code CLI's, all three verified against the 79-prompt corpus. The repo's `arbiter.yaml`
-  now carries all three patterns. What remains for #7 is the *label* half — the row's
-  `request_kind` — which needs a fresh title request to observe, not a code change.
-  The config half is done and deployed.
+**High priority, real gaps:**
+- **#5** — a request that fails routing or is rejected by a guardrail gets **no
+  row at all**. `recordRejected` writes content refs under
+  `owner_kind="rejected"` and nothing else. Biggest single hole in the
+  visibility goal.
 - **#28** — Anthropic prompt caching never engages (`cache_control` never set;
   483/483 Claude requests uncached).
-- **#6** — Jev decision models: `score` (Phase E), `min_confidence` (Phase D),
-  subagent detection (Phase F) unbuilt.
+- **#31** — classifier input empty-first-turn bug. Fixed in `06c32e2`; the
+  issue is open only pending live confirmation, not a re-fix.
+- **#34** — a streamed tool call leaves no record (`tool_calls_json` unwritten).
+- **#35** — Anthropic-client interface: streams were unparseable by real
+  Anthropic clients (SSE framing, block-stop index, dropped stop_reason).
+  Deliberately parked — see §10. Tagged `anthropic-client`.
+- **#4** — META umbrella for the visibility goal; #8/#9 are its still-open
+  children.
 
-**Done in code, open on the board only pending live traffic — do not re-fix**
-- **#31** — classifier input (the empty-first-turn bug). Fixed in `06c32e2`, with the
-  diagnosis and revert probes recorded in the issue. The only thing left is confirming
-  it against real traffic, which needs a fresh title request first (#32's config half is
-  done and deployed).
+**Labels worth filtering on:** `anthropic-client` marks every ticket touching
+the Anthropic-facing wire interface specifically (currently #22, #23, #35,
+#36) — useful when deciding what's in/out of scope for that surface, which the
+user has said he doesn't use today (he does use the Anthropic **upstream**,
+i.e. routing to Claude models — that's a different, unaffected path; see §10).
 
-**Medium** — #27, #26, #25, #24, #23, #22, #21, #20, #19, #18, #17, #16, #14, #13,
-#12, #11, #10, #9, #8.
+**Medium/low**, no change in status: #8, #9, #11, #13, #14, #17, #18, #20,
+#21, #22, #23, #24, #26, #27, #36.
 
-(#25, #19, #16, #10 are closed — see §9. #7 is the current front: it was blocked on
-reading opencode's real prompt, and §9 now has it.)
-
-**#12 is worth reading before touching the classifier path** — it holds two genuinely
-open cost questions (does the pin still short-circuit; should the literal path write a
-classifier row) plus the `affinity.pinned` vs `affinity.get` decision, which is a real
-trap: `get` only hits when the client is still requesting the model the pin was
-recorded under, so a client that switched models would look like a new session and
-re-classify on every turn.
+**#17** — Phase D (`min_confidence`) is now *unblocked* (its blocker #6
+closed, see §10) but still **unbuilt** — don't confuse unblocked with done.
+Phases E (`score` primitive) and F (subagent detection) also unbuilt.
 
 ---
 
@@ -327,3 +322,105 @@ title-gen requests have arrived since the patterns were added**. Newest title re
 id 3865 (2026-09-20 20:00) while ordinary traffic runs past 2026-09-21 06:49. The label
 appears on the first title request after a client starts a new session; a NULL column is
 not evidence of a matching failure until that has happened.
+
+## 10. Session 2026-09-21b — Anthropic empty-replies fix, then audit/park
+
+**What shipped (6 commits, `develop`, unpushed — `7ac694c`..`3124670`):** fixed
+#33, "Claude via the auto router returned empty replies". Two real causes:
+`max_tokens` silently forced to 4096 for OpenAI-shaped clients (Hermes,
+opencode) that don't send it, and thinking/tool-call stream deltas relayed as
+empty chunks. **User confirmed live: Hermes → Arbiter → Anthropic upstream
+works.** #33 is closed.
+
+**Then found and fixed 3 more defects** while confirming: `data: null` frames
+on the wire (nil marshalled), Anthropic SSE missing `event:` lines (Anthropic
+SDKs dispatch on `sse.event`, so frames were silently discarded), and
+`stop_reason`/block-stop index/content-array shape bugs. These are filed as
+**#35** (consolidated, tagged `anthropic-client`), not shipped as fixes —
+deliberately parked, see below.
+
+**A `choices[].index` bug was found and filed separately as #36** (not #35):
+`NormalizedToOpenAIStreamEvent` stamps `BlockIndex` onto `choices[].index`, so
+a reply with reasoning on block 0 + text on block 1 emits `choices[0]` twice.
+Independent of the anthropic-client work; filed on its own per the user's
+rule ("if it's out of scope of #35, it needs a new ticket").
+
+### The 4-part mental model, and why it matters for scoping
+
+Every Anthropic-touching change sits in one of four parts:
+**anthropic-client↔arbiter**, **anthropic-LLM(upstream)↔arbiter**,
+**openai-client↔arbiter**, **openai-LLM(upstream)↔arbiter**. `format` in the
+DB is the *client* side. **`internal/translator/stream.go` is the shared codec
+for all four** — every commit in this session touched it, so cleanly
+separating "did this touch anthropic-client vs anthropic-upstream" by file is
+not possible; it has to be reasoned about function-by-function.
+
+**Key finding from that reasoning:** the claude-cli 502 (`context canceled`)
+comes from `readSSEStream` in `internal/upstream/stream.go:23` (error surfaces
+at line 90) — **the anthropic-UPSTREAM socket reader, not a client-shaping
+function.** Verified per-commit: zero of the six commits' hunks land inside
+that function (`fa388bd`'s one hunk in that file is in `sendAnthropicStream`'s
+header logic, a different function). Zero tests exercise it
+(`httptest.NewServer` count is 0 in the repo).
+
+**This is why parking #35/claude-cli does NOT put the Anthropic-upstream path
+at risk.** Hermes and claude-cli hit the **exact same** `sendAnthropicStream`
+→ `readSSEStream("anthropic", ...)` call when routed to a Claude model — the
+route is decided by which model Arbiter targets, not which client asked. The
+confirmed-working Hermes traffic proves that shared path is sound for the
+request shape Hermes sends; only claude-cli's own request shape trips the
+502. **User confirmed: he needs Anthropic-upstream, does not use Anthropic
+clients today** — so #35 (the client-shaping defects) and the claude-cli 502
+are both correctly parked, while nothing about Anthropic-upstream routing is
+at risk.
+
+### A false-positive audit finding, corrected — read before trusting any "dead code" claim
+
+Audited the six commits for technical debt (user's ask: "was any code
+introduced... because we were chasing this bug?"). Initially concluded
+`NormalizedRequest.Thinking`/`OutputEffort` (added by `fa388bd`) were dead
+fields nobody populated, based on `grep "Thinking =\|OutputEffort ="` finding
+nothing. **This was wrong** — the fields are populated via struct-literal
+syntax (`Thinking: req.Thinking,`), which uses `:` not `=`; grep for `=`
+cannot see it. Verified by driving the real ingress path
+(`DefaultTranslator.ToNormalized`) with a throwaway probe test: a real Claude
+Code body survives parse → normalized → outbound wire intact. **No removal
+was made.** Full retraction is on #33's thread.
+
+**The actual lesson, worth keeping:** a grep for absence is not evidence of
+absence. Verify "is this populated/dead" claims by driving the real entry
+point (here, `ToNormalized`, not a hand-built struct), not by grepping for an
+assignment operator that may not be the one used.
+
+**Real (minor) debt found and left as a design note, not removed:**
+`ClientBeta` in `internal/upstream/client.go` is one ad-hoc per-header field
+carrying `anthropic-beta`; there's no general per-request-header-forwarding
+mechanism, so a second header would need a second field. Noted on #33, not
+acted on — small, not urgent.
+
+### Ticket hygiene done this session
+
+- Created label **`anthropic-client`**, applied to #22, #23, #35, #36 (NOT
+  #34 — that's store-side tool-call recording, not the client interface).
+- **Closed #33** (empty replies — fixed and confirmed), **#6** (Jev/System One
+  — found to be already live in `/data/arbiter/arbiter.yaml`, not a proposal;
+  the ticket's own NOT-STARTED framing was stale), **#12** (its two open
+  questions are answered by shipped code in `classifyLiteral`, `pipeline.go:840`,
+  via #30).
+- Updated **#17**: Phase D unblocked now that #6 confirmed real confidences
+  exist in production, but D/E/F remain unbuilt — don't confuse unblocked with
+  done.
+- `build/*.md` audit note: it's gitignored, so those write-ups exist only on
+  disk, not in git. Comments were back-filled onto #8 (a `trace_id`/session-key
+  observation) and #30 (a criterion-by-criterion acceptance walkthrough) that
+  existed in `build/` but not in the tickets — check `build/*.md` against the
+  board before assuming a note made it into a ticket.
+
+### Before merging develop → main
+
+Nothing above blocks a merge — tree is clean, tests green
+(`devenv shell --no-tui -- bash -c 'go test ./...'`, `develop` ahead of
+`origin/develop` by 15, nothing pushed yet). The six new commits are real
+fixes plus test coverage, not scaffolding. Only outstanding non-blocking items:
+`readSSEStream` still has zero test coverage (pre-existing gap, not
+introduced this session), and the `ClientBeta` design note above.

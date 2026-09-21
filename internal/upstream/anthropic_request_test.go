@@ -171,3 +171,114 @@ func TestThinkingRequestReachesUpstreamBody(t *testing.T) {
 		t.Errorf("max_tokens = %v, want the client's 32000", sent["max_tokens"])
 	}
 }
+
+// The prompt-cache marker must reach the upstream through BOTH send paths.
+// They each build their own HTTP request from the same normalized struct, so a
+// fix applied to one is the standard way the other regresses — and the marker
+// is the entire feature: without it every Anthropic-format request is a full
+// uncached read, which is what #28 is about.
+//
+// Asserted on the bytes the upstream actually received, from a raw client
+// payload, so this cannot pass by Arbiter agreeing with its own structs.
+func TestCacheControlMarkerReachesAnthropicUpstream(t *testing.T) {
+	const rawBody = `{
+      "model": "claude/claude-sonnet-5",
+      "max_tokens": 8192,
+      "system": "You are a helpful agent.",
+      "messages": [{"role": "user", "content": "hello"}]
+    }`
+
+	t.Run("non-streaming", func(t *testing.T) {
+		var seen http.Header
+		var body []byte
+		srv := anthropicCaptureServer(t, &seen, &body)
+		defer srv.Close()
+
+		tr := translator.NewDefaultTranslator()
+		norm, err := tr.ToNormalized([]byte(rawBody), "anthropic")
+		if err != nil {
+			t.Fatalf("ToNormalized: %v", err)
+		}
+
+		c := NewHTTPClient(tr)
+		if _, err := c.Send(context.Background(), anthropicRoute(srv.URL), norm); err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+		assertCacheMarkerOnUpstreamBody(t, body)
+	})
+
+	t.Run("streaming", func(t *testing.T) {
+		var seen http.Header
+		var body []byte
+		srv := anthropicCaptureServer(t, &seen, &body)
+		defer srv.Close()
+
+		tr := translator.NewDefaultTranslator()
+		norm, err := tr.ToNormalized([]byte(rawBody), "anthropic")
+		if err != nil {
+			t.Fatalf("ToNormalized: %v", err)
+		}
+		norm.Stream = true
+
+		c := NewHTTPClient(tr)
+		// A non-SSE body here is fine: the assertion is on the request. The
+		// read goroutine's outcome is drained via errCh.
+		_, errCh, err := c.SendStream(context.Background(), anthropicRoute(srv.URL), norm)
+		if err != nil {
+			t.Fatalf("SendStream: %v", err)
+		}
+		<-errCh
+		assertCacheMarkerOnUpstreamBody(t, body)
+	})
+}
+
+// assertCacheMarkerOnUpstreamBody checks the two markers Arbiter emits — one on
+// the system prompt, one on the last message block — are both on the wire, in
+// the shape Anthropic documents.
+func assertCacheMarkerOnUpstreamBody(t *testing.T, body []byte) {
+	t.Helper()
+
+	var sent map[string]interface{}
+	if err := json.Unmarshal(body, &sent); err != nil {
+		t.Fatalf("upstream body is not JSON: %v\n%s", err, body)
+	}
+
+	system, ok := sent["system"].([]interface{})
+	if !ok {
+		t.Fatalf("system is not the block form, so it cannot carry a cache marker: %s", body)
+	}
+	if !hasEphemeralMarker(t, system, "system") {
+		t.Errorf("no cache_control marker on the system prompt: %s", body)
+	}
+
+	messages, _ := sent["messages"].([]interface{})
+	if len(messages) == 0 {
+		t.Fatalf("no messages on the upstream body: %s", body)
+	}
+	last, _ := messages[len(messages)-1].(map[string]interface{})
+	content, _ := last["content"].([]interface{})
+	if !hasEphemeralMarker(t, content, "last message") {
+		t.Errorf("no cache_control marker on the last message block: %s", body)
+	}
+}
+
+func hasEphemeralMarker(t *testing.T, blocks []interface{}, what string) bool {
+	t.Helper()
+
+	for _, b := range blocks {
+		block, ok := b.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		cc, ok := block["cache_control"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if cc["type"] != types.AnthropicCacheControlEphemeral {
+			t.Errorf("%s: cache_control.type = %v, want %q", what, cc["type"], types.AnthropicCacheControlEphemeral)
+			continue
+		}
+		return true
+	}
+	return false
+}

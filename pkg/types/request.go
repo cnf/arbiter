@@ -262,12 +262,29 @@ func (s *AnthropicSystem) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON always emits the string form. Anthropic accepts both, and the
-// string form is what a normalizing proxy should send: it is the shape a
-// single-prompt request has anyway, and it keeps the outbound body identical
-// regardless of which shape the client used.
+// MarshalJSON emits the block form, carrying the prompt-cache marker.
+//
+// This deliberately changed shape. It used to emit the bare string, which kept
+// the outbound body identical whichever shape the client sent — but a string
+// has nowhere to hang `cache_control`, and a system prompt is the one part of
+// a conversation that is stable for its whole length. Sending it unmarked meant
+// every turn of every Anthropic conversation re-read it at full input price,
+// which is the cost the whole caching mechanism exists to avoid. The block form
+// is what Anthropic's own docs use for a cached system prompt, and Anthropic
+// accepts both shapes, so this is not a wire compromise: it is the shape that
+// can carry the marker.
+//
+// Non-text blocks never arrive here — UnmarshalJSON joins only text blocks — so
+// the single emitted block needs no per-block policy.
 func (s AnthropicSystem) MarshalJSON() ([]byte, error) {
-	return json.Marshal(string(s))
+	if s == "" {
+		return json.Marshal("")
+	}
+	return json.Marshal([]AnthropicContent{{
+		Type:         "text",
+		Text:         string(s),
+		CacheControl: NewAnthropicCacheControl(),
+	}})
 }
 
 // AnthropicMessage is a message in Anthropic wire format. Its Content accepts
@@ -324,11 +341,37 @@ func (m *AnthropicMessage) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// AnthropicCacheControl is Anthropic's prompt-cache marker. Caching is opt-in
+// per content block: a block without one of these is not part of any cacheable
+// prefix, so the upstream re-reads it at full input price every turn. A
+// breakpoint marks the END of a cacheable prefix, and Anthropic allows at most
+// four per request.
+type AnthropicCacheControl struct {
+	Type string `json:"type"`
+}
+
+// AnthropicCacheControlEphemeral is the only cache mode Anthropic documents:
+// "ephemeral", a 5-minute TTL refreshed on every hit.
+const AnthropicCacheControlEphemeral = "ephemeral"
+
+// NewAnthropicCacheControl returns a fresh marker. A function rather than a
+// shared value because the marker is marshalled into outbound bodies — a shared
+// pointer invites a later mutation to rewrite every request's marker at once.
+func NewAnthropicCacheControl() *AnthropicCacheControl {
+	return &AnthropicCacheControl{Type: AnthropicCacheControlEphemeral}
+}
+
 // AnthropicContent is a content block in Anthropic wire format.
 type AnthropicContent struct {
 	Type string `json:"type"`
 
 	Text string `json:"text,omitempty"` // text, thinking
+
+	// CacheControl marks this block as the end of a cacheable prefix.
+	// Pointer so an unmarked block omits the key entirely, and a marked one
+	// always emits it — see normalizedToAnthropicRequest for which blocks
+	// Arbiter marks.
+	CacheControl *AnthropicCacheControl `json:"cache_control,omitempty"`
 
 	ID    string                 `json:"id,omitempty"`    // tool_use
 	Name  string                 `json:"name,omitempty"`  // tool_use
@@ -354,6 +397,12 @@ type AnthropicTool struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
 	InputSchema map[string]interface{} `json:"input_schema"`
+
+	// CacheControl is set on the LAST tool only, by the outbound translator —
+	// never on this side. A breakpoint on the final tool caches the whole tool
+	// prefix plus the system prompt, which is the stable part of a request that
+	// repeats verbatim on every turn.
+	CacheControl *AnthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 // OpenAIRequest represents a raw OpenAI /chat/completions request.

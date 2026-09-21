@@ -134,6 +134,59 @@ func blockToAnthropicContent(cb types.ContentBlock) types.AnthropicContent {
 
 // --- request conversion ---
 
+// markLastBlock marks the final content block of the last message that has one,
+// returning whether it marked anything.
+//
+// This is the rolling cache breakpoint. Anthropic caches a prefix up to a
+// breakpoint, and a conversation only grows at its end, so marking the last
+// block of the newest turn makes every completed turn a cacheable extension of
+// the one before it: the next request reads everything but the new turn from
+// cache. A marker on the system prompt alone would only ever cache that prompt,
+// which is the smaller half of an agent conversation's input.
+//
+// The scan runs backwards so the index arithmetic stays on the value it
+// dereferences: scanning forward needs `len(messages)-1-i` in the body, which is
+// the shape where an off-by-one marks the wrong message.
+//
+// A blockless message is skipped rather than treated as the end of the
+// conversation. Messages with no content carry no tokens, so marking the
+// preceding message caches exactly the same prefix while keeping the marker on
+// an object Anthropic can attach it to — an empty content array has no block to
+// carry `cache_control`, so marking one would put the key nowhere and leave the
+// request with no rolling breakpoint at all.
+func markLastBlock(messages []types.AnthropicMessage) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		blocks := messages[i].Content
+		if len(blocks) == 0 {
+			continue
+		}
+		blocks[len(blocks)-1].CacheControl = types.NewAnthropicCacheControl()
+		return true
+	}
+	return false
+}
+
+// anthropicCacheBreakpointLimit is Anthropic's documented maximum: four
+// `cache_control` markers per request, beyond which the upstream rejects it.
+// Arbiter emits at most two (the system prompt and the rolling last block),
+// so this is a regression guard rather than a runtime constraint.
+const anthropicCacheBreakpointLimit = 4
+
+// markTools caches the frozen tool prefix. Tools are stable for a whole
+// conversation and for every conversation sharing a route, and they sit before
+// the system prompt in Anthropic's cache hierarchy, so marking the last one
+// puts both of them — plus the messages — inside one cacheable prefix whenever
+// the system prompt carries no marker of its own.
+//
+// The output's slice is fresh from the conversion above, so mutating an element
+// cannot reach back into the caller's tools.
+func markTools(tools []types.AnthropicTool) {
+	if len(tools) == 0 {
+		return
+	}
+	tools[len(tools)-1].CacheControl = types.NewAnthropicCacheControl()
+}
+
 func anthropicRequestToNormalized(req *types.AnthropicRequest) *types.NormalizedRequest {
 	messages := make([]types.Message, len(req.Messages))
 	for i, m := range req.Messages {
@@ -145,7 +198,16 @@ func anthropicRequestToNormalized(req *types.AnthropicRequest) *types.Normalized
 	}
 	tools := make([]types.Tool, len(req.Tools))
 	for i, t := range req.Tools {
-		tools[i] = types.Tool(t)
+		// Field-by-field rather than a conversion: AnthropicTool carries
+		// outbound-only fields (the cache marker) that types.Tool has no home
+		// for, so the two shapes are no longer identical and a conversion no
+		// longer compiles. Copying only what is shared is what keeps an
+		// outbound-only attribute from leaking into the normalized type.
+		tools[i] = types.Tool{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		}
 	}
 	return &types.NormalizedRequest{
 		Messages:     messages,
@@ -183,10 +245,28 @@ func normalizedToAnthropicRequest(req *types.NormalizedRequest) *types.Anthropic
 		}
 		messages[i] = types.AnthropicMessage{Role: m.Role, Content: content}
 	}
+	// The rolling breakpoint: the conversation only grows at its end, so
+	// marking the newest turn is what makes each completed turn cacheable
+	// input for the next one. This is the breakpoint a long agent
+	// conversation is actually paid for.
+	markLastBlock(messages)
 	tools := make([]types.AnthropicTool, len(req.Tools))
 	for i, t := range req.Tools {
-		tools[i] = types.AnthropicTool(t)
+		// Field-by-field, matching the inbound copy above: the shapes differ
+		// now, and this direction deliberately leaves CacheControl nil — it is
+		// set below, on the last tool only.
+		tools[i] = types.AnthropicTool{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		}
 	}
+	// Tool definitions are frozen for a conversation, so the last one carries a
+	// cache breakpoint: a prefix that never changes is the cheapest thing to
+	// start a cache at, and it repeats one turn later whether or not the client
+	// sends its tools again (an OpenAI client drops them once the model stops
+	// calling them).
+	markTools(tools)
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = anthropicDefaultMaxTokens

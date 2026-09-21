@@ -8,23 +8,8 @@ import (
 
 // --- Anthropic SSE event types ---
 
-// AnthropicStreamEvent is an event in an Anthropic SSE stream.
-//
-// Index is a pointer so that block 0 is transmitted as `"index":0` while the
-// message-level events (message_start, message_delta, message_stop) carry no
-// index field at all. Anthropic requires `index` on every content_block_*
-// event, and a plain int with omitempty silently drops it for block 0 — the
-// first block of every reply, which is where a thinking block or the opening
-// text lives.
-type AnthropicStreamEvent struct {
-	Type         string                  `json:"type"`
-	Message      *AnthropicStreamMessage `json:"message,omitempty"`
-	ContentBlock *types.AnthropicContent `json:"content_block,omitempty"`
-	Delta        *AnthropicStreamDelta   `json:"delta,omitempty"`
-	Index        *int                    `json:"index,omitempty"`
-	Usage        *types.AnthropicUsage   `json:"usage,omitempty"`
-}
-
+// AnthropicStreamMessage is the message object carried on a message_start
+// event, and echoed (mostly empty) on message_stop.
 type AnthropicStreamMessage struct {
 	ID         string                   `json:"id"`
 	Type       string                   `json:"type"`
@@ -52,6 +37,28 @@ type AnthropicStreamDelta struct {
 	// normalized type and re-emitted there; the OpenAI translator ignores it,
 	// because a client that cannot replay a thinking block has no use for it.
 	Signature string `json:"signature,omitempty"`
+	// StopReason rides on a message_delta's delta, NOT on its message. It is
+	// how an Anthropic stream tells the client why the turn ended, and an
+	// event that only forwards the delta's type drops it — leaving a client
+	// with the text but never a terminal reason.
+	StopReason string `json:"stop_reason,omitempty"`
+}
+
+// AnthropicStreamEvent is an event in an Anthropic SSE stream.
+//
+// Index is a pointer so that block 0 is transmitted as `"index":0` while the
+// message-level events (message_start, message_delta, message_stop) carry no
+// index field at all. Anthropic requires `index` on every content_block_*
+// event, and a plain int with omitempty silently drops it for block 0 — the
+// first block of every reply, which is where a thinking block or the opening
+// text lives.
+type AnthropicStreamEvent struct {
+	Type         string                  `json:"type"`
+	Message      *AnthropicStreamMessage `json:"message,omitempty"`
+	ContentBlock *types.AnthropicContent `json:"content_block,omitempty"`
+	Delta        *AnthropicStreamDelta   `json:"delta,omitempty"`
+	Index        *int                    `json:"index,omitempty"`
+	Usage        *types.AnthropicUsage   `json:"usage,omitempty"`
 }
 
 // --- OpenAI SSE event types ---
@@ -195,9 +202,22 @@ func AnthropicStreamEventToNormalized(evt *AnthropicStreamEvent) *types.Normaliz
 			}
 		}
 
+	case "content_block_stop":
+		// Anthropic's block terminator, carrying only its index. Without a
+		// case here the index fell to BlockIndex's zero value, so EVERY
+		// block closed as `"index":0` — a second block's stop was reported as
+		// closing the first, leaving a client's block bookkeeping wrong at
+		// the point it finalizes the message.
+		normalized.BlockIndex = derefIndex(evt.Index)
+
 	case "message_delta":
+		// stop_reason rides on the DELTA, not on the message. It is how the
+		// stream says why the turn ended; reading only the delta's type here
+		// dropped it, and the client was left with the text but no terminal
+		// reason — its turn never concluded.
 		if evt.Delta != nil {
 			normalized.DeltaType = evt.Delta.Type
+			normalized.MessageStopReason = evt.Delta.StopReason
 		}
 		if evt.Usage != nil {
 			normalized.OutputTokens = evt.Usage.OutputTokens
@@ -363,7 +383,11 @@ func NormalizedToAnthropicStreamEvent(evt *types.NormalizedStreamEvent) *Anthrop
 			Type:  "message",
 			Role:  "assistant",
 			Model: evt.MessageModel,
-			Usage: types.AnthropicUsage{InputTokens: evt.InputTokens},
+			// Anthropic sends `"content":[]`; leaving it nil marshals to
+			// `"content":null`, and a client that appends its blocks onto this
+			// array hits `undefined` on the first push.
+			Content: []types.AnthropicContent{},
+			Usage:   types.AnthropicUsage{InputTokens: evt.InputTokens},
 		}
 
 	case "content_block_start":
@@ -414,14 +438,17 @@ func NormalizedToAnthropicStreamEvent(evt *types.NormalizedStreamEvent) *Anthrop
 		}
 
 	case "message_delta":
-		anthropic.Delta = &AnthropicStreamDelta{Type: evt.DeltaType}
+		// The stop_reason must travel on the delta, which is where an
+		// Anthropic client reads it. A message_delta carrying only a type is
+		// a message_delta that never terminates the turn.
+		anthropic.Delta = &AnthropicStreamDelta{Type: "message_delta", StopReason: evt.MessageStopReason}
 		anthropic.Usage = &types.AnthropicUsage{OutputTokens: evt.OutputTokens}
 
 	case "message_stop":
-		anthropic.Message = &AnthropicStreamMessage{
-			ID:         evt.MessageID,
-			StopReason: evt.MessageStopReason,
-		}
+		// Anthropic's message_stop carries no message object at all — the
+		// stop_reason was already delivered on the preceding message_delta.
+		// Emitting the normalized message here wrote an empty message with a
+		// literal null content, which is not a shape the upstream ever sends.
 
 	case "usage":
 		// Anthropic has no usage-only event; its usage rides on message_delta.

@@ -1079,6 +1079,27 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 			if evt.CostUSD > 0 {
 				usage.CostUSD = evt.CostUSD
 			}
+			// Anthropic's message_delta — the event this stream's OpenAI-wire
+			// translation actually attaches Usage to — carries only
+			// OutputTokens; InputTokens and both cache counters exist ONLY
+			// on message_start, an earlier, separate event. An OpenAI-format
+			// client (Hermes) reads its whole usage picture off one chunk,
+			// so without this backfill it saw prompt_tokens=0 on every
+			// relayed Claude stream — a bigger gap than the missing cache
+			// breakdown alone, and one a naive cache-percentage fix would
+			// have made worse (a real cache count over a fabricated zero
+			// denominator). The OpenAI-compatible upstream's own terminal
+			// "usage" event already carries every field on itself, so this
+			// backfill is a same-value no-op there — restricted to these two
+			// types precisely because they are the only ones an OpenAI
+			// client reads Usage from; touching any other type would risk
+			// stamping stale totals onto an event that has no Usage field to
+			// carry them in the first place.
+			if evt.Type == "message_delta" || evt.Type == "usage" {
+				evt.InputTokens = usage.InputTokens
+				evt.CacheReadTokens = usage.CacheRead
+				evt.CacheWriteTokens = usage.CacheWrite
+			}
 			if evt.TextDelta != "" {
 				if evt.BlockIndex >= len(orderedText) {
 					// Grow to the index; a gap (a block that produced no text,

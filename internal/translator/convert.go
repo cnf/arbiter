@@ -562,6 +562,7 @@ func normalizedToOpenAIResponse(resp *types.NormalizedResponse) *types.OpenAIRes
 			CompletionTokens: resp.Usage.OutputTokens,
 			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			Cost:             resp.Usage.CostUSD,
+			PromptDetails:    buildOpenAIPromptDetails(resp.Usage.CacheRead),
 		},
 	}
 }

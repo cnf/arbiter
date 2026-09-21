@@ -373,6 +373,28 @@ func applyOpenAIUsage(normalized *types.NormalizedStreamEvent, usage *types.Open
 	}
 }
 
+// buildOpenAIPromptDetails is the outbound mirror of applyOpenAIUsage's
+// cached_tokens read: it builds the map an OpenAI-format client reads a
+// cache-hit percentage from. Every upstream (Anthropic-native or an
+// OpenAI-compatible one) already lands its cache-read count on
+// CacheReadTokens by the time either outbound path runs — this was the one
+// place that value never reached the wire, so an OpenAI-format client (e.g.
+// Hermes) got prompt_tokens with no prompt_tokens_details key at all,
+// regardless of which provider actually served the request.
+//
+// Returns nil, not an empty map, when there is nothing to report:
+// PromptDetails carries `omitempty`, and building `{}` unconditionally would
+// defeat that — every response would carry a `prompt_tokens_details: {}` the
+// client has to know means "no cache data" rather than "not cached". A
+// fabricated `cached_tokens: 0` would be worse: indistinguishable from a
+// real cache miss on a request that was never eligible for caching at all.
+func buildOpenAIPromptDetails(cacheReadTokens int) map[string]interface{} {
+	if cacheReadTokens <= 0 {
+		return nil
+	}
+	return map[string]interface{}{"cached_tokens": cacheReadTokens}
+}
+
 // --- Translation from Normalized events to wire formats ---
 
 // NormalizedToAnthropicStreamEvent translates a normalized stream event into
@@ -603,6 +625,7 @@ func NormalizedToOpenAIStreamEvent(evt *types.NormalizedStreamEvent, messageID s
 				PromptTokens:     evt.InputTokens,
 				CompletionTokens: evt.OutputTokens,
 				TotalTokens:      evt.InputTokens + evt.OutputTokens,
+				PromptDetails:    buildOpenAIPromptDetails(evt.CacheReadTokens),
 			}
 		}
 
@@ -620,6 +643,7 @@ func NormalizedToOpenAIStreamEvent(evt *types.NormalizedStreamEvent, messageID s
 			CompletionTokens: evt.OutputTokens,
 			TotalTokens:      evt.InputTokens + evt.OutputTokens,
 			Cost:             evt.CostUSD,
+			PromptDetails:    buildOpenAIPromptDetails(evt.CacheReadTokens),
 		}
 	}
 

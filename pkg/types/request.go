@@ -201,7 +201,7 @@ type AnthropicRequest struct {
 	// from this struct meant an Anthropic client's thinking request was
 	// dropped before routing: the upstream was never asked to think, and a
 	// reply that would have carried a thinking trace came back with none.
-	Thinking     *AnthropicThinking    `json:"thinking,omitempty"`
+	Thinking     *AnthropicThinking     `json:"thinking,omitempty"`
 	OutputConfig *AnthropicOutputConfig `json:"output_config,omitempty"`
 }
 

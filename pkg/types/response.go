@@ -47,6 +47,11 @@ type NormalizedStreamEvent struct {
 	// does not know the field ignores it, and one that does (agent CLIs showing
 	// a thinking trace) keeps working.
 	Reasoning string
+	// Signature carries Anthropic's opaque per-thinking-block token through
+	// the relay. It is not content and has no OpenAI equivalent; it exists so
+	// an Anthropic client can replay the block on its next request, and the
+	// Anthropic translator re-emits it. The OpenAI translator drops it.
+	Signature string
 	// CacheReadTokens/CacheWriteTokens are carried on whichever event the
 	// upstream reported them on, so the streaming path can account for prompt
 	// cache usage the same way the non-streaming path does.

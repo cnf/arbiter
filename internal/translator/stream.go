@@ -38,6 +38,13 @@ type AnthropicStreamDelta struct {
 	// fields for content that originates in another wire format.
 	Thinking    string `json:"thinking,omitempty"`
 	PartialJSON string `json:"partial_json,omitempty"`
+	// Signature is Anthropic's opaque per-thinking-block token. It is NOT
+	// content and has no OpenAI equivalent, but an Anthropic client must
+	// replay it with the block on its next request, so it cannot be dropped
+	// on the anthropic-to-anthropic path. It is carried through the
+	// normalized type and re-emitted there; the OpenAI translator ignores it,
+	// because a client that cannot replay a thinking block has no use for it.
+	Signature string `json:"signature,omitempty"`
 }
 
 // --- OpenAI SSE event types ---
@@ -149,12 +156,16 @@ func AnthropicStreamEventToNormalized(evt *AnthropicStreamEvent) *types.Normaliz
 				normalized.ToolCallIndex = evt.Index
 				normalized.ToolCallArgs = evt.Delta.PartialJSON
 			case "signature_delta":
-				// Anthropic's thinking-block signature. It has no OpenAI
-				// equivalent and is not content: an OpenAI client cannot
-				// replay a thinking block, so forwarding it would put an
-				// unknown field on the wire for nothing. Dropped deliberately,
-				// classified rather than falling through to an empty chunk.
-				return nil
+				// Anthropic's per-thinking-block signature. It is not
+				// content and has no OpenAI equivalent, but an Anthropic
+				// client must echo it back with the block on its next
+				// request, so it is carried on the normalized type and
+				// re-emitted by the Anthropic translator. The OpenAI
+				// translator ignores it — a client that cannot replay a
+				// thinking block has nothing to do with it. Deliberately
+				// typed, not left to fall through as an empty delta.
+				normalized.DeltaType = "signature_delta"
+				normalized.Signature = evt.Delta.Signature
 			default:
 				normalized.DeltaType = evt.Delta.Type
 			}
@@ -350,6 +361,11 @@ func NormalizedToAnthropicStreamEvent(evt *types.NormalizedStreamEvent) *Anthrop
 	case "content_block_delta":
 		anthropic.Index = evt.BlockIndex
 		switch evt.DeltaType {
+		case "signature_delta":
+			// Anthropic's own event, re-emitted verbatim. It has to survive
+			// this path: the client echoes it back on the next request, so a
+			// dropped signature leaves it unable to replay the thinking block.
+			anthropic.Delta = &AnthropicStreamDelta{Type: "signature_delta", Signature: evt.Signature}
 		case "reasoning_delta":
 			// Anthropic's own name for vendor reasoning is a thinking delta.
 			anthropic.Delta = &AnthropicStreamDelta{Type: "thinking_delta", Thinking: evt.Reasoning}
@@ -497,6 +513,14 @@ func NormalizedToOpenAIStreamEvent(evt *types.NormalizedStreamEvent, messageID s
 					Arguments: evt.ToolCallArgs,
 				},
 			}}
+		case "signature_delta":
+			// Anthropic's thinking-block signature has no OpenAI equivalent
+			// and is not content: an OpenAI client cannot replay a thinking
+			// block, so there is nothing to send. Dropped HERE, deliberately,
+			// as an explicit no-op — falling through the switch would emit a
+			// well-formed chunk carrying nothing, which is the defect this
+			// whole change is about.
+			return nil
 		}
 
 	case "message_stop":

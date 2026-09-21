@@ -170,17 +170,42 @@ func TestToolCallIdentityReachesAnthropicClient(t *testing.T) {
 	}
 }
 
-// A signature_delta is dropped deliberately, not accidentally. It has no
-// OpenAI equivalent and is not content, so it must produce no event at all —
-// distinct from falling through to an empty chunk, which is the bug.
-func TestSignatureDeltaIsDroppedNotEmptied(t *testing.T) {
+// A signature_delta is carried, and dropped only on the OpenAI wire where it
+// has no meaning. The distinction matters: an Anthropic client must replay the
+// signature with its thinking block on the next request, so dropping it on the
+// anthropic-to-anthropic path breaks the conversation — while relaying it to an
+// OpenAI client would put a field on the wire that client cannot use.
+//
+// Either way it must never become an EMPTY chunk, which is what falling through
+// the switch used to produce.
+func TestSignatureDeltaIsCarriedThenDroppedPerWireFormat(t *testing.T) {
+	const sig = "EqQBCgIYAhIM"
 	var evt AnthropicStreamEvent
-	raw := `{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EqQBCgIYAhIM"}}`
+	raw := `{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"` + sig + `"}}`
 	if err := json.Unmarshal([]byte(raw), &evt); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got := AnthropicStreamEventToNormalized(&evt); got != nil {
-		t.Fatalf("signature_delta produced %+v, want nil (dropped, not emptied)", got)
+
+	norm := AnthropicStreamEventToNormalized(&evt)
+	if norm == nil {
+		t.Fatal("signature_delta was dropped inbound; an Anthropic client then cannot replay its thinking block")
+	}
+	if norm.Signature != sig {
+		t.Errorf("normalized Signature = %q, want %q", norm.Signature, sig)
+	}
+
+	// Anthropic wire: re-emitted with the signature intact.
+	back := NormalizedToAnthropicStreamEvent(norm)
+	if back.Delta == nil || back.Delta.Type != "signature_delta" || back.Delta.Signature != sig {
+		t.Errorf("anthropic outbound = %+v, want the signature preserved", back.Delta)
+	}
+
+	// OpenAI wire: no representation, so dropped rather than emptied.
+	if out := NormalizedToOpenAIStreamEvent(norm, "t", 1); out != nil {
+		d := out.Choices[0].Delta
+		if d.Content == "" && d.ReasoningContent == "" && len(d.ToolCalls) == 0 {
+			t.Errorf("openai outbound emitted an empty chunk: %+v", out)
+		}
 	}
 }
 

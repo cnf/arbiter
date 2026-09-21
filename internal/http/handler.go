@@ -185,12 +185,26 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, trace
 	messageID := traceID
 	created := time.Now().Unix()
 	for evt := range streamResp.EventChan {
+		// Each translator returns a concrete pointer and returns nil for an
+		// event that has no representation in the target wire format — a
+		// deliberate drop, not an absence of data. The nil must be caught
+		// HERE, on the concrete type: assigned into an interface{} a nil
+		// *T is non-nil, so a later `wireEvent == nil` check would pass and
+		// json.Marshal would write the literal `null` as a frame
+		// (`data: null`) — not a valid event on either wire, and enough to
+		// abort a strict client's parse mid-reply.
 		var wireEvent interface{}
-
 		if format == "anthropic" {
-			wireEvent = translator.NormalizedToAnthropicStreamEvent(evt)
+			if e := translator.NormalizedToAnthropicStreamEvent(evt); e != nil {
+				wireEvent = e
+			}
 		} else {
-			wireEvent = translator.NormalizedToOpenAIStreamEvent(evt, messageID, created)
+			if e := translator.NormalizedToOpenAIStreamEvent(evt, messageID, created); e != nil {
+				wireEvent = e
+			}
+		}
+		if wireEvent == nil {
+			continue
 		}
 
 		// Serialize to JSON

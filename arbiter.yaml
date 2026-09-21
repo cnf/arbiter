@@ -171,6 +171,49 @@ providers:
 #       escape: "none"
 #       fallback: "domain-heuristic"
 classifiers:
+  # A title-generating request is one the client sends to name a session, not a
+  # turn of the conversation. It has no meaningful `domain`, so a hit fills no
+  # axis — it records `kind: "title"`, which is what makes the request
+  # identifiable on its row.
+  #
+  # Declared first and decisive, so an identified title call skips every
+  # model-backed classifier behind it and pays for no classification call at all.
+  # That is the whole cost win: a title call never pins to a session (its session
+  # key hashes the conversation being titled, which differs every call), so
+  # without this it would classify on every single call.
+  #
+  # The three patterns below are written against the clients' REAL prompts, read
+  # out of the live store (79 distinct system prompts, all three verified to hit
+  # their own prompt and nothing else). Two hazards worth knowing:
+  #
+  #   - `prefix` mode requires the text to START with the pattern, and Claude's
+  #     title instruction does not: its system prompt opens with an
+  #     `x-anthropic-billing-header:` line and "You are Claude Code...", with the
+  #     instruction buried ~165 bytes in. So `regex` is used for all three.
+  #   - regex is case-sensitive (unlike exact/prefix), hence the explicit `(?i)`.
+  #     A loose pattern here is silent and dangerous: `(?i)title` alone matches
+  #     50 of the 79 prompts, because every Hermes prompt contains the phrase
+  #     "title-generation grouping in the UI is deferred" in its memory text.
+  - name: "request-kind"
+    type: "heuristic"
+    config:
+      match:
+        # Hermes — "You name chat sessions. Given the user's opening message..."
+        - mode: "regex"
+          pattern: "(?i)^\\s*You name chat sessions\\."
+        # opencode — "You are a title generator. You output ONLY a thread title."
+        # Note it says "thread title", which is why a pattern written against the
+        # word "title" alone is both too loose and easy to get wrong.
+        - mode: "regex"
+          pattern: "(?i)^\\s*You are a title generator\\."
+        # Claude Code CLI — "Generate a concise, sentence-case title (3-7 words)".
+        # Buried in the system prompt, so anchored on the instruction itself
+        # rather than on the start of the block.
+        - mode: "regex"
+          pattern: "(?i)Generate a concise, sentence-case title"
+      kind: "title"
+      decisive: true
+
   - name: "domain"
     type: "heuristic"
     axis: "domain"

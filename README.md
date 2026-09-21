@@ -1062,28 +1062,76 @@ take the default while the operator believed they had set a cap.
 ### Matching a request's own text (`match`)
 
 A classifier's input is one user message. Some requests are identified by text
-that lives somewhere else: a title generator's system prompt begins
-`"You are a title generator."`, and for such a request the user message is the
-conversation being titled, which looks like ordinary chat. The identifying text
-was not merely unmatched, it was invisible by construction.
+that lives somewhere else: a title generator's system prompt carries its
+signature, and for such a request the user message is the conversation being
+titled, which looks like ordinary chat. The identifying text was not merely
+unmatched, it was invisible by construction.
 
-`match` searches the request's own text instead, on **any** classifier type:
+`match` searches the request's own text instead, on **any** classifier type. This
+is the shipped `request-kind` classifier, and the three patterns are the **real**
+prompts, read out of the live store rather than invented:
 
 ```yaml
 classifiers:
   - name: "request-kind"
     type: "heuristic"
-    axis: "domain"                      # any axis
     config:
       match:                            # OR-ed; any hit wins
-        - mode: "prefix"                # exact | prefix | regex
-          pattern: "You are a title generator."
+        # Hermes
         - mode: "regex"
-          pattern: "(?i)you are (a|the) .{0,20}title (generator|writer)"
-      value: "title_generation"         # the axis value a hit fills
-      where: ["system"]                 # system | messages | all (default system)
+          pattern: "(?i)^\\s*You name chat sessions\\."
+        # opencode
+        - mode: "regex"
+          pattern: "(?i)^\\s*You are a title generator\\."
+        # Claude Code CLI — buried in the system prompt, so not anchored at the start
+        - mode: "regex"
+          pattern: "(?i)Generate a concise, sentence-case title"
+      kind: "title"                     # the request kind a hit records
       decisive: true                    # optional — see below
 ```
+
+**The three signatures, verbatim from the store** (each is the opening of that
+client's system prompt):
+
+| client | signature | where it sits |
+|---|---|---|
+| Hermes | `You name chat sessions. Given the user's opening message, write a title...` | start of the block |
+| opencode | `You are a title generator. You output ONLY a thread title. Nothing else.` | start of the block |
+| Claude Code CLI | `Generate a concise, sentence-case title (3-7 words) that captures the main topic...` | ~165 bytes in |
+
+**A `prefix` pattern must be at the START of the text, which is why these use
+`regex`.** Two of the three could be `prefix`, but Claude's cannot: its system
+prompt opens with an `x-anthropic-billing-header: ...` line and
+`You are Claude Code, Anthropic's official CLI for Claude.`, and the title
+instruction sits behind both. Anchoring the pattern at the start would never
+match, silently. `regex` is used for all three so the list has one mode.
+
+`regex` is case-sensitive, unlike `exact`/`prefix`, so a case-insensitive match
+needs an explicit `(?i)`.
+
+**Write patterns against the real prompt, and test them against the corpus.** A
+loose pattern is not a near miss here, it is a silent disaster: `(?i)title`
+matches **50 of the 79 distinct system prompts** in the live store, because every
+Hermes agent prompt contains the phrase `title-generation grouping in the UI is
+deferred` in its own memory text. Meanwhile `(?i)title generation` matches
+**zero**. Adjacent-looking patterns land anywhere from 0 to 50, and both
+extremes are invisible in a UI that shows no reason a match did not happen.
+
+The way to know which is which is to read the distinct system prompts out of the
+store and run the candidates against them:
+
+```sql
+-- The whole inventory is small: 79 distinct prompts at the time of writing.
+SELECT length(cast(body AS TEXT)), cast(body AS TEXT)
+  FROM content
+ WHERE hash IN (SELECT hash FROM content_refs WHERE role='system' AND owner_kind='request');
+```
+
+`internal/config/title_signature_test.go` pins this down: it loads the shipped
+`arbiter.yaml` through the real parser, compares the patterns to the intended
+regexes (a single backslash inside YAML double quotes loads without error and
+only fails as a pattern that never matches), and runs them against the three
+prompts plus the Hermes agent prompt they must not match.
 
 `mode` and `where` mean exactly what they mean on the `prompt_rewrite`
 guardrail, and the implementation is literally the same code

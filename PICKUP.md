@@ -8,8 +8,8 @@ state, issue state, row counts) is given as a *command to run*, not as a fact to
 trust. The board is authoritative for work items; the code is authoritative for
 behaviour.
 
-Written 2026-09-20, at `develop` = `0327600` (4 commits ahead of `origin/develop`,
-unpushed).
+Written 2026-09-20, at `develop` = `0327600`; §5 and §9 updated 2026-09-21 at
+`develop` = `6ef15bf`. Run `git log --oneline -1` for the truth.
 
 ---
 
@@ -121,18 +121,22 @@ here — say so when you see it proposed, including by yourself.
 
 ---
 
-## 5. Verified state as of `0327600`
+## 5. Verified state as of `6ef15bf`
 
-Landed this session (all on `develop`, **unpushed** — `git status -sb` says how far):
+Landed (all on `develop`, **unpushed** — `git status -sb` says how far):
 
 | commit | what |
 |---|---|
-| `4369a52` | `Signals.RequestKind` + `kind:` in a classifier's `match:`; the literal-model path classifies a not-yet-in-a-session request **for the record only** — routing never moves |
-| `3dfe2d2` | `types.Ellipsize` extracted from `internal/pipeline` (pipeline imports classifier, so the classifier could not reach it) |
-| `06c32e2` | classifiers read the **first** user turn with text, skip the upstream call entirely when there is nothing to classify, and cap the input via `max_input_chars` |
+| `6ef15bf` | UI: a run of streamed turns folds into one line with a count (#25), and the live tail places a row into its line |
+| `da32072` | PICKUP.md itself |
 | `0327600` | test for the config-key→builder seam |
+| `06c32e2` | classifiers read the **first** user turn with text, skip the upstream call entirely when there is nothing to classify, and cap the input via `max_input_chars` |
+| `3dfe2d2` | `types.Ellipsize` extracted from `internal/pipeline` (pipeline imports classifier, so the classifier could not reach it) |
+| `4369a52` | `Signals.RequestKind` + `kind:` in a classifier's `match:`; the literal-model path classifies a not-yet-in-a-session request **for the record only** — routing never moves |
 
-Closed on the board: **#3**, **#30**, **#15**.
+Closed on the board: **#3**, **#30**, **#15**, and now **#25**, **#19**, **#16**, **#10**
+(the last three were answered/verified from the store — see the closing comments, and §9
+for #16's real finding).
 
 Working tree is dirty with **pre-existing, deliberate** local changes — `.gitignore`,
 `devenv.nix`, `devenv.yaml` (secretspec switched to the `file://` provider because a
@@ -140,12 +144,12 @@ container has no D-Bus session bus; Claude notification hooks disabled; `gh`/`sq
 added to packages). These are the user's environment adaptations, **not part of any
 feature**. Leave them alone; stage only the files your own change touches.
 
-**Live confirmation is still missing for both feature lines.** The deployment
+**Live confirmation is still missing for the classifier work.** The deployment
 (`/data/arbiter/arbiter.yaml`) has **all classifiers commented out** — done by the
 user, after the Jev burst, and *not* the cause of it. Re-enabling is the user's call
-and should not be done automatically. The `request-kind` classifier also still needs
-its one-line `kind: "title"` edit before a live title request can show
-`request_kind=title`. Filed as **#32**.
+and should not be done automatically. Consequence visible in the store: `request_kind`
+is `NULL` on **every** row, so no classifier signature (including the title patterns in
+§9) has ever been observed firing. Filed as **#32**.
 
 ---
 
@@ -154,8 +158,9 @@ its one-line `kind: "title"` edit before a live title request can show
 Run `gh issue list` for the live list. This is the shape of it:
 
 **Blocking anything else being verifiable**
-- **#32** — deployment config: `request-kind` classifier needs `kind: "title"`.
-  Gates live confirmation of #3/#30's work. Needs the user, not a code change.
+- **#32** — deployment config: the `request-kind` classifier needs the three title
+  patterns (kept in sync with the repo's `arbiter.yaml`, §9). Gates live confirmation of
+  #3/#30/#7's work. Needs the user, not a code change.
 
 **High — the visibility goal (the project's whole point)**
 - **#4** — META umbrella, "it is hard to see what is going on". Three stacked causes,
@@ -163,11 +168,12 @@ Run `gh issue list` for the live list. This is the shape of it:
 - **#5** — a request that fails routing or is rejected by a guardrail gets **no row at
   all**. `recordRejected` writes content refs under `owner_kind="rejected"` and
   nothing else. This is the biggest single hole in the visibility goal.
-- **#7** — the title-gen match pattern only covers Hermes; opencode's prompt never
-  matches. **Blocked on capturing opencode's real prompt from the store first** — the
-  `"You are a title generator."` string currently in the README and tests is
-  *invented*, and writing a config pattern against it would produce exactly the silent
-  never-fires failure that hid the Hermes signature.
+- **#7** — the title-gen match pattern covered only Hermes, and opencode's prompt never
+  matched. **The evidence it was blocked on is now in §9**: opencode's real prompt
+  (`You are a title generator. You output ONLY a thread title.`), Hermes', and Claude
+  Code CLI's, all three verified against the 79-prompt corpus. The repo's `arbiter.yaml`
+  now carries all three patterns. What remains for #7 is the *label* half — the row's
+  `request_kind` — which needs #32 to be observable at all.
 - **#28** — Anthropic prompt caching never engages (`cache_control` never set;
   483/483 Claude requests uncached).
 - **#6** — Jev decision models: `score` (Phase E), `min_confidence` (Phase D),
@@ -180,6 +186,9 @@ Run `gh issue list` for the live list. This is the shape of it:
 
 **Medium** — #27, #26, #25, #24, #23, #22, #21, #20, #19, #18, #17, #16, #14, #13,
 #12, #11, #10, #9, #8.
+
+(#25, #19, #16, #10 are closed — see §9. #7 is the current front: it was blocked on
+reading opencode's real prompt, and §9 now has it.)
 
 **#12 is worth reading before touching the classifier path** — it holds two genuinely
 open cost questions (does the pin still short-circuit; should the literal path write a
@@ -195,10 +204,15 @@ re-classify on every turn.
 - **`affinity.get` vs `affinity.pinned`** — see above. Using the wrong one causes
   per-turn re-classification that looks like a config problem.
 - **A title-gen request never pins**, by construction: its session key hashes the
-  system prompt plus the first user message, and Hermes' title prompt carries new
-  conversation text every call. So it classifies on **every** call. That is correct,
-  not a dedup bug — 8/8 measured in distinct sessions. #30's acceptance line about
-  "row count stops tracking request count" reads the other way for title requests.
+  system prompt plus the first user message, and a title prompt's user message is
+  the **conversation being titled**, which differs every call. So it classifies on
+  **every** call. That is correct, not a dedup bug — 8/8 measured in distinct
+  sessions. #30's acceptance line about "row count stops tracking request count"
+  reads the other way for title requests.
+- **...which is why the `request-kind` match must be declared FIRST and
+  `decisive`.** A title call that is identified pays for no classification call at
+  all; the expensive thing is not the extra row, it is the model call on every
+  title request. See §9 for the real prompts to match against.
 - **`content` is content-addressed** via `content_refs` (`owner_kind` ∈
   `{request, rejected}`, keyed by `hash` — not a `content_hash` column, and there is
   no `block_index`; it is `direction, msg_index, position`). To ask "was this text
@@ -243,3 +257,60 @@ SELECT id, ts, kind, request_kind, domain, confidence,
 rather than assuming, and prefer small `LIMIT`ed probes over broad scans. Old rows may
 predate the newest columns, so a `NULL` there means "written before the column existed",
 not "unset".
+
+**Content search is slow and needs the right column.** `content.body` is a **BLOB**, so
+cast it (`cast(body AS TEXT)`) and always scope the query — a `LIKE` across the whole
+`content` table (11.9k rows, 1.6M refs) times out. Scope by joining `content_refs` on a
+small id set first. `content_refs` carries `role`/`block_type` denormalized precisely so
+it can be filtered before the blob is read.
+
+---
+
+## 9. Title-generation signatures — the real prompts
+
+Read out of the live store, not invented. Each is the opening of that client's
+system prompt; the store holds the full text.
+
+| client | signature (system prompt) | position | user-agent |
+|---|---|---|---|
+| Hermes | `You name chat sessions. Given the user's opening message, write a title that lets them find this conversation again in a list.` | start of block | — |
+| opencode | `You are a title generator. You output ONLY a thread title. Nothing else.` | start of block | `opencode/...`, `opencode/1.15.10` |
+| Claude Code CLI | `Generate a concise, sentence-case title (3-7 words) that captures the main topic or goal of this coding session.` | **~165 bytes in** | `claude-cli/2.1.223` |
+
+**Claude Code CLI's prompt opens with `x-anthropic-billing-header: ...` and `You are
+Claude Code, Anthropic's official CLI for Claude.`** The title instruction is behind
+both — which is why `prefix` mode cannot reach it.
+
+**Modes, and the trap.** `exact | prefix | regex` (`pkg/types/textmatch.go`). `prefix`
+means the text must **START** with the pattern (`Find`, `MatchPrefix`), it is *not*
+"contains". `exact`/`prefix` are case-insensitive and whitespace-trimmed; **`regex` is
+case-sensitive**, so a case-insensitive regex needs `(?i)`.
+
+**A loose pattern here is silent and lands anywhere.** Measured on the 79 distinct
+system prompts in the store:
+
+| pattern | prompts matched |
+|---|---|
+| `(?i)title` | **50 of 79** — every Hermes agent prompt carries `title-generation grouping in the UI is deferred` in its memory text |
+| `(?i)title generation` | **0** |
+| the three patterns shipped in `arbiter.yaml` | **4** — exactly the right prompts, no false positives |
+
+Neither extreme is visible in the UI (no reason is shown for a non-match). **Read the
+corpus before writing a pattern**, and check a new one against it:
+
+```sql
+-- The inventory is small (79 rows at 2026-09-21) and cheap to eyeball.
+SELECT length(cast(body AS TEXT)) AS len, cast(body AS TEXT)
+  FROM content
+ WHERE hash IN (SELECT hash FROM content_refs WHERE role='system' AND owner_kind='request');
+```
+
+`internal/config/title_signature_test.go` pins the shipped patterns: it loads
+`arbiter.yaml` through the real parser and asserts each loads as the intended regex
+(a single backslash in YAML double quotes loads fine and silently never matches),
+compiles, hits its own prompt, and does **not** hit the Hermes agent prompt.
+
+**Not yet verified live:** these patterns are in the repo's `arbiter.yaml`, but the
+deployment has all classifiers commented out, so nothing has been observed actually
+matching. `request_kind` is `NULL` on every stored row for that reason. Confirming a hit
+end-to-end still needs #32.

@@ -1411,6 +1411,16 @@ otherwise:
   characters a query string is entitled to read as spaces; a client that does so
   gets an empty page rather than an error. The token is base64 over
   `ts \x00 id` and is URL-exact.
+- **A request's captured content defaults to the guardrailed form** — the text
+  that actually went upstream, not what the client sent — because that is what
+  answers "why did the model see this" for the vast majority of requests, where
+  the two are identical anyway. When a pre-guardrail did rewrite the request,
+  `/admin/ui/requests/{id}/content` shows a "show as sent" link that re-fetches
+  the fragment with `?as_sent=1` and swaps in the client's original instead; the
+  link only appears when the two forms actually differ, i.e. when
+  `content_refs` has a `request_guardrailed` row for that request. There is no
+  side-by-side diff yet — one view at a time — deliberately, until the UI gets
+  a broader pass.
 
 `?no_session` was added to `/admin/requests` at the same time: an empty
 `?session=` means "any", so the requests with *no* session key (those whose

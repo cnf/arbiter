@@ -117,7 +117,7 @@ func TestContentIsReassembledInOrder(t *testing.T) {
 		t.Fatalf("ListRequests = %v, %v", rows, err)
 	}
 
-	blocks, err := r.ContentForRequest(ctx, rows[0].ID)
+	blocks, _, err := r.ContentForRequest(ctx, rows[0].ID, false)
 	if err != nil {
 		t.Fatalf("ContentForRequest: %v", err)
 	}
@@ -456,7 +456,7 @@ func TestUncapturedBlocksStillDedup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListRequests: %v", err)
 	}
-	blocks, err := r.ContentForRequest(ctx, rows[0].ID)
+	blocks, _, err := r.ContentForRequest(ctx, rows[0].ID, false)
 	if err != nil {
 		t.Fatalf("ContentForRequest: %v", err)
 	}

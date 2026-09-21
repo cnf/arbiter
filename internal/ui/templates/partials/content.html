@@ -2,9 +2,25 @@
 direction. Bodies are untrusted text and are rendered as plain strings inside
 <pre>; nothing is marked safe. A block stored hash-only (an image, a streamed
 tool call) says so rather than being omitted, so "not capturable" and "not
-captured" do not look the same. */}}
+captured" do not look the same.
+
+When a pre-guardrail ran on this request, the store holds both the
+post-guardrail form (shown by default — it's what actually went upstream) and
+the client's original text. The toggle below swaps between them via ?as_sent;
+there is no side-by-side diff yet (see #13) — just one view at a time. */}}
 {{define "request-content"}}
 <div id="content" class="content">
+{{if .HasGuardrailedVariant}}
+  <p class="muted">
+  {{if .ShowingAsSent}}
+    Showing the request as the client sent it, before a pre-guardrail rewrote it.
+    <a hx-get="/admin/ui/requests/{{.D.ID}}/content" hx-target="#content" hx-swap="outerHTML" href="#">show as guardrailed</a>
+  {{else}}
+    Showing the request as guardrails left it — what actually went upstream.
+    <a hx-get="/admin/ui/requests/{{.D.ID}}/content?as_sent=1" hx-target="#content" hx-swap="outerHTML" href="#">show as sent</a>
+  {{end}}
+  </p>
+{{end}}
 {{if .Blocks}}
   {{range .Blocks}}{{template "block" .}}{{end}}
 {{else}}

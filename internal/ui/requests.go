@@ -710,6 +710,17 @@ type detailView struct {
 	// "this request has no captured content" — capture off and nothing
 	// captured are different answers.
 	ContentLoaded bool
+
+	// ShowingAsSent is true when the client's original, pre-guardrail text is
+	// being displayed instead of the default post-guardrail view (see #13).
+	// The template uses it to render the toggle link's other state.
+	ShowingAsSent bool
+
+	// HasGuardrailedVariant is true when this request has a distinct
+	// pre-guardrail capture at all, i.e. a pre-guardrail actually ran. When
+	// false the toggle link is pointless — there is only one version of the
+	// request — and the template omits it.
+	HasGuardrailedVariant bool
 }
 
 // RequestHandler handles GET /admin/ui/requests/{id}.
@@ -792,10 +803,11 @@ func (h *Handler) RequestContentHandler(w http.ResponseWriter, r *http.Request) 
 		h.fail(w, r, http.StatusBadRequest, "request id must be a positive integer")
 		return
 	}
-	view := detailView{viewBase: h.base("Requests"), ContentLoaded: true}
+	showAsSent := r.URL.Query().Get("as_sent") == "1"
+	view := detailView{viewBase: h.base("Requests"), ContentLoaded: true, ShowingAsSent: showAsSent}
 
 	if h.reader != nil {
-		blocks, err := h.reader.ContentForRequest(r.Context(), id)
+		blocks, hasGuardrailedVariant, err := h.reader.ContentForRequest(r.Context(), id, showAsSent)
 		if err != nil {
 			h.logger.LogError(r.Context(), "error", err,
 				map[string]interface{}{"phase": "admin_ui_request_content"})
@@ -804,6 +816,7 @@ func (h *Handler) RequestContentHandler(w http.ResponseWriter, r *http.Request) 
 		}
 		view.Blocks = wrapBlocks(id, blocks)
 		view.ContentLoaded = true
+		view.HasGuardrailedVariant = hasGuardrailedVariant
 		if _, ok, err := h.reader.GetRequest(r.Context(), id); err == nil && ok {
 			view.D.ID = id
 		}

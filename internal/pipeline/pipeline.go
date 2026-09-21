@@ -310,11 +310,14 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 	// system_prompt rewrites req.SystemPrompt, and capturing after it would
 	// store Arbiter's own injected prompt as though the client had sent it —
 	// destroying exactly the distinction the dedup queries exist to expose.
+	// This capture stays "as sent" and feeds the dedup corpus; it is not what
+	// the UI shows by default (see the post-guardrail capture below and #13).
 	var content store.CapturedContent
 	if p.captureContent {
 		content.Request = store.CaptureRequest(req)
 	}
 
+	var preGuardrailApplied bool
 	for _, g := range p.preGuardrails {
 		if !g.ShouldRun(req) {
 			continue
@@ -330,6 +333,17 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		}
 		p.logger.LogGuardrail(ctx, g.Name(), "applied", true)
 		req = mutated
+		preGuardrailApplied = true
+	}
+
+	// Capture again AFTER pre-guardrails, but only when one actually ran —
+	// with none configured (or none matching ShouldRun) the two captures
+	// would be byte-identical, and storing both would double every block's
+	// reference rows for zero benefit. This is the request as it actually
+	// went upstream, and is #13's default/primary UI view; the pre-guardrail
+	// form above is only shown on demand.
+	if p.captureContent && preGuardrailApplied {
+		content.RequestGuardrailed = store.CaptureRequest(req)
 	}
 
 	route, sig, err := p.resolveRoute(ctx, req, hasKey)

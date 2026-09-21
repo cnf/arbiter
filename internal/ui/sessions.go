@@ -240,7 +240,7 @@ func (h *Handler) SessionHandler(w http.ResponseWriter, r *http.Request) {
 			view.TotalInput += t.InputTokens
 			view.TotalOutput += t.OutputTokens
 
-			blocks, err := h.reader.ContentForRequest(r.Context(), t.ID)
+			blocks, _, err := h.reader.ContentForRequest(r.Context(), t.ID, false)
 			if err != nil {
 				// A turn whose content could not be read still belongs in the
 				// transcript: the turn happened, and its metadata is correct.

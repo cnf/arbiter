@@ -220,7 +220,8 @@ func (h *StatsHandler) RequestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	blocks, err := h.reader.ContentForRequest(r.Context(), id)
+	showAsSent := r.URL.Query().Get("as_sent") == "1"
+	blocks, _, err := h.reader.ContentForRequest(r.Context(), id, showAsSent)
 	if err != nil {
 		h.logger.LogError(r.Context(), "error", err, map[string]interface{}{"phase": "admin_request_content"})
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())

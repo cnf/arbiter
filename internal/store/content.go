@@ -38,26 +38,38 @@ func (b Block) Hash() []byte {
 	return sum[:]
 }
 
-// CapturedContent is the content of one request/response, split into the
-// request and response directions. Either may be empty.
+// CapturedContent is the content of one request/response, split by direction.
+// Request is the request AS THE CLIENT SENT IT, captured before any
+// pre-guardrail runs — this is the field the dedup/repeated-content queries
+// are built on (see CaptureRequest) and must keep meaning "as sent".
+// RequestGuardrailed is the additional, later capture of the same request
+// after pre-guardrails ran — what actually went upstream — and is the
+// default/primary view in the UI (see #13); most requests have no
+// pre-guardrails configured, in which case the two are identical and
+// RequestGuardrailed should be left unset rather than duplicating storage for
+// no reason. Either field may be empty.
 type CapturedContent struct {
-	Request  []Block
-	Response []Block
+	Request            []Block
+	RequestGuardrailed []Block
+	Response           []Block
 }
 
 // Empty reports whether there is nothing to store, so the writer can skip the
 // whole content path and keep its transaction free of work in the common case
 // where capture is off or produced nothing.
 func (c CapturedContent) Empty() bool {
-	return len(c.Request) == 0 && len(c.Response) == 0
+	return len(c.Request) == 0 && len(c.RequestGuardrailed) == 0 && len(c.Response) == 0
 }
 
 // CaptureRequest reduces a normalized request's messages to hashable blocks.
-//
-// Must be called on the request as it arrived, BEFORE pre-guardrails: a
-// guardrail like system_prompt rewrites SystemPrompt, and capturing after it
-// would store Arbiter's own injected prompt as though the client had sent it —
-// which is exactly the thing the dedup queries exist to detect.
+// Called twice per request when pre-guardrails are configured: once before
+// they run (-> CapturedContent.Request, "as the client sent it" — the form
+// the dedup/repeated-content queries are built on) and once after (->
+// CapturedContent.RequestGuardrailed, "as guardrails left it" — what actually
+// went upstream, and the default UI view). The first call must keep
+// happening before any pre-guardrail mutates the request, or the dedup
+// corpus fills with Arbiter's own injected text instead of the client's — see
+// internal/pipeline/pipeline.go.
 func CaptureRequest(req *types.NormalizedRequest) []Block {
 	var out []Block
 	msgIndex := 0
@@ -333,6 +345,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 	}
 
 	if err := write("request", content.Request); err != nil {
+		return err
+	}
+	if err := write("request_guardrailed", content.RequestGuardrailed); err != nil {
 		return err
 	}
 	return write("response", content.Response)

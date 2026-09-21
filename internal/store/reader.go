@@ -545,10 +545,69 @@ type ContentBlock struct {
 	Captured  bool   `json:"captured"`
 }
 
-// ContentForRequest returns every captured block belonging to one request, in
-// conversation order, for the detail view. An unknown id yields an empty slice.
-func (r *Reader) ContentForRequest(ctx context.Context, id int64) ([]ContentBlock, error) {
-	return r.contentFor(ctx, "request", id)
+// ContentForRequest returns the captured blocks belonging to one request, in
+// conversation order, for the detail view, plus whether a distinct
+// pre-guardrail capture exists at all (hasGuardrailedVariant) — the caller
+// uses that to decide whether an "as sent" / "as guardrailed" toggle is
+// worth showing. An unknown id yields an empty slice.
+//
+// When a pre-guardrail ran, the store holds two versions of the request
+// direction: "request" (as the client sent it) and "request_guardrailed" (as
+// it went upstream). By default this returns the guardrailed form when one
+// was captured — it's what actually reached the model, and is the more
+// useful default per #13 — falling back to "request" when no pre-guardrail
+// applied (the common case, where the two would be identical anyway and only
+// "request" was ever written). Pass showAsSent=true to see the client's
+// original text instead; the response direction is unaffected either way.
+func (r *Reader) ContentForRequest(ctx context.Context, id int64, showAsSent bool) ([]ContentBlock, bool, error) {
+	rows, err := r.contentFor(ctx, "request", id)
+	if err != nil {
+		return nil, false, err
+	}
+	hasGuardrailed := false
+	for _, b := range rows {
+		if b.Direction == "request_guardrailed" {
+			hasGuardrailed = true
+			break
+		}
+	}
+	return filterRequestDirection(rows, hasGuardrailed, showAsSent), hasGuardrailed, nil
+}
+
+// filterRequestDirection picks one request-direction view out of a raw block
+// set that may contain both "request" and "request_guardrailed" rows,
+// leaving "response" rows untouched. See ContentForRequest for the default
+// (guardrailed-if-present) and showAsSent behavior.
+//
+// The kept rows are relabeled to Direction "request" regardless of which
+// physical direction they came from: everything downstream (dedup-across-
+// turns, preamble splitting in the session transcript, the "request" vs
+// "response" grouping in the templates) only needs to know "this is the
+// request side", not which of the two captures produced it. Without this
+// relabel, any turn where a pre-guardrail actually ran would silently skip
+// those checks — they all match on the literal string "request".
+func filterRequestDirection(blocks []ContentBlock, hasGuardrailed, showAsSent bool) []ContentBlock {
+	if !hasGuardrailed {
+		// Nothing to filter: either no pre-guardrail ran, or capture never
+		// wrote the second form. "request" is the only request-side data
+		// there is, regardless of which view was asked for.
+		return blocks
+	}
+	drop := "request"
+	if showAsSent {
+		drop = "request_guardrailed"
+	}
+	out := make([]ContentBlock, 0, len(blocks))
+	for _, b := range blocks {
+		if b.Direction == drop {
+			continue
+		}
+		if b.Direction == "request_guardrailed" {
+			b.Direction = "request"
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 // contentFor is the shared body behind ContentForRequest and (once rejected

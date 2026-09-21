@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS content (
 CREATE TABLE IF NOT EXISTS content_refs (
     owner_kind TEXT    NOT NULL,   -- "request" | "rejected"
     owner_id   INTEGER NOT NULL,   -- requests.id, or the rejection's rowid
-    direction  TEXT    NOT NULL,   -- "request" | "response"
+    direction  TEXT    NOT NULL,   -- "request" (as sent) | "request_guardrailed" (as it went upstream, when a pre-guardrail ran) | "response"
     msg_index  INTEGER NOT NULL,   -- position of the message in the conversation
     position   INTEGER NOT NULL,   -- position of the block within the message
     role       TEXT,               -- the message's role, denormalized for grouping

@@ -216,6 +216,29 @@ td.when .sub, td .sub { display: block; color: var(--muted); font-size: 11px; fo
 td.why { color: var(--muted); font-size: 12px; max-width: 34ch; }
 td.axes { white-space: nowrap; }
 
+/* A collapsed run of streamed turns. It is deliberately *not* loud: the point of
+   folding is that the eye reaches the distinct events, so the summary line
+   recedes and its count is the one thing that stands forward. The count badge is
+   also the link that opens the constituents (the flat, filtered view), which is
+   why it is styled as a control rather than as text. */
+.grouping {
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+  font-size: 12px;
+}
+table.grid tr.run td { color: var(--muted); }
+table.grid tr.run .count {
+  color: var(--accent);
+  text-decoration: none;
+  font-family: var(--sans);
+  font-size: 11px;
+  padding: 0 4px;
+  margin-left: 3px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 9px;
+}
+table.grid tr.run .count:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+
 .pager { display: flex; align-items: center; gap: 0.75rem; margin: 0.6rem 0 0; color: var(--muted); font-size: 12px; }
 
 .status {

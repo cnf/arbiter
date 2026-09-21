@@ -49,6 +49,12 @@
     var src = root.getAttribute("data-tail-src") || "";
     var cursor = root.getAttribute("data-tail-cursor") || "";
     var filterQs = root.getAttribute("data-tail-filter") || "";
+    // grouped mirrors the server's rendering mode: in a grouped table a polled
+    // row either joins an existing line (bumping its count) or becomes its own
+    // line, and prepending it regardless would draw a second line for a group
+    // already on screen. The server sends `grouped` on every poll too, so a mode
+    // change mid-tail cannot desynchronise the two.
+    var grouped = root.hasAttribute("data-tail-grouped");
 
     var on = false;
     var timer = null;
@@ -124,6 +130,13 @@
             return;
           }
 
+          // The server's mode wins: if it disagrees with what this page was
+          // rendered with, follow the server. A poll's payload is always rows, so
+          // the client is the only place the two views can be reconciled.
+          if (typeof payload.grouped === "boolean") {
+            grouped = payload.grouped;
+          }
+
           var added = append(payload);
           if (payload.cursor) {
             cursor = payload.cursor;
@@ -153,22 +166,31 @@
         });
     }
 
-    // append inserts the rows the server sent, skipping any id already present.
+    // append inserts the rows the server sent, skipping any id already present, and
+    // places each one according to the table's rendering mode.
     //
-    // The skip is not paranoia: polls overlap with writes, and the server's own
+    // The id skip is not paranoia: polls overlap with writes, and the server's own
     // cursor is what normally prevents a repeat. This is the second line of
     // defence, so a cursor that ever slips cannot silently duplicate rows on
     // screen — a tail showing a request twice is a wrong picture, not a cosmetic
     // bug.
+    //
+    // Placement differs by mode and both branches are load-bearing:
+    //
+    //   - flat: prepend each row and keep the batch's own order. The table is
+    //     newest-first and the server returns each batch in that same order, so a
+    //     new row belongs at the top.
+    //   - grouped: a row whose group key is already on screen belongs *inside*
+    //     that line — bump its count and advance its timestamp, because the line
+    //     shows its newest request. A row with no key (or a key not on screen) is
+    //     a line of its own and is prepended in order, exactly as flat does.
     function append(payload) {
-      if (!payload.rows) {
+      if (!payload.rows || !payload.rows.length) {
         return 0;
       }
       if (!seen) {
         buildSeen();
       }
-      var tpl = document.createElement("tbody");
-      tpl.innerHTML = payload.rows;
 
       // The empty table case: the list rendered "no requests match" and no
       // <tbody> at all, so the first appended row needs one to land in.
@@ -185,28 +207,114 @@
         body.appendChild(table);
       }
 
-      // Prepended, because the table is newest-first and the server returns each
-      // batch in that same order. Appending would put a request that arrived a
-      // second ago below rows from hours ago — which is what an earlier version
-      // of this did. Iterating forwards and inserting each before the current
-      // first row keeps the batch's own order.
       var added = 0;
-      var incoming = tpl.querySelectorAll("tr[data-id]");
       var anchor = tbody.firstChild;
-      for (var i = 0; i < incoming.length; i++) {
-        var id = incoming[i].getAttribute("data-id");
-        if (seen[id]) {
+      for (var i = 0; i < payload.rows.length; i++) {
+        var id = payload.rows[i].id;
+        if (id && seen[id]) {
           continue;
         }
-        seen[id] = true;
-        tbody.insertBefore(incoming[i], anchor);
-        anchor = incoming[i].nextSibling;
+        if (id) {
+          seen[id] = true;
+        }
+
+        var row = rowFromHTML(payload.rows[i].html);
+        if (!row) {
+          continue;
+        }
+
+        var key = payload.rows[i].key || "";
+        if (grouped && key && bumpLine(tbody, key, row)) {
+          added++;
+          continue;
+        }
+
+        // The batch arrives newest-first, so inserting each before the current
+        // first row keeps the batch's own order.
+        tbody.insertBefore(row, anchor);
+        anchor = row.nextSibling;
         added++;
       }
 
-      // An error row has no data-id and travels with its request's row, so it is
-      // appended by the row it follows rather than skipped above.
       return added;
+    }
+
+    // rowFromHTML turns one response row into a <tr>. It returns null rather than
+    // throwing on malformed markup, so one bad row cannot take out a poll: the
+    // alternative is an uncaught error that stops the tail.
+    function rowFromHTML(html) {
+      if (!html) {
+        return null;
+      }
+      var holder = document.createElement("tbody");
+      holder.innerHTML = html;
+      return holder.firstElementChild;
+    }
+
+    // bumpLine folds a polled row into the line whose data-key matches, moving the
+    // line to the top because the row it now shows is the newest of its group.
+    //
+    // Returns false when no such line is on screen, which means the caller should
+    // render the row as its own line. The count is re-read from the existing badge
+    // rather than rebuilt from text, and the line is re-anchored: leaving it where
+    // it was would put a request from a second ago below lines it is newer than,
+    // which is the ordering bug this table's live view already had once.
+    //
+    // A line that was alone has no count badge yet — the page only renders one for
+    // a run — so the first row that joins it has to create the badge. That is the
+    // user's `A` then `A` case: without this the line stays count-less and the
+    // second turn is invisible as a repeat, which is the thing being grouped.
+    function bumpLine(tbody, key, row) {
+      var line = tbody.querySelector('tr[data-key="' + key + '"]');
+      if (!line) {
+        return false;
+      }
+      var badge = line.querySelector("[data-count]");
+      if (!badge) {
+        badge = makeCountBadge(line);
+      }
+      if (badge) {
+        var n = parseInt(badge.getAttribute("data-count"), 10);
+        if (!isNaN(n)) {
+          n++;
+          badge.setAttribute("data-count", String(n));
+          badge.textContent = n + "×";
+          badge.title = "this line stands for " + n + " streamed requests on the page loaded — open them as individual rows";
+        }
+      }
+      tbody.insertBefore(line, tbody.firstChild);
+      return true;
+    }
+
+    // makeCountBadge turns a line that stood for a single request into a counted
+    // run, mirroring the markup the server renders for a collapsed line: the badge
+    // goes into the time cell, replacing the "ago" subline that filled it.
+    //
+    // It starts at 1 and lets the caller increment it, so the count and the badge
+    // are updated in exactly one place.
+    function makeCountBadge(line) {
+      var cell = line.querySelector("td.when");
+      if (!cell) {
+        return null;
+      }
+      var sub = cell.querySelector("span.sub");
+      var badge = document.createElement("a");
+      badge.className = "count";
+      badge.setAttribute("data-count", "1");
+      badge.textContent = "1×";
+      // The href is the flat view of this line's requests. The client cannot build
+      // the server's query (it does not know the session, status or kind the key
+      // was folded from) so the link is left to the page's own rendering: a line
+      // that became a run on screen points at the full list, which is honest about
+      // being less narrow than a server-rendered count's link.
+      badge.href = "/admin/ui/requests?flat=1";
+      if (sub) {
+        cell.insertBefore(badge, sub);
+      } else {
+        cell.appendChild(badge);
+      }
+      line.classList.add("run");
+      return badge;
     }
 
     function start() {

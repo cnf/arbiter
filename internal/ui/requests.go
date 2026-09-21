@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -63,10 +65,26 @@ type requestFilterView struct {
 	// is open — a new one is a config edit, not a code change.
 	ReqKindRaw string
 
+	// Flat is ?flat=1: render one row per request instead of collapsing runs
+	// of streamed turns. It is part of the filter form's state because it is
+	// part of what the reader is looking at, and the form re-renders from it.
+	Flat bool
+
 	// Any records whether any filter is set, so the empty state can offer
 	// "widen" only when there is something to widen.
 	Any bool
 }
+
+// maxRequestRows is the page size for the two readers that need every row the
+// store will give them: Flat mode, and a kind selection where the grouping is
+// the subject rather than the lens.
+//
+// It is the reader's own cap (maxRequestListLimit, 500) rather than a new
+// number, so the UI cannot ask for more than a query will return and silently
+// render a short list. Below it sits defaultListLimit (100) — the grouped
+// default, where folding means a hundred rows still fill a screen with distinct
+// lines.
+const maxRequestRows = 500
 
 // requestRowView pairs a stored row with its display-only short session key.
 //
@@ -78,11 +96,308 @@ type requestRowView struct {
 	ShortSession string
 }
 
+// requestLineView is one displayed line: either a single request, or a run of
+// requests that are the *same event happening again* collapsed into one line
+// with a count.
+//
+// This exists because a streamed conversation writes one row per turn, so a
+// working session fills the list with near-identical rows: 100 rows on a page
+// was measured as 3 distinct things, and the reader saw none of the events for
+// the repeats. The rows are all still there — Flat mode and the count's link
+// show every one of them — so this is a summary of the list, not a filter on it.
+type requestLineView struct {
+	// Key identifies the group. It is not rendered; it exists so the line's
+	// constituents can be described ("rows 1-74") and so a later live-tail
+	// update can find the line it belongs to instead of appending beside it.
+	Key string
+
+	// Head is the newest row of the group, which is the one whose routing,
+	// provider and timestamp the line shows.
+	Head requestRowView
+
+	// Count is how many requests this line stands for. It counts the rows
+	// *loaded on this page* — see the note in the template and the README.
+	Count int
+
+	// Rows is every constituent, newest first, for the expanded view. It is
+	// only rendered in Flat mode; the line itself renders Head.
+	Rows []requestRowView
+
+	// Run is true when this line stands for more than one request and is
+	// therefore a collapsed line rather than an ordinary request row.
+	Run bool
+
+	// Attr is Key reduced to a short, attribute-safe identifier, so the live
+	// tail can find the line a newly-arrived request belongs to instead of
+	// appending a second line beside it. A group key contains a NUL separator
+	// and a full session hash, so the raw form cannot go in an attribute.
+	Attr string
+
+	// OpenHref is the flat, filtered view of exactly this line's requests:
+	// the "you can still open it up" affordance. It is a real URL, not a DOM
+	// toggle, because the page's filters are the address bar.
+	OpenHref string
+}
+
+// lineKeySeparator splits the parts of a group key. A NUL cannot occur in any
+// part (they are ids, enum-ish words and identifier text), so no two different
+// groups can collide on a joined key.
+const lineKeySeparator = "\x00"
+
+// noSessionLinePrefix keeps unpinned requests from collapsing into one another.
+//
+// A request with no session key is not in a conversation, so "the same event
+// happening again" is not a claim that can be made about two of them: an
+// unpinned row and another unpinned row have no demonstrated relationship. They
+// therefore never join a run, and the row's own id is what makes its key unique.
+const noSessionLinePrefix = "nosession:"
+
+// requestLineKey is the identity that decides whether two requests are "the same
+// event happening again".
+//
+// Six parts, and each earns its place because changing any of them is a fact the
+// reader wants to see rather than a repeat to fold away:
+//
+//   - the session, or the row's own id when it has none (see above) — rows from
+//     two different conversations are never the same event, whatever else they
+//     share. This is the part that matters most: without it a burst of one row
+//     per session (an upstream outage) would collapse into a single line and
+//     hide exactly the spread of damage the reader needs to see.
+//   - provider and model: a session that switched model mid-conversation is
+//     showing a re-route, which is the thing the list exists to reveal.
+//   - alias_used: naming an alias and naming a literal model are different
+//     routing facts even when both end at the same upstream model.
+//   - status_code: a 502 among 200s is the single most important row on the
+//     page and must not be folded into the successes around it.
+//   - request_kind: a title-generation call is not the conversation's turn.
+//
+// Stream is part of the key too, so that a non-streamed request can never join a
+// streamed run — the collapse is offered for streamed turns only (see isRun).
+//
+// What is deliberately *not* here is a time window. The gap between two turns of
+// a conversation is a tuning knob with no correct value (measured counts climb
+// smoothly with it), and leaving it out means the whole feature has no threshold
+// to mis-set.
+func requestLineKey(r store.RequestRow) string {
+	session := r.SessionKey
+	if session == "" {
+		return noSessionLinePrefix + strconv.FormatInt(r.ID, 10)
+	}
+	return strings.Join([]string{
+		session,
+		r.Provider,
+		r.Model,
+		r.AliasUsed,
+		strconv.FormatInt(r.StatusCode, 10),
+		r.RequestKind,
+		strconv.FormatBool(r.Stream),
+	}, lineKeySeparator)
+}
+
+// lineKeyAttr reduces a group key to a short, stable, attribute-safe identifier.
+//
+// A hash rather than the key itself: the key carries a NUL separator (which
+// cannot appear in an HTML attribute or survive an escaping round trip, the same
+// trap the tail's timestamp cursor has) and a 64-character session hash, which
+// would bloat every row. A truncated sha256 is stable across processes, so the
+// client can compare a polled row's key against the lines on screen.
+func lineKeyAttr(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:6])
+}
+
+// lineAttr is the group identity a row's markup carries, or "" when the row must
+// stand on its own.
+//
+// It is the *row's* answer, not the folded line's, and that is the load-bearing
+// part: a line's Run flag says "this batch held more than one row of this group",
+// which is false for a single-row line — but such a row must still carry its key,
+// because it is the row a later poll's arrival will need to join. Gating the
+// attribute on Run made every single-row line keyless, so the first new turn of
+// any conversation on screen prepended a duplicate line instead of bumping the
+// one already there.
+//
+// Only a streamed, session-pinned request can ever share a line (see
+// foldRequestLines), so only those carry a key. An unpinned or non-streamed row
+// gets none and can never be folded into a line it does not belong to.
+func lineAttr(row requestRowView) string {
+	if !row.Stream || row.SessionKey == "" {
+		return ""
+	}
+	return lineKeyAttr(requestLineKey(row.RequestRow))
+}
+
+// foldRequestLines collapses the page's rows into lines: one per group, in the
+// order each group's *newest* row appears.
+//
+// A group becomes a collapsed line only when it repeats something that should be
+// folded away, which is a narrow condition on purpose:
+//
+//   - it must hold more than one row (nothing to collapse otherwise), and
+//   - every row in it must be a streamed request. This is the user's own rule —
+//     "just the streams" — and it is why stream is in the key: a non-streamed
+//     request cannot end up inside a streamed run, and a group of non-streamed
+//     requests keeps one row per request, exactly as the list renders today.
+//
+// Grouping is done over the rows of the page, so the count is "how many rows on
+// this page", not the conversation's true total. That is a limit of folding a
+// page rather than querying the store, and the template says so rather than
+// letting the number read as a total (the same rule the capped-list note
+// follows).
+func foldRequestLines(rows []requestRowView) []requestLineView {
+	lines := make([]requestLineView, 0, len(rows))
+	index := make(map[string]int, len(rows))
+
+	for _, row := range rows {
+		key := requestLineKey(row.RequestRow)
+		i, seen := index[key]
+		if !seen {
+			index[key] = len(lines)
+			lines = append(lines, requestLineView{
+				Key:  key,
+				Attr: lineAttr(row),
+				Head: row,
+				Rows: []requestRowView{row},
+			})
+			continue
+		}
+		lines[i].Rows = append(lines[i].Rows, row)
+	}
+
+	for i := range lines {
+		lines[i].Count = len(lines[i].Rows)
+		lines[i].Run = lines[i].Count > 1 && allStreamed(lines[i].Rows)
+		if lines[i].Run {
+			lines[i].OpenHref = flatLineHref(lines[i].Head)
+		}
+	}
+
+	// A group that does not fold expands back into one line per row, in page
+	// order.
+	//
+	// This is not a formatting detail. A non-collapsed group of several rows is a
+	// group by *identity* only — a non-streamed request, or one unpinned row — and
+	// rendering just its head would hide every other row in it, which is the exact
+	// failure this whole feature exists to undo. "Not a run" therefore has to mean
+	// "one line per request", which is what the list rendered before grouping
+	// existed.
+	out := make([]requestLineView, 0, len(lines))
+	for _, line := range lines {
+		if line.Run {
+			out = append(out, line)
+			continue
+		}
+		for _, row := range line.Rows {
+			out = append(out, requestLineView{
+				Key:  line.Key,
+				Attr: lineAttr(row),
+				Head: row,
+				Rows: []requestRowView{row},
+				// Count stays 1 and Run stays false: one line, one request.
+				Count: 1,
+			})
+		}
+	}
+	return out
+}
+
+// allStreamed reports whether every row of a group is a streamed request, which
+// is what makes the group a candidate for collapsing.
+func allStreamed(rows []requestRowView) bool {
+	for _, row := range rows {
+		if !row.Stream {
+			return false
+		}
+	}
+	return true
+}
+
+// flatLineHref is the flat view of one line's requests: the same list with
+// grouping off, narrowed to the group's own routing facts.
+//
+// It filters on the parameters the list actually supports. `model` is not one of
+// them, so a conversation that switched model inside one line opens slightly
+// wider than the line — the alternative is a link that fetches nothing, and a
+// link that over-shows while the reader can see the model column is the honest
+// error of the two. The count is only ever a link target, never a claim about
+// exactly what will appear.
+func flatLineHref(head requestRowView) string {
+	q := url.Values{}
+	q.Set("flat", "1")
+	if head.SessionKey != "" {
+		q.Set("session", head.SessionKey)
+	} else {
+		// No session to narrow by: the flat list is the only view that can
+		// show an unpinned row at all.
+		q.Set("no_session", "1")
+	}
+	if head.Provider != "" {
+		q.Set("provider", head.Provider)
+	}
+	if head.AliasUsed != "" {
+		q.Set("alias", head.AliasUsed)
+	}
+	if head.StatusCode != 0 {
+		q.Set("status", strconv.FormatInt(head.StatusCode, 10))
+	}
+	if head.RequestKind != "" {
+		q.Set("request_kind", head.RequestKind)
+	}
+	return "/admin/ui/requests?" + q.Encode()
+}
+
+// flatToggleHref is the "every request" / "grouped" switch: the current filter
+// set with grouping flipped, so turning it on keeps the window the reader was
+// looking at. It is a plain URL for the same reason every other filter is —
+// the view a reader is looking at is the address bar, so it can be reloaded,
+// bookmarked and shared.
+func flatToggleHref(q url.Values, flat bool) string {
+	out := url.Values{}
+	for k, vs := range q {
+		if k == "flat" || k == "after" {
+			continue
+		}
+		for _, v := range vs {
+			out.Add(k, v)
+		}
+	}
+	if !flat {
+		out.Set("flat", "1")
+	}
+	if len(out) == 0 {
+		return "/admin/ui/requests"
+	}
+	return "/admin/ui/requests?" + out.Encode()
+}
+
 // rowsView is what the request table renders. It is carried by the page and by
 // the htmx fragment alike, so a swapped table and a loaded page cannot
 // disagree about the rows, the pager, or the filter state.
 type rowsView struct {
-	Rows    []requestRowView
+	// Rows is the page's rows as the store returned them, newest first, one
+	// per request. It is what Flat mode renders and what the live tail's
+	// template keeps its `data-id` on — a request is a row there.
+	Rows []requestRowView
+
+	// Lines is the same rows collapsed into one line per "same event happening
+	// again" — see foldRequestLines. It is what the default view renders.
+	Lines []requestLineView
+
+	// Flat turns grouping off: every request gets its own row, exactly as the
+	// list rendered before grouping existed. It is a real query parameter
+	// (?flat=1) rather than a client-side toggle, so the view is shareable and
+	// the count's own link can open the constituents in place.
+	Flat bool
+
+	// FlatHref and GroupedHref are the two halves of that switch, carrying the
+	// current filters so flipping it keeps the window.
+	FlatHref    string
+	GroupedHref string
+
+	// RunsOnPage counts the collapsed lines, so the page can state what it
+	// folded rather than leaving the reader to wonder where rows went.
+	RunsOnPage int
+
 	More    bool
 	MoreURL string
 	F       requestFilterView
@@ -146,6 +461,7 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 		LimitRaw:   q.Get("limit"),
 		KindRaw:    q.Get("kind"),
 		ReqKindRaw: q.Get("request_kind"),
+		Flat:       q.Has("flat"),
 	}
 
 	f := store.RequestFilter{
@@ -203,7 +519,18 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 
 	view := requestsView{viewBase: h.base("Requests"), rowsView: rowsView{F: fv}}
 
+	// Default-list read: the page renders Lines, which fold Rows. Two readers
+	// need the full five-hundred, so they keep the plain fetch:
+	//
+	//   - ?flat=1, which renders one row per request and would otherwise be a
+	//     lie about the store ("every completed request") the moment a page
+	//     needed more rows than were fetched to fill its lines;
+	//   - a classifier/counts-style selection (kind=all or an explicit kind),
+	//     where a line's count is itself the thing being studied.
 	if h.reader != nil {
+		if fv.Flat || f.Kind != "client" {
+			f.Limit = maxRequestRows
+		}
 		rows, err := h.reader.ListRequests(r.Context(), f)
 		if err != nil {
 			h.logger.LogError(r.Context(), "error", err,
@@ -222,6 +549,26 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 		view.MoreURL = moreURL(q, rows, f.Limit)
 		view.More = view.MoreURL != ""
 		view.Tail = tailFor(q, rows)
+	}
+
+	// Grouping is applied after the tail's state, not before: the tail follows
+	// the *rows*, and a poll's payload is rows (see TailHandler). A grouped view
+	// therefore shows half of what its live control reports until the tail grows
+	// the same folding — stated in the README and in the button's own title
+	// rather than left for the reader to work out.
+	view.FlatHref = flatToggleHref(q, true)
+	view.GroupedHref = flatToggleHref(q, false)
+	// The render mode travels with the rows it describes. Leaving this unset made
+	// Flat mode render the *lines* template with no lines — an empty table that
+	// looked like a store with no traffic.
+	view.Flat = fv.Flat
+	if !fv.Flat {
+		view.Lines = foldRequestLines(view.Rows)
+		for _, line := range view.Lines {
+			if line.Run {
+				view.RunsOnPage++
+			}
+		}
 	}
 
 	h.render(w, r, "requests", "req-rows", view)
@@ -256,9 +603,15 @@ func tailFor(q url.Values, rows []store.RequestRow) tailView {
 // tailFilterQuery renders the filter set the tail should follow, excluding the
 // paging cursor — the tail is watching the list, not a page of it — and including
 // the window so the tail's `since` does not drift away from the list's.
+//
+// `flat` is included because it is not a filter but a *rendering mode*, and the
+// tail has to follow the mode of the table it appends to: in a grouped list the
+// client places a polled row into an existing line, and in a flat one it prepends
+// a row. A tail that assumed the wrong mode would either duplicate a line or
+// scatter rows.
 func tailFilterQuery(q url.Values) string {
 	out := url.Values{}
-	for _, k := range []string{"since", "provider", "alias", "status", "session", "no_session", "errors", "kind"} {
+	for _, k := range []string{"since", "provider", "alias", "status", "session", "no_session", "errors", "kind", "flat"} {
 		if v := q.Get(k); v != "" || (k == "errors" || k == "no_session") && q.Has(k) {
 			out.Set(k, v)
 		}

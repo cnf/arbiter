@@ -1468,6 +1468,61 @@ The tail is only offered on the newest page. On a later page the newest row is n
 on screen, so "everything after what you are showing" would mean starting the view
 from the middle of history; the control is simply absent there.
 
+**The tail follows the table's mode.** In the grouped list (below) a polled row is
+placed by its group: one that matches a line already on screen bumps that line's
+count and moves it to the top, and one that matches nothing becomes a line of its
+own. The server sends each row's group with the row, computed by the same function
+that folded the page, so the two cannot disagree about what a group is. In Flat
+mode every row is prepended as before. The mode travels on the tail's own query
+string, so a flat list gets a flat tail.
+
+## Grouping: a run of streamed turns is one line
+
+`/admin/ui/requests` renders **one line per distinct thing that happened**, not one
+line per request. A streamed conversation writes a row per turn, so a working
+session filled the list with near-identical rows — measured on the live store, the
+newest 100 rows held **four** distinct lines (96 streamed turns across two
+sessions, plus four classifier calls), and the events worth seeing were scrolled
+off by the repeats. A line that stands for more than one request shows a count
+(`74×`) that is a link to the flat view of exactly those requests.
+
+**What counts as "the same thing happening again"** is the row's session plus its
+routing facts: session, provider, model, alias, status, request kind. Any change in
+those starts a new line, because each is an event the reader wants to see rather
+than a repeat to fold — a 502 among 200s is the most important row on the page, and
+a session that switched model mid-conversation is showing a re-route.
+
+**Only streamed runs fold.** A non-streamed request never joins a line with
+another: its own row is its own line, and a group of non-streamed requests renders
+one line per request exactly as the list always did.
+
+Three consequences worth stating, because each was a deliberate choice:
+
+- **There is no time window.** The gap between two turns is a tuning knob with no
+  correct value — measured merge counts climb smoothly with it (92 at 2s, 718 at
+  5s, 1721 at 15s, 2356 at 30s) — so the design has no threshold to mis-set. What
+  binds a line is identity, not proximity.
+- **A line's count is over the page, not the conversation.** Grouping folds the
+  rows that were loaded (100 by default), so `74×` means "74 rows on this page".
+  Rendering it as a total would misstate every other number beside it, so the page
+  says which it is. Flat mode and the count's own link fetch the reader's full 500
+  and render one row per request, so nothing is ever unreachable.
+- **A burst of one row per *different* session is not folded at all**, and this is
+  the requirement doing the work rather than a happy accident. An upstream outage
+  writes one failed row per conversation; measured, the 2026-09-17 burst was 31
+  sessions in one minute, nothing to fold. A time-window rule would have merged
+  1,152 cross-session pairs at 30s — that is, most of what it folded would have
+  been different conversations.
+
+**Unpinned requests never fold into each other.** A request with no session key is
+not in a conversation, so two of them have no demonstrated relationship and no
+claim of repetition holds. Their keys carry the row id, which makes each its own
+line.
+
+`?flat=1` is the whole feature's escape hatch: same filters, same window, one row
+per request. Every collapsed line's count is a link straight to it, filtered to
+that line's own conversation and status.
+
 ## Discovery: the blocks that recur
 
 The content-addressed design exists so that "find the text that appears in every

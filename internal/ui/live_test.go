@@ -38,6 +38,17 @@ func liveEvents() []store.Event {
 	return out
 }
 
+// tailHTML joins a tail response's rendered rows, so a test can assert on the
+// markup the client receives. It is one helper rather than a per-test loop so the
+// shape of a tail row (html + id + key) is decoded in exactly one place.
+func tailHTML(resp tailResponse) string {
+	var b strings.Builder
+	for _, row := range resp.Rows {
+		b.WriteString(row.HTML)
+	}
+	return b.String()
+}
+
 // TestTailFirstPollReturnsTheNewestFirstAndACursor is the endpoint's contract: no
 // cursor means "give me somewhere to start", newest-first, plus the token to
 // continue from.
@@ -54,21 +65,29 @@ func TestTailFirstPollReturnsTheNewestFirstAndACursor(t *testing.T) {
 	if resp.NewestID == 0 {
 		t.Error("the first poll reported no newest id")
 	}
-	if got := strings.Count(resp.Rows, "<tr"); got != 3 {
+	rows := tailHTML(resp)
+	if got := strings.Count(rows, "<tr"); got != 3 {
 		t.Errorf("first poll rendered %d rows, want 3", got)
 	}
 	// It must be the row markup the list uses, not a second definition.
-	if !strings.Contains(resp.Rows, `data-id="`) {
+	if !strings.Contains(rows, `data-id="`) {
 		t.Error("rendered rows carry no data-id, so the client cannot dedupe")
 	}
 	// The rows are request metadata, not content: a request row shows provider,
 	// model and status, and the bodies live on the detail page. Asserting on the
 	// metadata is asserting on what the tail is actually meant to append.
-	if !strings.Contains(resp.Rows, ">p<") && !strings.Contains(resp.Rows, ">m<") {
+	if !strings.Contains(rows, ">p<") && !strings.Contains(rows, ">m<") {
 		t.Error("rendered rows do not carry the request's provider/model")
 	}
-	if !strings.Contains(resp.Rows, "200") {
+	if !strings.Contains(rows, "200") {
 		t.Error("rendered rows do not carry the status")
+	}
+	// Each row travels with its own id as a field, which is what the client skips
+	// on rather than parsing the markup.
+	for i, row := range resp.Rows {
+		if row.ID == 0 {
+			t.Errorf("row %d carries no id", i)
+		}
 	}
 }
 
@@ -90,8 +109,8 @@ func TestTailCursorIsOpaqueAndRoundTrips(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("cursor poll status = %d", code)
 	}
-	if strings.Count(resp.Rows, "<tr") != 0 {
-		t.Errorf("polling at the cursor returned %d rows, want 0", strings.Count(resp.Rows, "<tr"))
+	if strings.Count(tailHTML(resp), "<tr") != 0 {
+		t.Errorf("polling at the cursor returned %d rows, want 0", strings.Count(tailHTML(resp), "<tr"))
 	}
 	// And nothing new means no new cursor, so the client keeps the one it has
 	// rather than overwriting it with an empty value.
@@ -148,7 +167,7 @@ func TestTailAppendsOnlyWhatArrived(t *testing.T) {
 		if code != 200 {
 			t.Fatalf("status = %d", code)
 		}
-		if strings.Count(second.Rows, "<tr") > 0 {
+		if strings.Count(tailHTML(second), "<tr") > 0 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -157,11 +176,11 @@ func TestTailAppendsOnlyWhatArrived(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	if got := strings.Count(second.Rows, "<tr"); got != 1 {
+	if got := strings.Count(tailHTML(second), "<tr"); got != 1 {
 		t.Fatalf("the second poll rendered %d rows, want just the new one", got)
 	}
 	// The new row is identifiable by the id the first poll did not include.
-	if !strings.Contains(second.Rows, `data-id="`+strconv.FormatInt(second.NewestID, 10)+`"`) {
+	if !strings.Contains(tailHTML(second), `data-id="`+strconv.FormatInt(second.NewestID, 10)+`"`) {
 		t.Errorf("the second poll's row is not the new request (newest id %d)", second.NewestID)
 	}
 	if second.NewestID <= first.NewestID {
@@ -197,18 +216,18 @@ func TestTailHonoursTheFilters(t *testing.T) {
 
 	// Rows carry provider and status, so the filters are observable on them.
 	resp, _ := tailBody(t, h, "/admin/ui/requests/tail?provider=alpha")
-	if got := strings.Count(resp.Rows, "<tr"); got != 1 {
+	if got := strings.Count(tailHTML(resp), "<tr"); got != 1 {
 		t.Errorf("provider=alpha tail rendered %d rows, want 1", got)
 	}
-	if !strings.Contains(resp.Rows, "alpha") {
+	if !strings.Contains(tailHTML(resp), "alpha") {
 		t.Error("provider=alpha tail dropped the alpha request")
 	}
 
 	resp, _ = tailBody(t, h, "/admin/ui/requests/tail?errors=1")
-	if got := strings.Count(resp.Rows, "<tr"); got != 1 {
+	if got := strings.Count(tailHTML(resp), "<tr"); got != 1 {
 		t.Errorf("errors-only tail rendered %d rows, want 1", got)
 	}
-	if !strings.Contains(resp.Rows, "500") {
+	if !strings.Contains(tailHTML(resp), "500") {
 		t.Error("errors-only tail dropped the 500")
 	}
 }
@@ -234,7 +253,7 @@ func TestTailReportsTruncation(t *testing.T) {
 	if !resp.Truncated {
 		t.Error("a poll that hit the cap did not report truncation")
 	}
-	if n := strings.Count(resp.Rows, "<tr"); n != store.MaxTailLimit {
+	if n := strings.Count(tailHTML(resp), "<tr"); n != store.MaxTailLimit {
 		t.Errorf("truncated poll rendered %d rows, want the cap %d", n, store.MaxTailLimit)
 	}
 }

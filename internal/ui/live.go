@@ -10,6 +10,30 @@ import (
 	"github.com/cnf/arbiter/internal/store"
 )
 
+// tailRow is one row in a tail response: the rendered <tr>, plus the identity
+// the client needs to know *where* that row belongs.
+//
+// It exists because a grouped view renders one line per group, so a naive tail
+// that prepends a row per poll would put two lines of the same group on screen
+// and make the table disagree with itself. The key is computed by the same
+// function that folded the page (foldRequestLines), so the server's idea of a
+// group and the client's cannot drift apart — see live.js's placement logic.
+type tailRow struct {
+	// HTML is the fully rendered <tr>, escaped by the template.
+	HTML string `json:"html"`
+
+	// ID is the row's request id, so the client can skip one it already holds
+	// (the tail's own defence against a cursor that ever slips) without parsing
+	// the markup for it.
+	ID int64 `json:"id"`
+
+	// Key is the folded group's short attribute id, or empty when the row is
+	// not a collapsible run (a non-streamed request, or the only row of its
+	// group so far). Empty means "render me as my own row", which is exactly
+	// what Flat mode and a single request want.
+	Key string `json:"key,omitempty"`
+}
+
 // tailResponse is what the live tail's endpoint returns: the rows to append, plus
 // the cursor to poll from next time.
 //
@@ -24,11 +48,12 @@ import (
 //
 // So the cursor stays an opaque base64 token (the same encoding the request list
 // already uses for paging) and travels as a JSON string, where no escaping step
-// sits between the server and the client. The rows ride along as a pre-rendered
-// HTML fragment so the row markup has exactly one definition.
+// sits between the server and the client. The rows ride along as pre-rendered
+// HTML so the row markup has exactly one definition.
 type tailResponse struct {
-	// Rows is the <tr> sequence to append, already escaped and rendered.
-	Rows string `json:"rows"`
+	// Rows is the <tr> sequence to append, already escaped and rendered, each
+	// with the group identity it belongs to.
+	Rows []tailRow `json:"rows"`
 
 	// Cursor is the opaque token for the next poll. Empty means nothing was
 	// returned, in which case the client keeps the cursor it already had.
@@ -37,6 +62,15 @@ type tailResponse struct {
 	// NewestID is the id of the newest row in this response, so the client can
 	// skip a row it already has without parsing HTML.
 	NewestID int64 `json:"newest_id"`
+
+	// NewestKey is the folded group of that newest row, so the client can tell
+	// whether the newest arrival belongs to a line already on screen (and update
+	// its count) or is a new line to prepend.
+	NewestKey string `json:"newest_key,omitempty"`
+
+	// Grouped says the receiving page is rendering folded lines, so the client
+	// must place rows by group rather than prepending them one at a time.
+	Grouped bool `json:"grouped"`
 
 	// Truncated says the poll hit its cap, so there may be more rows than were
 	// returned. A tail that silently dropped the excess would look like a quiet
@@ -128,27 +162,83 @@ func (h *Handler) TailHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// One response row per stored row, each carrying the group key of the request
+	// itself.
+	//
+	// The poll deliberately does *not* fold its own batch. Folding here answered
+	// "which group is this row in" from the batch's contents, and a poll is
+	// normally a single new turn — so it both lost rows (two requests of one
+	// group collapsed into one emitted row, which is the list hiding traffic) and
+	// returned a key relative to a batch the page never saw. The client's question
+	// is the row's own, and lineAttr answers it identically for a polled row and a
+	// page-loaded one, which is what makes the keys match.
+	//
+	// Grouped is the *page's* mode, carried on the tail's own query string (see
+	// tailFilterQuery). The tail follows the list it sits under, so a flat list
+	// gets a flat tail; a mismatch would have the client placing rows by group in
+	// a table that has none.
 	resp := tailResponse{
-		Rows:      renderTailRows(r.Context(), h, view),
-		Truncated: len(rows) == f.Limit,
+		Grouped:   !q.Has("flat"),
+		Truncated: len(rows) >= f.Limit && len(rows) > 0,
+	}
+	for _, row := range view.Rows {
+		key := ""
+		if resp.Grouped {
+			key = tailRowKey(row)
+		}
+		resp.Rows = append(resp.Rows, tailRow{
+			HTML: renderTailRow(r.Context(), h, row, key),
+			ID:   row.ID,
+			Key:  key,
+		})
 	}
 	if ts, id, ok := store.NewestCursor(rows); ok {
 		resp.Cursor = encodeCursor(ts, id)
 		resp.NewestID = id
+		for _, sent := range resp.Rows {
+			if sent.ID == id {
+				resp.NewestKey = sent.Key
+				break
+			}
+		}
 	}
 	h.writeJSON(w, r, resp)
 }
 
-// renderTailRows renders just the row sequence. A failure here is answered with
-// an empty fragment rather than a broken response: the tail's next poll retries,
-// and the alternative is one malformed row taking out the whole view.
-func renderTailRows(ctx context.Context, h *Handler, view rowsView) string {
-	var buf strings.Builder
+// tailRowKey names the group a polled row belongs to, independent of the poll's
+// own batch.
+//
+// It is the row-level `lineAttr` — the same function the page's rows are marked
+// with — rather than the folded line's key, and that is the point. A poll is
+// almost always one new turn, so answering from the folded batch would return
+// "no group" for exactly the rows the client must place, and every new turn of a
+// conversation already on screen would prepend a duplicate line instead of
+// bumping the line it belongs to.
+func tailRowKey(row requestRowView) string {
+	return lineAttr(row)
+}
+
+// renderTailRow renders one request row.
+//
+// A failure here yields an empty string rather than a broken response: the
+// tail's next poll retries, and the alternative is one malformed row taking out
+// the whole view.
+//
+// The row is rendered through the same "req-line" partial the page uses, so a
+// polled row and a page-loaded row cannot drift apart in markup. key is the
+// group the row travels with, already decided by the caller (empty in Flat
+// mode): setting it here is what lets the client find the line the row belongs
+// to, and without it a new turn of a conversation on screen could not join its
+// line and would be prepended as a duplicate. Count stays 1 and Run stays false,
+// because one polled row stands for exactly itself.
+func renderTailRow(ctx context.Context, h *Handler, row requestRowView, key string) string {
 	set, ok := h.fragments["fragments"]
 	if !ok {
 		return ""
 	}
-	if err := set.ExecuteTemplate(&buf, "req-rows-tail", view); err != nil {
+	var buf strings.Builder
+	line := requestLineView{Rows: []requestRowView{row}, Head: row, Count: 1, Attr: key}
+	if err := set.ExecuteTemplate(&buf, "req-line", line); err != nil {
 		h.logger.LogError(ctx, "error", err,
 			map[string]interface{}{"phase": "admin_ui_tail_render"})
 		return ""

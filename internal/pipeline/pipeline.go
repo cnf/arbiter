@@ -1157,6 +1157,21 @@ func (p *Pipeline) tryUpstream(ctx context.Context, route types.Route, req *type
 	candidates = append(candidates, p.fallbackRoutes(route, req)...)
 
 	var lastErr error
+
+	// The output cap the upstream should honour, resolved per candidate. The
+	// translator cannot answer this: it is a pure wire-format converter with no
+	// catalog access, and a request that arrived as OpenAI never carried a
+	// max_tokens in the first place. Left to itself it substitutes a fixed 4096
+	// for Anthropic, which silently caps every reply at 4096 tokens — the
+	// catalog's max_output_tokens is the real limit, and this is the only place
+	// that knows both.
+	//
+	// A client that DID send max_tokens keeps it: this fills a gap, it does not
+	// override an explicit instruction. The value is recomputed per candidate,
+	// since a fallback may have a different (or no) catalog row.
+	originalMaxTokens := req.MaxTokens
+	defer func() { req.MaxTokens = originalMaxTokens }()
+
 candidates:
 	for _, cand := range candidates {
 		if until, cooling := p.onCooldown(cand.Provider); cooling {
@@ -1178,6 +1193,12 @@ candidates:
 		if cand.Config.RetryMax > 0 {
 			maxAttempts = cand.Config.RetryMax + 1
 		}
+
+		// Applied per candidate, left set for the caller: on success the
+		// caller records the event from this request, and what it must record
+		// is the cap that was actually sent upstream. The deferred restore
+		// puts the caller's own value back on every return path.
+		req.MaxTokens = p.outputCapFor(cand, originalMaxTokens)
 
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			start := time.Now()
@@ -1235,6 +1256,33 @@ candidates:
 		lastErr = arbitererrors.NewUpstreamError(route.Provider, http.StatusTooManyRequests, "all candidate providers are in cooldown", nil)
 	}
 	return nil, nil, nil, types.Route{}, lastErr
+}
+
+// outputCapFor is the output-token cap to send upstream for a candidate route.
+// clientCap is what the client itself asked for (0 when it asked for nothing).
+//
+// A client-supplied cap always wins: this fills a gap, it does not override an
+// explicit instruction. With no client cap, the catalog's max_output_tokens is
+// used when the model states one — that is the model's real limit, and it is
+// what a request arriving as OpenAI never carried.
+//
+// Falling back to 0 rather than a number is deliberate. A 0 reaches the
+// translator, which substitutes its own default only for Anthropic (where the
+// field is required); an OpenAI-format upstream simply sees no cap, which is
+// the correct wire behaviour for a client that sent none. Inventing a limit
+// here would reproduce the bug this exists to fix, on a second path.
+func (p *Pipeline) outputCapFor(route types.Route, clientCap int) int {
+	if clientCap > 0 {
+		return clientCap
+	}
+	if p.costCatalog == nil {
+		return 0
+	}
+	mc, ok := p.costCatalog.Lookup(route.Provider, route.Model)
+	if !ok || mc.MaxOutputTokens == nil || *mc.MaxOutputTokens <= 0 {
+		return 0
+	}
+	return *mc.MaxOutputTokens
 }
 
 // classifyUpstreamError logs a failed upstream attempt and decides what to

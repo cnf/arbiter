@@ -142,6 +142,14 @@ func AnthropicStreamEventToNormalized(evt *AnthropicStreamEvent) *types.Normaliz
 			normalized.MessageID = evt.Message.ID
 			normalized.MessageModel = evt.Message.Model
 			normalized.InputTokens = evt.Message.Usage.InputTokens
+			// Anthropic reports cache read/write only here, never on
+			// message_delta (whose usage carries just cumulative
+			// output_tokens) — this was the only event that could have
+			// populated NormalizedStreamEvent's cache fields, and nothing
+			// did, so every streamed Claude row recorded zero cache usage
+			// even when the upstream cached the prompt.
+			normalized.CacheReadTokens = evt.Message.Usage.CacheReadInputTokens
+			normalized.CacheWriteTokens = evt.Message.Usage.CacheCreationInputTokens
 		}
 
 	case "content_block_start":
@@ -387,7 +395,11 @@ func NormalizedToAnthropicStreamEvent(evt *types.NormalizedStreamEvent) *Anthrop
 			// `"content":null`, and a client that appends its blocks onto this
 			// array hits `undefined` on the first push.
 			Content: []types.AnthropicContent{},
-			Usage:   types.AnthropicUsage{InputTokens: evt.InputTokens},
+			Usage: types.AnthropicUsage{
+				InputTokens:              evt.InputTokens,
+				CacheReadInputTokens:     evt.CacheReadTokens,
+				CacheCreationInputTokens: evt.CacheWriteTokens,
+			},
 		}
 
 	case "content_block_start":

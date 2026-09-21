@@ -11,38 +11,9 @@
   env.LITELLM_URL = config.secretspec.secrets.LITELLM_URL or "";
   env.LITELLM_API_KEY = config.secretspec.secrets.LITELLM_API_KEY or "";
 
-  claude.code = {
-    enable = true;
-
-    hooks = {
-      notifications = {
-        enable = true;
-        name = "Log Claude notifications";
-        hookType = "Notification";
-        command = ''notify-send -a claude -i /home/cnf/.nix-profile/share/icons/hicolor/256x256/apps/claude-desktop.png "Claude" "Sent a notification"'';
-      };
-      PermissionRequest = {
-        enable = true;
-        name = "Permission Request";
-        hookType = "PermissionRequest";
-        command = ''notify-send -a claude -i /home/cnf/.nix-profile/share/icons/hicolor/256x256/apps/claude-desktop.png "Claude" "Needs Permission"'';
-      };
-    };
-
-    mcpServers = {
-      devenv = {
-        type = "stdio";
-        command = "devenv";
-        args = [ "mcp" ];
-        env = {
-          DEVENV_ROOT = config.devenv.root;
-        };
-      };
-    };
-  };
-
   packages = [
     pkgs.git
+    pkgs.gh
     pkgs.gitleaks
     pkgs.httpie
     pkgs.go
@@ -50,6 +21,7 @@
     pkgs.gopls
     pkgs.gotools
     pkgs.golangci-lint
+    pkgs.sqlite
     pkgs.logdy
   ];
 
@@ -94,6 +66,12 @@
       http --check-status -S POST :8080/chat/completions model="mock-llm" messages[0]["role"]="user" messages[0]["content"]="what color is the sky?" stream:=true
 
     '';
+    make.exec = ''
+      GOOS=linux GOARCH=amd64 go build -o build/linux/ ./...
+
+      GOOS=darwin GOARCH=arm64 go build -o build/osx/ ./...
+
+    '';
   };
 
 
@@ -125,10 +103,12 @@
 #    };
   };
 
+  tasks."devenv:git-hooks:run".before = lib.mkForce [];
+  tasks."devenv:git-hooks:run".after = lib.mkForce [];
   tasks = {
     "arbiter:stop" = {
       exec = "devenv processes down";
-      before = [ "devenv:enterTest" ];
+      #before = [ "devenv:enterTest" ];
     };
   };
 

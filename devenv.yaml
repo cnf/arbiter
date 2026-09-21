@@ -15,5 +15,10 @@ inputs:
     url: github:NixOS/nixpkgs/nixpkgs-unstable
 secretspec:
   enable: true
-  provider: keyring  # keyring, dotenv, env, 1password, lastpass
+  # file:// rather than keyring: a container has no D-Bus session bus and no
+  # /run/user, so the Secret Service keyring cannot exist, and devenv aborts
+  # the whole shell ("Keyring error: No default store has been set") before it
+  # evaluates anything. The file provider needs no daemon. Values live under
+  # .secrets/ — gitignored, see .gitignore.
+  provider: "file://./.secrets"   # keyring, dotenv, env, 1password, lastpass
   profile: default   # profile from secretspec.toml

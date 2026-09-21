@@ -24,6 +24,7 @@ vendor/
 .devenv
 .devenv.flake.nix
 .dirlocals
+.pre-commit-config.yaml
 
 # IDE
 .vscode/
@@ -62,3 +63,8 @@ build/
 # replaced — they belong on disk, not in git. `sources:` in the mapping file
 # points at paths in here.
 support/downloads/
+
+# secretspec's file-provider store (see devenv.yaml). Plaintext secrets —
+# never commit. `keyring://` (the previous provider) kept them in a daemon
+# outside the tree; the file provider has to put them somewhere.
+.secrets/

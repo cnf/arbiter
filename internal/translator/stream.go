@@ -29,7 +29,7 @@ type AnthropicStreamMessage struct {
 }
 
 type AnthropicStreamDelta struct {
-	Type  string `json:"type"` // "text_delta", "thinking_delta", "input_json_delta", "message_delta"
+	Type  string `json:"type"` // "text_delta", "thinking_delta", "signature_delta", "input_json_delta", "message_delta"
 	Text  string `json:"text,omitempty"`
 	Input string `json:"input,omitempty"` // for tool_use_delta
 
@@ -112,13 +112,52 @@ func AnthropicStreamEventToNormalized(evt *AnthropicStreamEvent) *types.Normaliz
 		if evt.ContentBlock != nil {
 			normalized.BlockType = evt.ContentBlock.Type
 			normalized.BlockIndex = evt.Index
+			// A tool call's identity arrives HERE and nowhere else: Anthropic
+			// opens the block with id and name, then streams the arguments as
+			// input_json_delta events that carry only the index. An OpenAI
+			// client needs id and name on its first tool-call fragment, and
+			// this event is that fragment — the block start is where the
+			// identity is announced on both wires, so it is carried here
+			// rather than re-derived downstream.
+			if evt.ContentBlock.Type == "tool_use" {
+				normalized.ToolCallID = evt.ContentBlock.ID
+				normalized.ToolCallName = evt.ContentBlock.Name
+				normalized.ToolCallIndex = evt.Index
+			}
+			// A text block's opening text (Anthropic sends it empty in
+			// practice) is content like any other; dropping it would lose the
+			// first characters of a reply that used the field.
+			normalized.TextDelta = evt.ContentBlock.Text
 		}
 
 	case "content_block_delta":
 		if evt.Delta != nil {
 			normalized.BlockIndex = evt.Index
-			normalized.DeltaType = evt.Delta.Type
 			normalized.TextDelta = evt.Delta.Text
+
+			// Which block index this delta belongs to is only known from the
+			// content_block_start that opened it — a tool_use block is opened
+			// at its own index and then streamed as input_json_delta, whose
+			// event carries that same index. The index is authoritative as
+			// sent; evt.Index is it.
+			switch evt.Delta.Type {
+			case "thinking_delta":
+				normalized.DeltaType = "reasoning_delta"
+				normalized.Reasoning = evt.Delta.Thinking
+			case "input_json_delta":
+				normalized.DeltaType = "tool_use_delta"
+				normalized.ToolCallIndex = evt.Index
+				normalized.ToolCallArgs = evt.Delta.PartialJSON
+			case "signature_delta":
+				// Anthropic's thinking-block signature. It has no OpenAI
+				// equivalent and is not content: an OpenAI client cannot
+				// replay a thinking block, so forwarding it would put an
+				// unknown field on the wire for nothing. Dropped deliberately,
+				// classified rather than falling through to an empty chunk.
+				return nil
+			default:
+				normalized.DeltaType = evt.Delta.Type
+			}
 		}
 
 	case "message_delta":
@@ -295,6 +334,18 @@ func NormalizedToAnthropicStreamEvent(evt *types.NormalizedStreamEvent) *Anthrop
 	case "content_block_start":
 		anthropic.Index = evt.BlockIndex
 		anthropic.ContentBlock = &types.AnthropicContent{Type: evt.BlockType}
+		// A tool_use block is announced with its id and name here and nowhere
+		// else — the input_json_delta events that follow carry only argument
+		// fragments. Omitting them leaves an Anthropic client with a tool call
+		// it cannot name or answer.
+		if evt.BlockType == "tool_use" {
+			anthropic.Index = evt.ToolCallIndex
+			anthropic.ContentBlock.ID = evt.ToolCallID
+			anthropic.ContentBlock.Name = evt.ToolCallName
+		}
+		if evt.TextDelta != "" {
+			anthropic.ContentBlock.Text = evt.TextDelta
+		}
 
 	case "content_block_delta":
 		anthropic.Index = evt.BlockIndex
@@ -365,22 +416,81 @@ func NormalizedToOpenAIStreamEvent(evt *types.NormalizedStreamEvent, messageID s
 	case "message_start":
 		openai.Choices[0].Delta.Role = "assistant"
 
+	case "content_block_start":
+		// OpenAI has no block-start event, but this is where a tool call's
+		// identity is announced, so it doubles as the first tool-call
+		// fragment: id, type and name, with arguments to follow on the
+		// input_json_delta events. Dropping this event left the client with
+		// argument fragments for a tool it could not name — and, since an
+		// OpenAI client keys its calls by index, no call to attach them to.
+		if evt.BlockType == "tool_use" {
+			openai.Choices[0].Index = evt.ToolCallIndex
+			openai.Choices[0].Delta.ToolCalls = []OpenAIStreamToolCall{{
+				Index:    evt.ToolCallIndex,
+				ID:       evt.ToolCallID,
+				Type:     "function",
+				Function: OpenAIStreamToolCallFunc{Name: evt.ToolCallName},
+			}}
+		} else if evt.TextDelta != "" {
+			// A text block whose opening chunk already carries text.
+			openai.Choices[0].Delta.Content = evt.TextDelta
+		} else {
+			// A block opening with nothing on it (the usual case for text:
+			// Anthropic sends the text in the deltas). OpenAI clients have no
+			// block concept, so an empty chunk here is pure noise on the wire
+			// and is dropped rather than emitted.
+			return nil
+		}
+
+	case "content_block_stop":
+		// Anthropic's block terminator. OpenAI has no equivalent — the
+		// content_block_delta carves the same information into the client's
+		// own shape — so it is dropped deliberately. Falling through emitted
+		// a well-formed chunk carrying nothing on every block of every
+		// streamed reply.
+		return nil
+
 	case "content_block_delta":
 		switch evt.DeltaType {
 		case "text_delta":
 			openai.Choices[0].Delta.Content = evt.TextDelta
 		case "reasoning_delta":
 			// Relayed under the field OpenRouter-family clients expect, so an
-			// agent CLI's thinking trace survives the proxy.
+			// agent CLI's thinking trace survives the proxy. A Claude
+			// thinking_delta reaches here as a reasoning_delta (the inbound
+			// parser renames it), so this arm is what stops a thinking reply
+			// from arriving as a stream of empty chunks.
+			openai.Choices[0].Delta.ReasoningContent = evt.Reasoning
+		case "thinking_delta":
+			// The Anthropic name, for a reasoning delta that reached the
+			// normalized type without being renamed. Without this arm the
+			// delta falls through and the client gets a chunk carrying
+			// nothing — the exact shape that reads as an empty reply.
 			openai.Choices[0].Delta.ReasoningContent = evt.Reasoning
 		case "tool_use_delta":
 			// One fragment per chunk, exactly as the upstream sent it: id and
 			// name on the first, a slice of the arguments JSON on each. The
 			// client concatenates arguments by index — reassembling here would
 			// delay every call until the whole stream had been buffered.
+			//
+			// The tool-call index is Anthropic's content-block index (the
+			// inbound parser carries it through). It is distinct and stable
+			// per call, which is all the client's concatenation contract
+			// needs; the choice index is left where it was.
 			openai.Choices[0].Delta.ToolCalls = []OpenAIStreamToolCall{{
 				Index: evt.ToolCallIndex,
 				ID:    evt.ToolCallID,
+				Type:  "function",
+				Function: OpenAIStreamToolCallFunc{
+					Name:      evt.ToolCallName,
+					Arguments: evt.ToolCallArgs,
+				},
+			}}
+		case "input_json_delta":
+			// The Anthropic name for the same fragment, read directly off a
+			// stream that was not renamed inbound.
+			openai.Choices[0].Delta.ToolCalls = []OpenAIStreamToolCall{{
+				Index: evt.ToolCallIndex,
 				Type:  "function",
 				Function: OpenAIStreamToolCallFunc{
 					Name:      evt.ToolCallName,

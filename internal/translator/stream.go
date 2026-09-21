@@ -9,12 +9,19 @@ import (
 // --- Anthropic SSE event types ---
 
 // AnthropicStreamEvent is an event in an Anthropic SSE stream.
+//
+// Index is a pointer so that block 0 is transmitted as `"index":0` while the
+// message-level events (message_start, message_delta, message_stop) carry no
+// index field at all. Anthropic requires `index` on every content_block_*
+// event, and a plain int with omitempty silently drops it for block 0 — the
+// first block of every reply, which is where a thinking block or the opening
+// text lives.
 type AnthropicStreamEvent struct {
 	Type         string                  `json:"type"`
 	Message      *AnthropicStreamMessage `json:"message,omitempty"`
 	ContentBlock *types.AnthropicContent `json:"content_block,omitempty"`
 	Delta        *AnthropicStreamDelta   `json:"delta,omitempty"`
-	Index        int                     `json:"index,omitempty"`
+	Index        *int                    `json:"index,omitempty"`
 	Usage        *types.AnthropicUsage   `json:"usage,omitempty"`
 }
 
@@ -98,6 +105,21 @@ type OpenAIStreamToolCallFunc struct {
 
 // --- Translation from Anthropic SSE events to Normalized ---
 
+// derefIndex reads an Anthropic event's optional block index. A nil index
+// (an event that carries none) reads as 0, which is the block a client that
+// saw no index would have assumed anyway; the distinction only matters when
+// re-emitting, where a nil must stay nil.
+func derefIndex(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// intPtr returns a pointer to v, for the optional index fields on the
+// Anthropic wire types. Block 0 must be transmitted as `0`, not omitted.
+func intPtr(v int) *int { return &v }
+
 // AnthropicStreamEventToNormalized translates a single Anthropic SSE event
 // into a normalized stream event for relay to the client.
 func AnthropicStreamEventToNormalized(evt *AnthropicStreamEvent) *types.NormalizedStreamEvent {
@@ -118,7 +140,8 @@ func AnthropicStreamEventToNormalized(evt *AnthropicStreamEvent) *types.Normaliz
 	case "content_block_start":
 		if evt.ContentBlock != nil {
 			normalized.BlockType = evt.ContentBlock.Type
-			normalized.BlockIndex = evt.Index
+			blockIndex := derefIndex(evt.Index)
+			normalized.BlockIndex = blockIndex
 			// A tool call's identity arrives HERE and nowhere else: Anthropic
 			// opens the block with id and name, then streams the arguments as
 			// input_json_delta events that carry only the index. An OpenAI
@@ -129,7 +152,7 @@ func AnthropicStreamEventToNormalized(evt *AnthropicStreamEvent) *types.Normaliz
 			if evt.ContentBlock.Type == "tool_use" {
 				normalized.ToolCallID = evt.ContentBlock.ID
 				normalized.ToolCallName = evt.ContentBlock.Name
-				normalized.ToolCallIndex = evt.Index
+				normalized.ToolCallIndex = blockIndex
 			}
 			// A text block's opening text (Anthropic sends it empty in
 			// practice) is content like any other; dropping it would lose the
@@ -139,7 +162,8 @@ func AnthropicStreamEventToNormalized(evt *AnthropicStreamEvent) *types.Normaliz
 
 	case "content_block_delta":
 		if evt.Delta != nil {
-			normalized.BlockIndex = evt.Index
+			blockIndex := derefIndex(evt.Index)
+			normalized.BlockIndex = blockIndex
 			normalized.TextDelta = evt.Delta.Text
 
 			// Which block index this delta belongs to is only known from the
@@ -153,7 +177,7 @@ func AnthropicStreamEventToNormalized(evt *AnthropicStreamEvent) *types.Normaliz
 				normalized.Reasoning = evt.Delta.Thinking
 			case "input_json_delta":
 				normalized.DeltaType = "tool_use_delta"
-				normalized.ToolCallIndex = evt.Index
+				normalized.ToolCallIndex = blockIndex
 				normalized.ToolCallArgs = evt.Delta.PartialJSON
 			case "signature_delta":
 				// Anthropic's per-thinking-block signature. It is not
@@ -343,14 +367,14 @@ func NormalizedToAnthropicStreamEvent(evt *types.NormalizedStreamEvent) *Anthrop
 		}
 
 	case "content_block_start":
-		anthropic.Index = evt.BlockIndex
+		anthropic.Index = intPtr(evt.BlockIndex)
 		anthropic.ContentBlock = &types.AnthropicContent{Type: evt.BlockType}
 		// A tool_use block is announced with its id and name here and nowhere
 		// else — the input_json_delta events that follow carry only argument
 		// fragments. Omitting them leaves an Anthropic client with a tool call
 		// it cannot name or answer.
 		if evt.BlockType == "tool_use" {
-			anthropic.Index = evt.ToolCallIndex
+			anthropic.Index = intPtr(evt.ToolCallIndex)
 			anthropic.ContentBlock.ID = evt.ToolCallID
 			anthropic.ContentBlock.Name = evt.ToolCallName
 		}
@@ -358,8 +382,15 @@ func NormalizedToAnthropicStreamEvent(evt *types.NormalizedStreamEvent) *Anthrop
 			anthropic.ContentBlock.Text = evt.TextDelta
 		}
 
+	case "content_block_stop":
+		// Anthropic closes each block with its index. This event carries no
+		// delta and no content_block, so dropping it under the assumption
+		// that "there is nothing to send" leaves the client without its block
+		// terminator — the index alone is the payload.
+		anthropic.Index = intPtr(evt.BlockIndex)
+
 	case "content_block_delta":
-		anthropic.Index = evt.BlockIndex
+		anthropic.Index = intPtr(evt.BlockIndex)
 		switch evt.DeltaType {
 		case "signature_delta":
 			// Anthropic's own event, re-emitted verbatim. It has to survive
@@ -373,7 +404,7 @@ func NormalizedToAnthropicStreamEvent(evt *types.NormalizedStreamEvent) *Anthrop
 			// Partial JSON for a tool call's input, which is what Anthropic's
 			// input_json_delta carries. The upstream's arguments fragment maps
 			// across unchanged.
-			anthropic.Index = evt.ToolCallIndex
+			anthropic.Index = intPtr(evt.ToolCallIndex)
 			anthropic.Delta = &AnthropicStreamDelta{Type: "input_json_delta", PartialJSON: evt.ToolCallArgs}
 		default:
 			anthropic.Delta = &AnthropicStreamDelta{Type: evt.DeltaType}

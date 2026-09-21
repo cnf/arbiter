@@ -177,6 +177,15 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, trace
 		return
 	}
 
+	// An Anthropic stream is framed as `event: <type>` followed by
+	// `data: {...}`, and its clients dispatch on that event NAME — both
+	// official SDKs match sse.event against "message_start",
+	// "content_block_delta", etc., and silently discard any frame whose event
+	// is unset. Emitting only a data line produces a stream that parses as
+	// valid JSON and is then thrown away whole, which is what an Anthropic
+	// client saw as "didn't go through".
+	isAnthropic := format == "anthropic"
+
 	// Streamed event IDs share the request's trace ID ("chatcmpl-<traceID>"),
 	// matching the non-streaming path where the response ID is built from
 	// resp.TraceID — lets a client correlate a stream with Arbiter's logs.
@@ -194,9 +203,11 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, trace
 		// (`data: null`) — not a valid event on either wire, and enough to
 		// abort a strict client's parse mid-reply.
 		var wireEvent interface{}
-		if format == "anthropic" {
+		var eventName string
+		if isAnthropic {
 			if e := translator.NormalizedToAnthropicStreamEvent(evt); e != nil {
 				wireEvent = e
+				eventName = e.Type
 			}
 		} else {
 			if e := translator.NormalizedToOpenAIStreamEvent(evt, messageID, created); e != nil {
@@ -214,7 +225,13 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, trace
 			break
 		}
 
-		// Write SSE event
+		// Write SSE event, naming the event type first on the Anthropic wire.
+		if eventName != "" {
+			if _, err := fmt.Fprintf(w, "event: %s\n", eventName); err != nil {
+				h.logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "write_stream_event"})
+				break
+			}
+		}
 		if _, err := fmt.Fprintf(w, "data: %s\n\n", string(eventJSON)); err != nil {
 			h.logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "write_stream_event"})
 			break
@@ -222,9 +239,14 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, trace
 		flusher.Flush()
 	}
 
-	// Signal end of stream
-	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
-		h.logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "write_stream_done"})
+	// Signal end of stream. `[DONE]` is an OpenAI convention: an Anthropic
+	// client does not know it, and there is no event line to name it with,
+	// so it is written on the OpenAI wire only. An Anthropic stream ends at
+	// message_stop, which the translator has already emitted.
+	if !isAnthropic {
+		if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+			h.logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "write_stream_done"})
+		}
 	}
 	flusher.Flush()
 }

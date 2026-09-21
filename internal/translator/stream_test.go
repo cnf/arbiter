@@ -10,7 +10,7 @@ import (
 func TestAnthropicStreamEventTranslation(t *testing.T) {
 	evt := &AnthropicStreamEvent{
 		Type:  "content_block_delta",
-		Index: 0,
+		Index: intPtr(0),
 		Delta: &AnthropicStreamDelta{
 			Type: "text_delta",
 			Text: "Hello, world!",

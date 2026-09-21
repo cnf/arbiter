@@ -144,12 +144,21 @@ container has no D-Bus session bus; Claude notification hooks disabled; `gh`/`sq
 added to packages). These are the user's environment adaptations, **not part of any
 feature**. Leave them alone; stage only the files your own change touches.
 
-**Live confirmation is still missing for the classifier work.** The deployment
-(`/data/arbiter/arbiter.yaml`) has **all classifiers commented out** — done by the
-user, after the Jev burst, and *not* the cause of it. Re-enabling is the user's call
-and should not be done automatically. Consequence visible in the store: `request_kind`
-is `NULL` on **every** row, so no classifier signature (including the title patterns in
-§9) has ever been observed firing. Filed as **#32**.
+**The classifier work is deployed and running.** `/data/arbiter/arbiter.yaml` has the
+classifiers active (146 classifier rows in the store, newest minutes old) and carries
+the same three title patterns as the repo's copy — verified by loading the deployment's
+config through the real parser and compiling each pattern against the real prompts.
+
+**What is still unobserved: a non-NULL `request_kind`.** No row has one, and that is
+expected rather than a defect — **zero title-gen requests have arrived since the
+patterns were added** (newest is id 3865, 2026-09-20 20:00; ordinary traffic continues
+past 2026-09-21 06:49). The label appears on the first title request after a client
+starts a new session. Do not read the NULLs as a matching failure: check for a title
+request *after* the config first, the way this file's §4 says to check the data before
+the code.
+
+**Consequence for #3/#30/#31:** their acceptance is still live confirmation, which needs
+a fresh title request rather than a code change.
 
 ---
 
@@ -158,9 +167,10 @@ is `NULL` on **every** row, so no classifier signature (including the title patt
 Run `gh issue list` for the live list. This is the shape of it:
 
 **Blocking anything else being verifiable**
-- **#32** — deployment config: the `request-kind` classifier needs the three title
-  patterns (kept in sync with the repo's `arbiter.yaml`, §9). Gates live confirmation of
-  #3/#30/#7's work. Needs the user, not a code change.
+- **#32** — deployment config: the `request-kind` classifier's three title patterns.
+  **Done** — `/data/arbiter/arbiter.yaml` carries them and matches all three real
+  prompts (verified through the real parser). Nothing left here; what gates #3/#30/#31
+  is a fresh title request, not a config edit.
 
 **High — the visibility goal (the project's whole point)**
 - **#4** — META umbrella, "it is hard to see what is going on". Three stacked causes,
@@ -173,7 +183,8 @@ Run `gh issue list` for the live list. This is the shape of it:
   (`You are a title generator. You output ONLY a thread title.`), Hermes', and Claude
   Code CLI's, all three verified against the 79-prompt corpus. The repo's `arbiter.yaml`
   now carries all three patterns. What remains for #7 is the *label* half — the row's
-  `request_kind` — which needs #32 to be observable at all.
+  `request_kind` — which needs a fresh title request to observe, not a code change.
+  The config half is done and deployed.
 - **#28** — Anthropic prompt caching never engages (`cache_control` never set;
   483/483 Claude requests uncached).
 - **#6** — Jev decision models: `score` (Phase E), `min_confidence` (Phase D),
@@ -182,7 +193,8 @@ Run `gh issue list` for the live list. This is the shape of it:
 **Done in code, open on the board only pending live traffic — do not re-fix**
 - **#31** — classifier input (the empty-first-turn bug). Fixed in `06c32e2`, with the
   diagnosis and revert probes recorded in the issue. The only thing left is confirming
-  it against real traffic, which needs #32 first.
+  it against real traffic, which needs a fresh title request first (#32's config half is
+  done and deployed).
 
 **Medium** — #27, #26, #25, #24, #23, #22, #21, #20, #19, #18, #17, #16, #14, #13,
 #12, #11, #10, #9, #8.
@@ -310,7 +322,10 @@ SELECT length(cast(body AS TEXT)) AS len, cast(body AS TEXT)
 (a single backslash in YAML double quotes loads fine and silently never matches),
 compiles, hits its own prompt, and does **not** hit the Hermes agent prompt.
 
-**Not yet verified live:** these patterns are in the repo's `arbiter.yaml`, but the
-deployment has all classifiers commented out, so nothing has been observed actually
-matching. `request_kind` is `NULL` on every stored row for that reason. Confirming a hit
-end-to-end still needs #32.
+**Not yet observed live:** the deployment carries these same three patterns (verified by
+loading `/data/arbiter/arbiter.yaml` through the real parser and compiling each one
+against the real prompts), but no row has a non-NULL `request_kind` — because **zero
+title-gen requests have arrived since the patterns were added**. Newest title request is
+id 3865 (2026-09-20 20:00) while ordinary traffic runs past 2026-09-21 06:49. The label
+appears on the first title request after a client starts a new session; a NULL column is
+not evidence of a matching failure until that has happened.

@@ -151,6 +151,45 @@ stop event, and a start event is never emitted after a stop. Upstreams send a
 trailing usage chunk that also carries `role: "assistant"`, so deriving a start
 from role alone would emit a second `message_start` after `message_stop`.
 
+### Prompt caching on the Anthropic path
+
+Anthropic caching is opt-in per content block, so a request with no
+`cache_control` marker is a full uncached read however long the conversation is
+(an OpenAI-speaking upstream caches a prompt prefix server-side without being
+asked, which is why the two directions behaved differently before this existed).
+Arbiter marks two breakpoints on every outbound Anthropic body, and a breakpoint
+caches the prefix **ending** at it:
+
+- **the last tool definition**, when the request carries tools. Tool definitions
+  are frozen for the life of a conversation, so this is the stable prefix to
+  start a cache at.
+- **the last content block of the newest message** — the rolling breakpoint. A
+  conversation only grows at its end, so marking the newest turn makes each
+  completed turn cacheable input for the next request, which is the whole saving
+  on a long agent conversation.
+
+The **system prompt** is marked by `AnthropicSystem`'s marshaller, which emits
+the block form (`[{"type":"text","text":…,"cache_control":{"type":"ephemeral"}}]`)
+rather than a bare string. A string has nowhere to hang the marker, which is
+what kept the one part of a conversation that never changes uncacheable.
+
+Two more properties, both deliberate:
+
+- **A client's own inbound markers are replaced, not relayed.** The rolling
+  breakpoint already caches a superset of whatever the client marked earlier in
+  the same conversation, so relaying them buys no extra cache read while
+  spending breakpoints against Anthropic's limit of four. A client marking three
+  of its own plus Arbiter's two would be rejected, not cheaper.
+- **At most two markers go out**, against a limit of four.
+
+Caching being *visible* is a separate matter: the store records cache-read and
+cache-write tokens (`cache_read_tokens`, `cache_write_tokens`), but neither
+outbound usage object carries a cache breakdown back to the client today, and
+the inbound Anthropic **streaming** parser reads only `input_tokens` and
+`output_tokens`. A client therefore cannot yet see that caching is working, and
+a streamed Claude reply is recorded with zero cache tokens. Both are tracked on
+the board rather than fixed here.
+
 ## Project Structure
 
 ```

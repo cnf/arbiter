@@ -372,6 +372,22 @@ step 3 + the 4a query surface is currently greenlit.
   caller changes.
 - **Cache-read/cache-write token pricing** is not modelled in the stored
   cost, so a stored `cost_usd` is not exact for a prompt-cached call.
+- **Anthropic prompt caching — MARKED 2026-09-21.** Arbiter marks the
+  stable prefix of every outbound Anthropic body (last tool, the system prompt
+  via `AnthropicSystem`'s marshaller, and the newest turn as a rolling
+  breakpoint), so an Anthropic-speaking upstream has something to cache. What
+  remains open on that line, and neither is a marker problem:
+  - **A client cannot see caching working.** Neither outbound usage object
+    carries a cache breakdown back to the client, so a Hermes-format client
+    (OpenAI wire) sees `prompt_tokens` with no `prompt_tokens_details` at all.
+    Reportable through the store only.
+  - **A streamed Claude reply is recorded with zero cache tokens.** The inbound
+    Anthropic **streaming** parser reads `input_tokens` off `message_start` and
+    `output_tokens` off `message_delta`, and never reads the cache counters that
+    ride on the same objects — the non-streaming parser does read them. They are
+    the same two edits as the item above, in the other direction.
+  - **`AnthropicContent.Source`** remains an untyped map (nothing reads it
+    inbound yet) — unchanged by the caching work.
 - **Attachments (images / PDFs / documents) — BUILT 2026-09-18** for the OpenAI
   path, both directions, plus Anthropic *outbound*. `ContentBlock` gained an
   `attachment` type (media type + payload + filename + image flag), and

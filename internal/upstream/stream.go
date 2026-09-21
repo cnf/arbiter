@@ -136,6 +136,13 @@ func (c *HTTPClient) sendAnthropicStream(ctx context.Context, route types.Route,
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", route.Config.APIKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	// The client's own beta opt-ins, forwarded. Copied before the provider
+	// Headers loop so a static config value cannot silently win over what the
+	// client negotiated — a static beta on one route must not mask the
+	// client's, and vice versa the client's must reach upstream.
+	if req.ClientBeta != "" {
+		httpReq.Header.Set("anthropic-beta", req.ClientBeta)
+	}
 	for k, v := range route.Config.Headers {
 		httpReq.Header.Set(k, v)
 	}

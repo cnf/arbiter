@@ -38,6 +38,22 @@ type NormalizedRequest struct {
 	OriginalPayload []byte
 	TraceID         string
 	SessionKey      string // set by the pipeline after guardrails; "" if no usable session key
+
+	// Thinking and OutputEffort are the client's extended-reasoning request,
+	// carried through to an Anthropic-speaking upstream. They are pointers so
+	// "the client asked for adaptive thinking" is distinguishable from "the
+	// client said nothing", which matters on the outbound body: an absent
+	// `thinking` field and `thinking: null` are not the same request.
+	Thinking     *AnthropicThinking
+	OutputEffort string
+
+	// ClientBeta carries the client's `anthropic-beta` header to the upstream.
+	// It is a per-request opt-in for features that are gated behind it —
+	// interleaved thinking is one — so it cannot live in the provider's static
+	// Headers map: the upstream must be asked for the same betas the client
+	// asked Arbiter for, or a feature the client negotiated is silently
+	// stripped in the middle of the chain.
+	ClientBeta string
 }
 
 // Message represents a single conversation turn.
@@ -177,6 +193,31 @@ type AnthropicRequest struct {
 	Messages    []AnthropicMessage `json:"messages"`
 	Tools       []AnthropicTool    `json:"tools,omitempty"`
 	Stream      bool               `json:"stream,omitempty"`
+
+	// Thinking and OutputConfig are the client's request for extended
+	// reasoning. Claude Desktop in 3p mode and Claude Code send `thinking`
+	// ({"type":"adaptive"} — see the captured LiteLLM body) together with
+	// `output_config.effort`, and expect thinking blocks back. Omitting both
+	// from this struct meant an Anthropic client's thinking request was
+	// dropped before routing: the upstream was never asked to think, and a
+	// reply that would have carried a thinking trace came back with none.
+	Thinking     *AnthropicThinking    `json:"thinking,omitempty"`
+	OutputConfig *AnthropicOutputConfig `json:"output_config,omitempty"`
+}
+
+// AnthropicThinking is the request's extended-thinking block. Type is
+// "enabled" with an explicit BudgetTokens, or "adaptive" with neither — the
+// newer form, where the model decides. Both are carried verbatim: Arbiter
+// relays this field, it does not interpret it.
+type AnthropicThinking struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
+}
+
+// AnthropicOutputConfig carries output-shaping knobs. Only `effort` is read by
+// real clients today ("high" / "medium" / "low").
+type AnthropicOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 // AnthropicSystem is the request's top-level system prompt. Anthropic's wire

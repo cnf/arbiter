@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/cnf/arbiter/internal/classifier"
@@ -219,16 +220,20 @@ func (p *Pipeline) SetCaptureContent(on bool) {
 
 // headersContextKey is the context key WithHeaders/headersFromContext share.
 // Headers ride on ctx rather than as an Execute parameter because they are
-// pure observability metadata (attached to the stored row, like trace ID) —
-// they never influence routing, so they don't belong in the signature every
-// call site (including ~30 in tests) must pass.
+// metadata rather than routing input — attached to the stored row, like trace
+// ID. They never influence routing, so they don't belong in the signature
+// every call site (including ~30 in tests) must pass. One of them is now also
+// relayed upstream rather than only recorded (`anthropic-beta`, read below),
+// which does not change that: it is carried to the same upstream the route
+// already chose, not used to choose it.
 type headersContextKey struct{}
 
 // WithHeaders returns a derived context carrying the client's inbound
 // headers, already redacted by the caller (Arbiter's HTTP layer masks
 // credential-shaped values before this is called — the pipeline doesn't know
 // which header names are sensitive). Execute reads them back via
-// headersFromContext and attaches them to the stored request row.
+// headersFromContext, attaches them to the stored request row, and relays the
+// one header that is per-request negotiation rather than observability.
 func WithHeaders(ctx context.Context, headers map[string]string) context.Context {
 	return context.WithValue(ctx, headersContextKey{}, headers)
 }
@@ -236,6 +241,21 @@ func WithHeaders(ctx context.Context, headers map[string]string) context.Context
 func headersFromContext(ctx context.Context) map[string]string {
 	h, _ := ctx.Value(headersContextKey{}).(map[string]string)
 	return h
+}
+
+// headerValue reads a header out of a captured map, case-insensitively. HTTP
+// header names are case-insensitive, and captureHeaders preserves whatever
+// casing the client used (real clients send `anthropic-beta` lowercase, but a
+// client is free not to), so an exact-key lookup would drop the value for
+// some callers while working for others — the kind of difference that looks
+// like the client's fault rather than the proxy's.
+func headerValue(headers map[string]string, name string) string {
+	for k, v := range headers {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
 }
 
 // Execute runs the full pipeline: normalize -> pre-guardrails -> classify ->
@@ -258,6 +278,15 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		return nil, arbitererrors.NewTranslationError("pre_routing", "normalize request", err)
 	}
 	req.TraceID = traceID
+
+	// The client's beta opt-ins ride along with the request, not with the
+	// provider config: they are per-request negotiation, and an Anthropic
+	// upstream must be asked for the same betas the client asked Arbiter for.
+	// Interleaved thinking is gated behind one of these, so dropping the
+	// header silently disables the feature in the middle of the chain.
+	if headers != nil {
+		req.ClientBeta = headerValue(headers, "anthropic-beta")
+	}
 
 	// Session key is derived BEFORE pre-guardrails, from the client's own text.
 	// Deriving it after meant the key hashed whatever the system_prompt

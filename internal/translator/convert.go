@@ -155,7 +155,18 @@ func anthropicRequestToNormalized(req *types.AnthropicRequest) *types.Normalized
 		SystemPrompt: string(req.System),
 		Tools:        tools,
 		Stream:       req.Stream,
+		Thinking:     req.Thinking,
+		OutputEffort: outputEffortOf(req),
 	}
+}
+
+// outputEffortOf reads the effort knob out of a request's output_config,
+// tolerating an absent block so the caller need not nil-check.
+func outputEffortOf(req *types.AnthropicRequest) string {
+	if req.OutputConfig == nil {
+		return ""
+	}
+	return req.OutputConfig.Effort
 }
 
 // anthropicDefaultMaxTokens is used when a NormalizedRequest carries no
@@ -180,7 +191,7 @@ func normalizedToAnthropicRequest(req *types.NormalizedRequest) *types.Anthropic
 	if maxTokens <= 0 {
 		maxTokens = anthropicDefaultMaxTokens
 	}
-	return &types.AnthropicRequest{
+	out := &types.AnthropicRequest{
 		Model:       req.Model,
 		MaxTokens:   maxTokens,
 		Temperature: req.Temperature,
@@ -188,7 +199,15 @@ func normalizedToAnthropicRequest(req *types.NormalizedRequest) *types.Anthropic
 		Messages:    messages,
 		Tools:       tools,
 		Stream:      req.Stream,
+		Thinking:    req.Thinking,
 	}
+	// Only build output_config when there is an effort to send: an empty
+	// block would put `"output_config": {}` on the wire, which is a different
+	// request from omitting the field.
+	if req.OutputEffort != "" {
+		out.OutputConfig = &types.AnthropicOutputConfig{Effort: req.OutputEffort}
+	}
+	return out
 }
 
 func openAIRequestToNormalized(req *types.OpenAIRequest) *types.NormalizedRequest {

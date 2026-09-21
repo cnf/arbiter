@@ -146,8 +146,9 @@ feature**. Leave them alone; stage only the files your own change touches.
 
 **The classifier work is deployed and running.** `/data/arbiter/arbiter.yaml` has the
 classifiers active (146 classifier rows in the store, newest minutes old) and carries
-the same three title patterns as the repo's copy — verified by loading the deployment's
-config through the real parser and compiling each pattern against the real prompts.
+all three title patterns — verified by loading the deployment's config through the
+real parser and compiling each pattern against the real prompts. **Also fixed** is
+`request-kind` — its shape now uses `kind: "title"` with no axis, as it should.
 
 **What is still unobserved: a non-NULL `request_kind`.** No row has one, and that is
 expected rather than a defect — **zero title-gen requests have arrived since the
@@ -155,7 +156,7 @@ patterns were added** (newest is id 3865, 2026-09-20 20:00; ordinary traffic con
 past 2026-09-21 06:49). The label appears on the first title request after a client
 starts a new session. Do not read the NULLs as a matching failure: check for a title
 request *after* the config first, the way this file's §4 says to check the data before
-the code.
+and code.
 
 **Consequence for #3/#30/#31:** their acceptance is still live confirmation, which needs
 a fresh title request rather than a code change.
@@ -167,10 +168,7 @@ a fresh title request rather than a code change.
 Run `gh issue list` for the live list. This is the shape of it:
 
 **Blocking anything else being verifiable**
-- **#32** — deployment config: the `request-kind` classifier's three title patterns.
-  **Done** — `/data/arbiter/arbiter.yaml` carries them and matches all three real
-  prompts (verified through the real parser). Nothing left here; what gates #3/#30/#31
-  is a fresh title request, not a config edit.
+- *(none — the config half is done)*
 
 **High — the visibility goal (the project's whole point)**
 - **#4** — META umbrella, "it is hard to see what is going on". Three stacked causes,

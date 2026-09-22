@@ -12,8 +12,9 @@ Written 2026-09-20, at `develop` = `0327600`; §5 and §9 updated 2026-09-21 at
 `develop` = `6ef15bf`; §5, §6, and new §10 updated 2026-09-21 at `develop` =
 `3124670`; §6 and new §11 updated 2026-09-22 at `develop` = `f55d60d`; §6 and
 new §12 updated 2026-09-22 at `develop` = `e796405`; #43 landed. §6 and new
-§13 updated 2026-09-22 at `develop` = `84d917c`; #5 and #34 landed. Run
-`git log --oneline -1` for the truth.
+§13 updated 2026-09-22 at `develop` = `84d917c`; #5 and #34 landed. §6 and
+new §14 updated 2026-09-22 at `develop` = `f8a43d4`; #8 part 3 landed (part
+1 still open). Run `git log --oneline -1` for the truth.
 
 ---
 
@@ -171,15 +172,17 @@ a fresh title request rather than a code change.
 
 ## 6. Open work, in priority order
 
-Run `gh issue list --state open` for the live list. As of `84d917c`
-(2026-09-22b, §13), open: **#4, #8, #9, #11, #14, #17, #18, #20, #21, #22,
+Run `gh issue list --state open` for the live list. As of `f8a43d4`
+(2026-09-22c, §14), open: **#4, #8, #9, #11, #14, #17, #18, #20, #21, #22,
 #23, #24, #26, #36, #38, #40, #41**. Closed since §5/§10 were last written:
 **#27, #28, #31, #37, #39, #13, #43, #42, #5, #34** (see §11–§13).
 
 **High priority, real gaps:**
 - **#4** — META umbrella for the visibility goal. **#5** and **#34** (its
   two biggest formerly-open children) are now closed (§13); **#8/#9** are
-  still open children.
+  still open children. **#8 is now half-done** — its part 3 (visible
+  trace_id parent/child tie) shipped in `f8a43d4`; part 1 (sort by
+  arrival/request time instead of finish time) is not started (§14).
 
 **Labels worth filtering on:** `anthropic-client` marks every ticket touching
 the Anthropic-facing wire interface specifically (currently #22, #23, #36,
@@ -187,8 +190,8 @@ the Anthropic-facing wire interface specifically (currently #22, #23, #36,
 user has said he doesn't use today (he does use the Anthropic **upstream**,
 i.e. routing to Claude models — that's a different, unaffected path; see §10).
 
-**Medium/low**, no change in status: #8, #9, #11, #14, #17, #18, #20,
-#21, #22, #23, #24, #26, #36, #38, #40, #41.
+**Medium/low**, no change in status: #8 (see above — half done), #9, #11,
+#14, #17, #18, #20, #21, #22, #23, #24, #26, #36, #38, #40, #41.
 
 **#17** — Phase D (`min_confidence`) is now *unblocked* (its blocker #6
 closed, see §10) but still **unbuilt** — don't confuse unblocked with done.
@@ -597,3 +600,80 @@ open other than the #4 tracker itself.
 `develop` is 29 commits ahead of `origin/develop`, same as every session
 before this one — pushing was never asked for and PICKUP has never
 recommended it unprompted.
+
+---
+
+## 14. Session 2026-09-22c — #8 part 3 shipped (visible trace_id tie); part 1 still open
+
+**#8 is a two-part ticket; only part 3 shipped this session.** One commit,
+on `develop` (unpushed):
+
+| commit | what |
+|---|---|
+| `f8a43d4` | **#8 part 3**: a classifier row now always renders immediately adjacent to the client request it belongs to (matched on `trace_id`), regardless of which one's `ts` sorts first. Presentation only — `ts`/`latency_ms`/the `ORDER BY`/keyset paging are untouched. New `attachTraceChildren` (`internal/ui/requests.go`) groups fetched rows by `trace_id` after the existing streamed-run folding and nests each non-client row under its parent client line as a `Children` entry. Orphaned classifiers (parent not on the page) stay top-level rather than being dropped. Matches against a folded run's own head, so a classifier tied to an older, now-collapsed turn still finds its parent. `reqrow.html`'s `req-line` renders a line's `Children` *before* its own `<tr>` — the page is newest-first top-to-bottom, and the parent is fixed as chronologically first regardless of actual `ts`, so it renders lower on the page (after its children in document order). Also bundled: default kind filter changed to `"all"` (both absent `?kind=` and the literal value now mean no filter) since that's the view used day to day; `filters.html`'s select reordered so "all" is first/default. |
+
+**Not done: #8 part 1** (sort by arrival/request time instead of finish
+time) — deferred at the user's request ("do #3 first, then reevaluate"),
+not started. The ticket's own landmine still applies: `ts` is TEXT and
+keyset paging is `(ts, id) < (?, ?)`, so that part is a query/cursor-layer
+change in both `ListRequests` (`internal/store/reader.go`) and
+`ListRequestsAfter` (`internal/store/live.go`) — deliberately separate query
+sites, not just a template edit. **#8 was left OPEN on the board**, with a
+comment on the issue recording what part 3 shipped and that part 1 remains
+(`gh issue comment 8`, not `gh issue close`) — this is the first ticket in
+this repo's history updated-but-not-closed; don't read "commented" as
+"closed" for #8 specifically.
+
+**A real bug was caught and fixed mid-session, worth remembering as a
+pattern:** the first cut of the `reqrow.html` change put a line's `Children`
+*after* its own `<tr>` in document order, which — because this page is
+newest-first top-to-bottom — rendered the parent row *above* its classifier
+child, i.e. visually **as if the cause were later than the effect**, exactly
+the bug #8 exists to fix. The user caught it by reasoning through the
+top-to-bottom chronology explicitly ("chronology is bottom to top... you put
+newer next to the parent... but the parent can not be newer than the
+child"). Fixed by moving the `{{range .Children}}` call to before the
+`<tr>`. A dedicated regression test
+(`TestRequestListRendersClassifierAboveItsParent`, `internal/ui/ui_test.go`)
+was added and verified against both orderings — fails with the user's exact
+symptom when the old (broken) render order is restored, passes with the fix.
+**Lesson for future page-ordering work in this UI:** "renders first in
+markup" and "appears first chronologically" are opposite claims whenever the
+page sorts newest-first — say explicitly which one is meant, in code
+comments and in conversation, or re-derive the actual on-screen row order
+before asserting it.
+
+**State for the next session:**
+
+- `feedback.md` at repo root is **untracked, pre-existing** — untouched this
+  session; leave it alone.
+- PICKUP.md itself is **modified in the working tree** (this §14 + the
+  header line + §6 update) — commit it as its own handoff, same convention
+  as every prior session here.
+- Last verification: `devenv shell --no-tui -- bash -c 'export
+  LITELLM_URL=http://localhost:4000/v1; go build ./... && go test ./...'`
+  green, both before and after the `reqrow.html` fix. §4's test discipline
+  followed twice: `attachTraceChildren` reverted to a no-op and confirmed
+  the new grouping tests fail for the right reason before restoring; the
+  `reqrow.html` render order reverted to the (buggy) original and confirmed
+  `TestRequestListRendersClassifierAboveItsParent` reproduces the user's
+  exact symptom before restoring the fix.
+- Tests added: `internal/ui/grouping_test.go` —
+  `TestAttachTraceChildrenNestsUnderItsParent`,
+  `TestAttachTraceChildrenLeavesOrphansAtTopLevel`,
+  `TestAttachTraceChildrenMatchesAnyTurnOfAFoldedRun`. `internal/ui/ui_test.go`
+  — `TestRequestListRendersClassifierAboveItsParent`, and
+  `TestRequestListDefaultsToClientKindAndTagsOthers` updated for the new
+  default-is-"all" behavior (was default-is-"client").
+- **Effort-estimate note for whoever scopes #8 part 1 next:** user has
+  flagged (more than once, this session included) that this assistant's own
+  time estimates for this repo run high — treat "a day" style estimates
+  given in earlier sessions as upper bounds, not predictions.
+
+**Board as of this session** (`gh issue list --state open --limit 40`): 17
+open, same set as §13 — **#8 is the only status change**, and it's a partial
+completion, not a close. Priority ordering otherwise unchanged from §13.
+
+**Not done, and deliberately not started:** part 1 of #8 (above). Nothing
+pushed to origin — `develop` is 31 commits ahead of `origin/develop` as of
+`f8a43d4`.

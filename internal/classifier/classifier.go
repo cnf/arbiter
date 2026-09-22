@@ -114,6 +114,26 @@ type decisiveMatcher interface {
 	DecisiveMatch(req *types.NormalizedRequest) bool
 }
 
+// onlyIfUnsetClassifier is implemented by a model-backed classifier that must
+// not run — no upstream call, no cost — unless its axis is still empty after
+// every classifier declared before it. A narrow interface so the merge can
+// gate it without knowing the concrete type; heuristic classifiers never
+// implement it, and config validation rejects only_if_unset on them anyway.
+//
+// An axis is "set" as soon as any earlier classifier filled it with a
+// non-empty value — including an escape/"other" verdict, which fills no axis
+// and therefore leaves it unset. For a decisions classifier, which fills
+// several axes from one call, the classifier runs unless EVERY axis it fills
+// is already set: the call is cheap per axis, so it is only worth skipping
+// when every answer it could give is already known.
+type onlyIfUnsetClassifier interface {
+	gated() bool
+	// gateAxes returns the axes this classifier fills. nil means "any axis"
+	// (the llm classifier's declared axis covers it; unused today). The merge
+	// skips the classifier only when every axis in the list is already set.
+	gateAxes() []string
+}
+
 // Classify performs keyword-based classification against the last user
 // message. The intent with the most keyword hits wins; ties go to whichever
 // intent was declared first in config. Confidence is hits / (hits + 1), a
@@ -325,6 +345,24 @@ func axisScore(sig types.Signals, axis string) float64 {
 	return sig.Confidence
 }
 
+// axesAllSet reports whether every named axis has been filled by an earlier
+// classifier in this merge. merged holds the accumulated values;
+// axisConfidence tracks which axes carry a score (an axis with a recorded
+// score was filled, even when the merge later replaced the value with a
+// higher-confidence one). An empty axes list means "no axes gate this
+// classifier" — treated as not-all-set so it still runs.
+func axesAllSet(axes []string, merged *types.Signals, axisConfidence map[string]float64) bool {
+	if len(axes) == 0 {
+		return false
+	}
+	for _, axis := range axes {
+		if _, ok := axisConfidence[axis]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // Classify merges signals from all classifiers. Each scalar axis (Domain,
 // Effort, CostClass) is filled by whichever sub-classifier reported the
 // highest confidence *for that axis* — keyed per-axis, not globally, so a
@@ -346,6 +384,16 @@ func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedR
 	sawAxisConfidence := false
 
 	for _, c := range mc.classifiers {
+		// A gated classifier (only_if_unset) is skipped entirely — no call,
+		// no cost — when every axis it fills is already set by an earlier
+		// classifier. Checked before Classify so a skip leaves no trace: no
+		// signal, no ClassifierCalls entry, no record that it almost ran.
+		if g, ok := c.(onlyIfUnsetClassifier); ok && g.gated() {
+			if axesAllSet(g.gateAxes(), &merged, axisConfidence) {
+				continue
+			}
+		}
+
 		sig, err := c.Classify(ctx, req)
 		if err != nil {
 			return types.Signals{}, err

@@ -828,8 +828,10 @@ classifiers:
   - name: "domain-llm"
     type: "llm"
     axis: "domain"                      # only "domain" is built today
+    only_if_unset: true                 # skip unless the heuristic left domain empty
     config:
       alias: "cheap-classifier"         # routes the classification call — any pinned or group alias
+                                       # (or model: "provider/model" — address a declared model directly)
       labels:                           # bare names, or name -> rubric description
         code_generation: >-
           the user wants code written, modified, refactored, or reviewed —
@@ -875,7 +877,11 @@ whenever an escape label is configured.
 
 `alias` is resolved exactly the way a client-named alias is — a group alias's
 member selection and its unselected siblings (tried in order on failure) work
-the same way here as they do for real traffic. `fallback` names another
+the same way here as they do for real traffic. The alternative `model:`
+(`"provider/model"`) addresses a declared model directly, with no alias at all —
+the form a classifier uses when it is itself reached as a fallback from another
+classifier, where a client-facing alias would be wrong. Exactly one of `alias`
+or `model` must be set. `fallback` names another
 configured classifier (built first regardless of declaration order) that
 takes over completely whenever the LLM call fails outright: a timeout, an
 upstream error, or a reply that doesn't match any configured label exactly
@@ -886,6 +892,21 @@ error, so a bubbled failure here would silently kill every other axis being
 classified alongside it, not just this one — the fallback exists precisely so
 that never happens. A `fallback` naming another `"llm"` classifier is
 rejected at config load — no chained LLM fallbacks.
+
+`only_if_unset` is the *other* way a model call is avoided: where `fallback`
+handles a model call that *failed*, `only_if_unset` prevents the call from
+being *made* when it would be redundant. Declared at classifier level (not
+inside `config:`), it skips the classifier entirely — no upstream call, no
+cost, no recorded attempt — unless its axis is still empty after every
+classifier declared before it. The pattern it encodes is "cheap first, model
+only if needed": declare a heuristic before the llm classifier, and the model
+call fires only when the heuristic left the axis empty. An escape/"other"
+verdict fills no axis, so it counts as empty and the gated classifier still
+runs. The skip is per axis: a gated `domain` classifier still runs when only
+the `effort` axis was filled elsewhere. A decisions classifier, whose one call
+answers several axes, is skipped only when *every* axis it would fill is
+already set — any unanswered axis justifies the call. Only model-backed types
+may set it; a heuristic that never makes an upstream call has nothing to gate.
 
 Every call — success or failure — is recorded as its own request row, tagged
 `kind: "classifier"` (see Admin surface and access): visible on the request detail page and its
@@ -987,8 +1008,9 @@ classifiers:
     config: { keywords: { code_generation: ["write", "refactor"] } }
   - name: "routing-decisions"
     type: "decisions"
+    only_if_unset: true              # skip unless every axis it fills is still empty
     config:
-      alias: "jev"                        # routes the decision call
+      alias: "jev"                        # routes the decision call (or model: "or-decisions/~typesafe/jev-latest")
       questions:                          # ALL asked in ONE call
         domain:
           axis: "domain"                  # which Signals axis it fills
@@ -1021,9 +1043,10 @@ a vendor path change a config edit rather than a code change. Auth is the
 bearer-token convention, with the provider's own `headers` applied last like
 every other type.
 
-The alias must resolve to a provider of type `decisions`; a pinned alias naming
-an ordinary chat provider is a **config-load error**, because the alternative is
-sending a `state`/`questions` body to `/chat/completions` and failing at request
+The target — an `alias` or a `model:` — must resolve to a provider of type
+`decisions`; a pinned alias naming an ordinary chat provider is a
+**config-load error**, because the alternative is sending a
+`state`/`questions` body to `/chat/completions` and failing at request
 time.
 
 **`escape` is sent under its own name.** It is already one of the `labels`, so

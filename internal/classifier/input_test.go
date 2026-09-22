@@ -170,13 +170,13 @@ func TestDecisionsClassifierCapsSentState(t *testing.T) {
 		testProvider: decisionReply(map[string]types.DecisionAnswer{"domain": choice("chat", 0.9, nil)}),
 	}}
 	c := NewDecisionsClassifierFull(
-		"domain-decisions", decisionsResolver("jev", testProvider), "jev",
+		"domain-decisions", decisionsResolver("jev", testProvider), &Target{Alias: "jev"},
 		client, map[string]types.ProviderConfig{testProvider: decisionsProvider(testProvider)},
 		[]DecisionQuestionConfig{{
 			Name: "domain", Axis: AxisDomain, Type: types.DecisionChoice,
 			Labels: domainLabels(), Escape: "none",
 		}},
-		NewHeuristicClassifier("fb", AxisDomain, nil), 5*time.Second, 64,
+		NewHeuristicClassifier("fb", AxisDomain, nil), 5*time.Second, 64, false,
 	)
 
 	huge := strings.Repeat("x", 50000)
@@ -205,7 +205,7 @@ func TestLLMClassifierSkipsCallWhenNothingToClassify(t *testing.T) {
 	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{
 		"primary": reply("chat"),
 	}}
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
 
 	req := &types.NormalizedRequest{
 		Messages: []types.Message{

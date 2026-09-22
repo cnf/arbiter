@@ -10,7 +10,8 @@ behaviour.
 
 Written 2026-09-20, at `develop` = `0327600`; §5 and §9 updated 2026-09-21 at
 `develop` = `6ef15bf`; §5, §6, and new §10 updated 2026-09-21 at `develop` =
-`3124670`. Run `git log --oneline -1` for the truth.
+`3124670`; §6 and new §11 updated 2026-09-22 at `develop` = `f55d60d`. Run
+`git log --oneline -1` for the truth.
 
 ---
 
@@ -168,35 +169,36 @@ a fresh title request rather than a code change.
 
 ## 6. Open work, in priority order
 
-Run `gh issue list --state open` for the live list. As of this write, open:
-**#4, #5, #8, #9, #11, #13, #14, #17, #18, #20, #21, #22, #23, #24, #26, #27,
-#28, #31, #34, #35, #36**. Closed since §5 was last accurate: **#6, #12, #33**
-— see §10 for why, don't re-open them without reading it.
+Run `gh issue list --state open` for the live list. As of `f55d60d`
+(2026-09-22), open: **#4, #5, #8, #9, #11, #14, #17, #18, #20, #21, #22, #23,
+#24, #26, #34, #36, #38, #40, #41, #42**. Closed since §5/§10 were last
+written: **#27, #28, #31, #37, #39** (cache-tracking work, 2026-09-21b/22
+sessions) and **#13** (post-guardrail content view shipped, `f55d60d`) — see
+§11 for #31's closing evidence and #42.
 
 **High priority, real gaps:**
 - **#5** — a request that fails routing or is rejected by a guardrail gets **no
   row at all**. `recordRejected` writes content refs under
   `owner_kind="rejected"` and nothing else. Biggest single hole in the
-  visibility goal.
-- **#28** — Anthropic prompt caching never engages (`cache_control` never set;
-  483/483 Claude requests uncached).
-- **#31** — classifier input empty-first-turn bug. Fixed in `06c32e2`; the
-  issue is open only pending live confirmation, not a re-fix.
+  visibility goal. Design sketch exists in `feedback.md`'s now-historical
+  "Open" section — read it before starting, it's still the right shape.
 - **#34** — a streamed tool call leaves no record (`tool_calls_json` unwritten).
-- **#35** — Anthropic-client interface: streams were unparseable by real
-  Anthropic clients (SSE framing, block-stop index, dropped stop_reason).
-  Deliberately parked — see §10. Tagged `anthropic-client`.
+- **#42** — new, filed 2026-09-22: `type: "llm"` classifiers have no
+  config-load check that their `alias:` resolves to a concrete model, which
+  is why `domain-llm` is permanently commented out in the deployed config —
+  its natural alias (`llm-arbiter`, a force-alias) validates cleanly and then
+  fails at runtime. See §11.
 - **#4** — META umbrella for the visibility goal; #8/#9 are its still-open
   children.
 
 **Labels worth filtering on:** `anthropic-client` marks every ticket touching
-the Anthropic-facing wire interface specifically (currently #22, #23, #35,
-#36) — useful when deciding what's in/out of scope for that surface, which the
+the Anthropic-facing wire interface specifically (currently #22, #23, #36,
+#38) — useful when deciding what's in/out of scope for that surface, which the
 user has said he doesn't use today (he does use the Anthropic **upstream**,
 i.e. routing to Claude models — that's a different, unaffected path; see §10).
 
-**Medium/low**, no change in status: #8, #9, #11, #13, #14, #17, #18, #20,
-#21, #22, #23, #24, #26, #27, #36.
+**Medium/low**, no change in status: #8, #9, #11, #14, #17, #18, #20,
+#21, #22, #23, #24, #26, #36, #38, #40, #41.
 
 **#17** — Phase D (`min_confidence`) is now *unblocked* (its blocker #6
 closed, see §10) but still **unbuilt** — don't confuse unblocked with done.
@@ -424,3 +426,67 @@ Nothing above blocks a merge — tree is clean, tests green
 fixes plus test coverage, not scaffolding. Only outstanding non-blocking items:
 `readSSEStream` still has zero test coverage (pre-existing gap, not
 introduced this session), and the `ClientBeta` design note above.
+
+---
+
+## 11. Session 2026-09-22 — #31 verified closed, #42 filed, a config gap noted
+
+**#31 closed, with live evidence, not just "the commit landed."** Queried the
+store for traffic since the fix-bearing binary went live (built 21:21
+2026-09-21, containing `06c32e2`): zero rows with an empty classifier input
+(the `input ""` signature), zero recurrences of the old burst pattern
+(12+ identical `"none of the options fit"` verdicts at 0.7–1.0 confidence,
+seconds apart, one session). One post-deploy escape verdict exists (a real
+context-compaction handoff, confidence 0.41) — that's the classifier working
+correctly on genuinely ambiguous input, not the bug. Full evidence is on the
+issue's closing comment.
+
+**Also found while checking (not #31, don't conflate them):** one session made
+19 separate decision-classifier calls in ~90 minutes, all correct
+high-confidence verdicts on real content — but the session never pins, so
+every retry re-classifies from scratch. This is `#11`'s territory (title/
+subagent grouping never pinning), not a regression of #31's fix.
+
+**#42 filed: `type: "llm"` classifiers have no config-load check that their
+`alias:` resolves to a concrete model.** This is *why* `domain-llm` has sat
+commented out in the deployed config — traced and reproduced, not guessed:
+
+- `validateLLMClassifiers` (`internal/config/config.go:408`) only checks that
+  `alias:` names *some* configured alias (`c.Aliases[alias]`) — never what kind.
+- `AliasResolver.resolve()` (`internal/router/alias.go:113-119`) explicitly
+  rejects a force-alias as a resolution target **at runtime**: `"alias %q is
+  a force-alias and selects no provider/model"`.
+- The natural alias to point a "let the classifier pick a model" `llm`
+  classifier at (`llm-arbiter: { force: {} }`) is exactly a force-alias — so
+  it validates cleanly at load time and only fails once a real request drives
+  it.
+- The `decisions` classifier type already has the right shape of check —
+  `validateDecisionsAlias` (`config.go:627`) walks the alias (through group
+  members) and requires the resolved provider to be of type `"decisions"`.
+  `llm` needs the equivalent: walk-and-check that it resolves to a
+  pinned/group alias, not a force-alias.
+- Verified by loading the real deployed `arbiter.yaml` through `config.Load()`
+  directly, with `domain-llm` uncommented and pointed at `llm-arbiter`:
+  validation passes with no error. The failure is real but invisible until
+  runtime.
+
+**A related, more general gap surfaced by this (user's observation, not yet
+filed as its own ticket):** there is no way in the config for a classifier's
+`fallback:` — or anything else — to mean "give up and return an error" rather
+than "fall through to another classifier." Every fallback chain terminates in
+*something that produces an answer* (a heuristic, at minimum). That absence is
+part of why classification loops/burst patterns like #31's are possible in
+the first place: nothing in the config vocabulary can express "this input is
+bad, stop and surface a failure" as a valid terminal outcome — the system is
+structurally required to always answer. Worth a ticket of its own once scoped
+(does "error" mean skip classification and let the request through
+unclassified, or reject the request outright, or something else — needs the
+user's design input before filing).
+
+**Housekeeping:** `PICKUP.md` had a stale, truncated local rewrite in the
+working tree (67 lines, missing this file's landmines/store-cookbook/session
+sections, and factually wrong — claimed #28 open when it was closed). Restored
+from `HEAD` (this file) and updated §6/§11 in place rather than continuing
+from the truncated version. If a future session finds `PICKUP.md` unexpectedly
+short again, `git checkout HEAD -- PICKUP.md` recovers the real one — check
+`git diff HEAD -- PICKUP.md` before trusting an on-disk copy that looks thin.

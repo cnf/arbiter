@@ -104,7 +104,7 @@ var rubricLabels = []types.Label{
 // is recorded with no error.
 func TestLLMClassifierSuccessReturnsLabelAndCallInfo(t *testing.T) {
 	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("code_generation")}}
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {
@@ -125,12 +125,52 @@ func TestLLMClassifierSuccessReturnsLabelAndCallInfo(t *testing.T) {
 	}
 }
 
+// TestLLMClassifierModelTargetSendsToDeclaringProvider proves the #42
+// unblock: an llm classifier with a `model:` target (no alias) resolves the
+// model to the provider that declares it and sends the call there.
+func TestLLMClassifierModelTargetSendsToDeclaringProvider(t *testing.T) {
+	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("chat")}}
+	c := NewLLMClassifier("t", AxisDomain, nil, &Target{Model: "m-primary"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "code_generation"}, time.Second)
+
+	sig, err := c.Classify(context.Background(), testReq())
+	if err != nil {
+		t.Fatalf("Classify returned an error: %v", err)
+	}
+	if sig.Domain != "chat" {
+		t.Errorf("Domain = %q, want chat (the model's reply)", sig.Domain)
+	}
+	if len(sig.ClassifierCalls) != 1 {
+		t.Fatalf("ClassifierCalls = %v, want exactly 1", sig.ClassifierCalls)
+	}
+	call := sig.ClassifierCalls[0]
+	if call.Provider != "primary" || call.Model != "m-primary" {
+		t.Errorf("call went to %s/%s, want primary/m-primary", call.Provider, call.Model)
+	}
+}
+
+// TestLLMClassifierUnknownModelTargetFallsBack proves a model target that no
+// provider declares is a failed call (falls back), never an error — matching
+// the alias-target behaviour. Config validation catches it at load; this is
+// the runtime backstop.
+func TestLLMClassifierUnknownModelTargetFallsBack(t *testing.T) {
+	u := &fakeUpstream{}
+	c := NewLLMClassifier("t", AxisDomain, nil, &Target{Model: "does-not-exist"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
+
+	sig, err := c.Classify(context.Background(), testReq())
+	if err != nil {
+		t.Fatalf("Classify returned an error: %v", err)
+	}
+	if sig.Domain != "chat" {
+		t.Errorf("Domain = %q, want chat (the fallback's answer)", sig.Domain)
+	}
+}
+
 // TestLLMClassifierUpstreamErrorFallsBack proves a failed upstream call
 // defers entirely to the wrapped fallback, never returns an error itself,
 // and still records the failed attempt's diagnostics.
 func TestLLMClassifierUpstreamErrorFallsBack(t *testing.T) {
 	u := &fakeUpstream{errs: map[string]error{"primary": arbitererrors.NewUpstreamError("primary", 429, "rate limited", nil)}}
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {
@@ -152,7 +192,7 @@ func TestLLMClassifierUpstreamErrorFallsBack(t *testing.T) {
 // "surface ambiguity, never guess" rule the rest of the codebase follows.
 func TestLLMClassifierUnparseableReplyFallsBack(t *testing.T) {
 	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("I'm not sure, maybe coding?")}}
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {
@@ -174,7 +214,7 @@ func TestLLMClassifierTriesGroupFallbackMember(t *testing.T) {
 		errs:      map[string]error{"primary": arbitererrors.NewUpstreamError("primary", 503, "down", nil)},
 		responses: map[string]*types.NormalizedResponse{"fallback": reply("chat")},
 	}
-	c := NewLLMClassifier("t", AxisDomain, groupResolver(), "classify", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "code_generation"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, groupResolver(), &Target{Alias: "classify"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "code_generation"}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {
@@ -194,7 +234,7 @@ func TestLLMClassifierTriesGroupFallbackMember(t *testing.T) {
 // the runtime one.
 func TestLLMClassifierUnknownAliasFallsBack(t *testing.T) {
 	u := &fakeUpstream{}
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "does-not-exist", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), &Target{Alias: "does-not-exist"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {
@@ -213,7 +253,7 @@ func TestLLMClassifierUnknownAliasFallsBack(t *testing.T) {
 // contract last. The descriptions are the point of the feature — a bare label
 // gives the model no boundary.
 func TestSystemPromptCarriesRubricAndKeepsReplyContract(t *testing.T) {
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", &fakeUpstream{}, testProviders(), rubricLabels, "", "", fakeHeuristic{}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, &fakeUpstream{}, testProviders(), rubricLabels, "", "", fakeHeuristic{}, time.Second)
 	p := c.systemPrompt()
 
 	if !strings.Contains(p, "the user wants code written, modified, refactored, or reviewed.") {
@@ -242,9 +282,9 @@ func TestSystemPromptIsStableAcrossCalls(t *testing.T) {
 	shuffled := []types.Label{
 		{Name: "discovery"}, {Name: "chat"}, {Name: "code_generation"}, {Name: "reasoning"},
 	}
-	first := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", &fakeUpstream{}, testProviders(), shuffled, "", "", fakeHeuristic{}, time.Second).systemPrompt()
+	first := NewLLMClassifier("t", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, &fakeUpstream{}, testProviders(), shuffled, "", "", fakeHeuristic{}, time.Second).systemPrompt()
 	for i := 0; i < 20; i++ {
-		got := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", &fakeUpstream{}, testProviders(), shuffled, "", "", fakeHeuristic{}, time.Second).systemPrompt()
+		got := NewLLMClassifier("t", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, &fakeUpstream{}, testProviders(), shuffled, "", "", fakeHeuristic{}, time.Second).systemPrompt()
 		if got != first {
 			t.Fatalf("prompt changed between calls (iteration %d):\n%q\nvs\n%q", i, got, first)
 		}
@@ -259,7 +299,7 @@ func TestSystemPromptIsStableAcrossCalls(t *testing.T) {
 // default framing while the reply contract survives — the one part a rubric edit
 // must not be able to break.
 func TestSystemPromptUsesConfiguredInstructions(t *testing.T) {
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", &fakeUpstream{}, testProviders(), bareLabels, "", "Pick the single best category.", fakeHeuristic{}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, &fakeUpstream{}, testProviders(), bareLabels, "", "Pick the single best category.", fakeHeuristic{}, time.Second)
 	p := c.systemPrompt()
 
 	if !strings.Contains(p, "Pick the single best category.") {
@@ -283,7 +323,7 @@ func TestLLMClassifierEscapeLabelFillsNoAxis(t *testing.T) {
 		{Name: "code_generation"}, {Name: "chat"}, {Name: "none"},
 	}
 	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("none")}}
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), withEscape, "none", "", fakeHeuristic{domain: "chat"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), withEscape, "none", "", fakeHeuristic{domain: "chat"}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {
@@ -315,7 +355,7 @@ func TestLLMClassifierBareNoneIsEscapeWhenConfigured(t *testing.T) {
 		{Name: "code_generation"}, {Name: "chat"}, {Name: "unsure"},
 	}
 	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("none")}}
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), withEscape, "unsure", "", fakeHeuristic{domain: "chat"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), withEscape, "unsure", "", fakeHeuristic{domain: "chat"}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {
@@ -332,7 +372,7 @@ func TestLLMClassifierBareNoneIsEscapeWhenConfigured(t *testing.T) {
 // reply were a confident verdict.
 func TestLLMClassifierNoEscapeConfiguredStillFallsBack(t *testing.T) {
 	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("none")}}
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {
@@ -350,7 +390,7 @@ func TestLLMClassifierNoEscapeConfiguredStillFallsBack(t *testing.T) {
 // failed to describe the category.
 func TestLLMClassifierRecordsInputAndPrompt(t *testing.T) {
 	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("code_generation")}}
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), rubricLabels, "", "", fakeHeuristic{}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), rubricLabels, "", "", fakeHeuristic{}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {
@@ -373,7 +413,7 @@ func TestLLMClassifierRecordsInputAndPrompt(t *testing.T) {
 // diagnoses, and only the failed call's own prompt separates them.
 func TestLLMClassifierRecordsInputOnFailureToo(t *testing.T) {
 	u := &fakeUpstream{errs: map[string]error{"primary": arbitererrors.NewUpstreamError("primary", 503, "down", nil)}}
-	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), "classify", u, testProviders(), rubricLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
+	c := NewLLMClassifier("t", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), rubricLabels, "", "", fakeHeuristic{domain: "chat"}, time.Second)
 
 	sig, err := c.Classify(context.Background(), testReq())
 	if err != nil {

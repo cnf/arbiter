@@ -181,6 +181,17 @@ type ClassifierConfig struct {
 	// need no change.
 	Axis   string                 `yaml:"axis,omitempty"`
 	Config map[string]interface{} `yaml:"config"`
+
+	// OnlyIfUnset gates this classifier behind earlier classifiers in the
+	// merge: when true, the classifier is skipped entirely — no upstream call,
+	// no cost — unless the axis it fills (or, for a decisions classifier, any
+	// axis one of its questions fills) is still empty after every classifier
+	// declared before it. An axis counts as "unset" when no earlier
+	// classifier filled it, including an escape/"other" verdict, which fills
+	// no axis. Only meaningful on model-backed types ("llm", "decisions"),
+	// which are the expensive calls this exists to avoid; config validation
+	// rejects it on other types.
+	OnlyIfUnset bool `yaml:"only_if_unset,omitempty"`
 }
 
 // AliasConfig defines a client-facing virtual model. Exactly one of Force
@@ -307,6 +318,9 @@ func (c *Config) Validate() error {
 	if err := validateClassifierInputCap(c.Classifiers); err != nil {
 		return err
 	}
+	if err := validateOnlyIfUnset(c.Classifiers); err != nil {
+		return err
+	}
 	if err := validateUniqueNames("router", routerNames(c.Routers)); err != nil {
 		return err
 	}
@@ -379,6 +393,20 @@ var canonicalAxisSet = func() map[string]bool {
 // "decisions" classifier fills the axis its question declares, so an axis on
 // the classifier itself would be a second, silently-ignored answer to the same
 // question — rejected for the same reason.
+func validateOnlyIfUnset(cs []ClassifierConfig) error {
+	for _, cc := range cs {
+		if !cc.OnlyIfUnset {
+			continue
+		}
+		if cc.Type != "llm" && cc.Type != "decisions" {
+			return arbitererrors.NewConfigError(fmt.Sprintf(
+				"classifier %q: only_if_unset only applies to model-backed types (\"llm\", \"decisions\") — a non-model classifier makes no upstream call to avoid, and gating it would break its purpose",
+				cc.Name), nil)
+		}
+	}
+	return nil
+}
+
 func validateClassifierAxes(cs []ClassifierConfig) error {
 	for _, c := range cs {
 		if c.Axis == "" {
@@ -417,11 +445,32 @@ func (c *Config) validateLLMClassifiers() error {
 			continue
 		}
 		alias, _ := cc.Config["alias"].(string)
-		if alias == "" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"llm\" requires \"alias\"", cc.Name), nil)
+		model, _ := cc.Config["model"].(string)
+		if alias != "" && model != "" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"llm\" must set exactly one of \"alias\" or \"model\", not both", cc.Name), nil)
 		}
-		if _, ok := c.Aliases[alias]; !ok {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: alias %q is not configured", cc.Name, alias), nil)
+		if alias == "" && model == "" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"llm\" requires exactly one of \"alias\" or \"model\"", cc.Name), nil)
+		}
+		if model != "" {
+			// The model must be declared by some configured provider, or the
+			// classifier's call can only fail at request time.
+			if !c.modelDeclared(model) {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: model %q is not a declared model of any configured provider", cc.Name, model), nil)
+			}
+		}
+		if alias != "" {
+			if _, ok := c.Aliases[alias]; !ok {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: alias %q is not configured", cc.Name, alias), nil)
+			}
+			// The alias must name a pinned/group alias, never a force-alias:
+			// a force alias selects no provider/model (it only shapes routing
+			// axes), so routing the classification call through it would only
+			// fail at request time. Same class of check validateDecisionsAlias
+			// performs.
+			if a, ok := c.Aliases[alias]; ok && a.Force != nil {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: alias %q is a force-alias and selects no provider/model — a classifier needs a pinned or group alias to route its calls through", cc.Name, alias), nil)
+			}
 		}
 		// Parsed with the same function the builder uses, so a shape
 		// validation accepts cannot be one construction drops. Labels may be
@@ -501,20 +550,36 @@ func (c *Config) validateDecisionsClassifiers() error {
 			continue
 		}
 		alias, _ := cc.Config["alias"].(string)
-		if alias == "" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"decisions\" requires \"alias\"", cc.Name), nil)
+		model, _ := cc.Config["model"].(string)
+		if alias != "" && model != "" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"decisions\" must set exactly one of \"alias\" or \"model\", not both", cc.Name), nil)
 		}
-		if _, ok := c.Aliases[alias]; !ok {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: alias %q is not configured", cc.Name, alias), nil)
+		if alias == "" && model == "" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"decisions\" requires exactly one of \"alias\" or \"model\"", cc.Name), nil)
 		}
-
-		// The alias must resolve to a provider that speaks the decisions
-		// protocol. A pinned alias naming an ordinary chat provider would
-		// otherwise send a `state`/`questions` body to /chat/completions and
-		// fail at request time with a translation error, which is a far worse
-		// place to learn it than config load.
-		if err := c.validateDecisionsAlias(cc.Name, alias); err != nil {
-			return err
+		if model != "" {
+			if !c.modelDeclared(model) {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: model %q is not a declared model of any configured provider", cc.Name, model), nil)
+			}
+			// A decisions classifier's call must go to a decisions-type
+			// provider, whatever the target is — the endpoint is called
+			// directly, not as a chat completion.
+			if !c.modelOnDecisionsProvider(model) {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: model %q is not declared by a provider of type \"decisions\" — a decisions classifier needs a decisions provider (its endpoint is called directly, not as a chat completion)", cc.Name, model), nil)
+			}
+		}
+		if alias != "" {
+			if _, ok := c.Aliases[alias]; !ok {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: alias %q is not configured", cc.Name, alias), nil)
+			}
+			// The alias must resolve to a provider that speaks the decisions
+			// protocol. A pinned alias naming an ordinary chat provider would
+			// otherwise send a `state`/`questions` body to /chat/completions and
+			// fail at request time with a translation error, which is a far worse
+			// place to learn it than config load.
+			if err := c.validateDecisionsAlias(cc.Name, alias); err != nil {
+				return err
+			}
 		}
 
 		raw, ok := cc.Config["questions"]
@@ -622,6 +687,37 @@ func (c *Config) validateDecisionsClassifiers() error {
 		}
 	}
 	return nil
+}
+
+// modelDeclared reports whether model is a declared model of some configured
+// provider. Used to reject a classifier whose `model:` target could only fail
+// at request time (no provider offers it).
+func (c *Config) modelDeclared(model string) bool {
+	for _, pc := range c.Providers {
+		for _, m := range pc.Models {
+			if m == model {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// modelOnDecisionsProvider reports whether model is declared by a provider of
+// type "decisions". A decisions classifier's call goes to the decision
+// endpoint directly, not as a chat completion, so its target must be one.
+func (c *Config) modelOnDecisionsProvider(model string) bool {
+	for _, pc := range c.Providers {
+		if pc.Type != "decisions" {
+			continue
+		}
+		for _, m := range pc.Models {
+			if m == model {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // validateDecisionsAlias resolves a decisions classifier's alias and requires

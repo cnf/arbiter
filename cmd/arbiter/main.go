@@ -782,8 +782,18 @@ func buildHeuristicClassifier(cc config.ClassifierConfig, axis string) (classifi
 // (defaults inside NewLLMClassifier).
 func buildLLMClassifier(cc config.ClassifierConfig, resolver *router.AliasResolver, providers map[string]types.ProviderConfig, u upstream.Client, byName map[string]classifier.Classifier) (classifier.Classifier, error) {
 	alias, _ := cc.Config["alias"].(string)
-	if alias == "" {
-		return nil, fmt.Errorf(`"llm" classifier requires "alias"`)
+	model, _ := cc.Config["model"].(string)
+	if alias == "" && model == "" {
+		return nil, fmt.Errorf(`"llm" classifier requires exactly one of "alias" or "model"`)
+	}
+	if alias != "" && model != "" {
+		return nil, fmt.Errorf(`"llm" classifier must set exactly one of "alias" or "model", not both`)
+	}
+	var target *classifier.Target
+	if alias != "" {
+		target = &classifier.Target{Alias: alias}
+	} else {
+		target = &classifier.Target{Model: model}
 	}
 	// The same parser config validation uses, so the two cannot disagree about
 	// what a labels block means (see types.ParseLabels).
@@ -812,7 +822,7 @@ func buildLLMClassifier(cc config.ClassifierConfig, resolver *router.AliasResolv
 		}
 		timeout = d
 	}
-	return classifier.NewLLMClassifierFull(cc.Name, cc.Axis, resolver, alias, u, providers, labels, escape, instructions, fallback, timeout, maxInputChars(cc)), nil
+	return classifier.NewLLMClassifierFull(cc.Name, cc.Axis, resolver, target, u, providers, labels, escape, instructions, fallback, timeout, maxInputChars(cc), cc.OnlyIfUnset), nil
 }
 
 // buildDecisionsClassifier builds a "decisions" classifier: alias (required)
@@ -830,8 +840,18 @@ func buildLLMClassifier(cc config.ClassifierConfig, resolver *router.AliasResolv
 // the LLM classifier sorts its labels.
 func buildDecisionsClassifier(cc config.ClassifierConfig, resolver *router.AliasResolver, providers map[string]types.ProviderConfig, decisions upstream.DecisionClient, byName map[string]classifier.Classifier) (classifier.Classifier, error) {
 	alias, _ := cc.Config["alias"].(string)
-	if alias == "" {
-		return nil, fmt.Errorf(`"decisions" classifier requires "alias"`)
+	model, _ := cc.Config["model"].(string)
+	if alias == "" && model == "" {
+		return nil, fmt.Errorf(`"decisions" classifier requires exactly one of "alias" or "model"`)
+	}
+	if alias != "" && model != "" {
+		return nil, fmt.Errorf(`"decisions" classifier must set exactly one of "alias" or "model", not both`)
+	}
+	var target *classifier.Target
+	if alias != "" {
+		target = &classifier.Target{Alias: alias}
+	} else {
+		target = &classifier.Target{Model: model}
 	}
 	rawQuestions, ok := cc.Config["questions"].(map[string]interface{})
 	if !ok || len(rawQuestions) == 0 {
@@ -891,7 +911,7 @@ func buildDecisionsClassifier(cc config.ClassifierConfig, resolver *router.Alias
 		}
 		timeout = d
 	}
-	return classifier.NewDecisionsClassifierFull(cc.Name, resolver, alias, decisions, providers, questions, fallback, timeout, maxInputChars(cc)), nil
+	return classifier.NewDecisionsClassifierFull(cc.Name, resolver, target, decisions, providers, questions, fallback, timeout, maxInputChars(cc), cc.OnlyIfUnset), nil
 }
 
 // maxInputChars reads a model-backed classifier's optional `max_input_chars`.

@@ -111,7 +111,7 @@ func TestMergedClassifierPerAxisConfidence(t *testing.T) {
 // of which other classifiers ran alongside it in the same chain.
 func TestMergedClassifierPropagatesClassifierCalls(t *testing.T) {
 	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("code_generation")}}
-	llm := NewLLMClassifier("domain-llm", AxisDomain, pinnedResolver(), "classify", u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, 0)
+	llm := NewLLMClassifier("domain-llm", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, 0)
 	effort := NewHeuristicClassifier("effort", AxisEffort, map[string][]string{"hard": {"complex"}})
 	merged := NewMergedClassifier("merged", []Classifier{llm, effort})
 
@@ -219,6 +219,132 @@ func TestMergedClassifierFallsBackToOverallConfidence(t *testing.T) {
 	}
 	if sig.Domain != "code_generation" {
 		t.Fatalf("Domain = %q, want the higher overall confidence to win", sig.Domain)
+	}
+}
+
+// TestMergedClassifierGatedLLMSkippedWhenAxisSet proves the core of
+// only_if_unset: a gated llm classifier after a heuristic that already filled
+// the domain axis is NOT called — no upstream call, no cost, no ClassifierCalls
+// entry. The fake upstream counts calls, so a skip is provable, not inferred.
+func TestMergedClassifierGatedLLMSkippedWhenAxisSet(t *testing.T) {
+	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("code_generation")}}
+	llm := NewLLMClassifierFull("domain-llm", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, 0, 0, true)
+	heuristic := NewHeuristicClassifier("domain-heuristic", "", map[string][]string{"code_generation": {"write"}})
+
+	// Heuristic first (fills domain -> the gated llm must be skipped).
+	merged := NewMergedClassifier("merged", []Classifier{heuristic, llm})
+	sig, err := merged.Classify(context.Background(), req("please write a function"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.Domain != "code_generation" {
+		t.Fatalf("Domain = %q, want the heuristic's code_generation", sig.Domain)
+	}
+	if len(u.calls) != 0 {
+		t.Fatalf("gated llm classifier made %d upstream calls, want 0 (axis already set)", len(u.calls))
+	}
+	if len(sig.ClassifierCalls) != 0 {
+		t.Fatalf("ClassifierCalls = %v, want none — a skipped classifier leaves no trace", sig.ClassifierCalls)
+	}
+}
+
+// TestMergedClassifierGatedLLMRunsWhenAxisEmpty is the complement: the gated
+// llm classifier fires when the axis is still empty after earlier classifiers
+// (e.g. the heuristic didn't match this request).
+func TestMergedClassifierGatedLLMRunsWhenAxisEmpty(t *testing.T) {
+	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("code_generation")}}
+	llm := NewLLMClassifierFull("domain-llm", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, 0, 0, true)
+	heuristic := NewHeuristicClassifier("domain-heuristic", "", map[string][]string{"code_generation": {"write"}})
+
+	// Heuristic first but it does NOT match (no "write") -> axis stays empty,
+	// so the gated llm must run.
+	merged := NewMergedClassifier("merged", []Classifier{heuristic, llm})
+	sig, err := merged.Classify(context.Background(), req("what is the capital of France"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.Domain != "code_generation" {
+		t.Fatalf("Domain = %q, want the gated llm's code_generation", sig.Domain)
+	}
+	if len(u.calls) != 1 {
+		t.Fatalf("gated llm classifier made %d upstream calls, want 1 (axis was empty)", len(u.calls))
+	}
+	if len(sig.ClassifierCalls) != 1 {
+		t.Fatalf("ClassifierCalls = %v, want the one llm call", sig.ClassifierCalls)
+	}
+}
+
+// TestMergedClassifierGatedRunsWhenOnlyOtherAxisSet proves gating is per-axis:
+// a gated domain classifier must still run when an earlier classifier filled
+// only the effort axis — domain is still empty, so the call is justified.
+func TestMergedClassifierGatedRunsWhenOnlyOtherAxisSet(t *testing.T) {
+	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("code_generation")}}
+	llm := NewLLMClassifierFull("domain-llm", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, 0, 0, true)
+	effort := NewHeuristicClassifier("effort", AxisEffort, map[string][]string{"hard": {"complex"}})
+
+	merged := NewMergedClassifier("merged", []Classifier{effort, llm})
+	sig, err := merged.Classify(context.Background(), req("a complex design"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.Domain != "code_generation" {
+		t.Fatalf("Domain = %q, want the gated llm (domain still empty)", sig.Domain)
+	}
+	if sig.Effort != "hard" {
+		t.Fatalf("Effort = %q, want hard — the effort axis was set independently", sig.Effort)
+	}
+	if len(u.calls) != 1 {
+		t.Fatalf("gated llm made %d calls, want 1 (only effort was set, not domain)", len(u.calls))
+	}
+}
+
+// TestMergedClassifierGatedDecisionsSkippedWhenAllAxesSet proves a gated
+// decisions classifier (filling several axes from one call) is skipped only
+// when EVERY axis it could answer is already set.
+func TestMergedClassifierGatedDecisionsSkippedWhenAllAxesSet(t *testing.T) {
+	client := &fakeDecisionClient{responses: map[string]*types.DecisionResponse{
+		testProvider: decisionReply(map[string]types.DecisionAnswer{"domain": choice("code_generation", 0.9, nil)}),
+	}}
+	dc := NewDecisionsClassifierFull(
+		"domain-decisions", decisionsResolver("jev", testProvider), &Target{Alias: "jev"},
+		client, map[string]types.ProviderConfig{testProvider: decisionsProvider(testProvider)},
+		[]DecisionQuestionConfig{{Name: "domain", Axis: AxisDomain, Type: types.DecisionChoice, Labels: domainLabels(), Escape: "none"}},
+		fakeHeuristic{domain: "chat"}, 0, 0, true,
+	)
+	// A heuristic fills domain first -> the gated decisions classifier must be
+	// skipped (its only axis is already set).
+	heuristic := NewHeuristicClassifier("domain-heuristic", "", map[string][]string{"code_generation": {"write"}})
+	merged := NewMergedClassifier("merged", []Classifier{heuristic, dc})
+	sig, err := merged.Classify(context.Background(), req("please write a function"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.Domain != "code_generation" {
+		t.Fatalf("Domain = %q, want the heuristic's code_generation", sig.Domain)
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("gated decisions classifier made %d calls, want 0 (axis already set)", len(client.calls))
+	}
+}
+
+// TestMergedClassifierUngatedStillRuns proves the flag is opt-in: without
+// only_if_unset, an llm classifier still runs even when an earlier classifier
+// filled the same axis (the historical behavior preserved).
+func TestMergedClassifierUngatedStillRuns(t *testing.T) {
+	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("code_generation")}}
+	llm := NewLLMClassifier("domain-llm", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, 0)
+	heuristic := NewHeuristicClassifier("domain-heuristic", "", map[string][]string{"code_generation": {"write"}})
+
+	merged := NewMergedClassifier("merged", []Classifier{heuristic, llm})
+	sig, err := merged.Classify(context.Background(), req("please write a function"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(u.calls) != 1 {
+		t.Fatalf("ungated llm classifier made %d calls, want 1 (historical behavior: it always runs)", len(u.calls))
+	}
+	if sig.Domain != "code_generation" {
+		t.Fatalf("Domain = %q, want code_generation (both ran; heuristic filled it, llm confirmed)", sig.Domain)
 	}
 }
 

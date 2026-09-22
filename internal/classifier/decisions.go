@@ -35,7 +35,7 @@ import (
 type DecisionsClassifier struct {
 	name      string
 	resolver  *router.AliasResolver
-	alias     string
+	target    *Target
 	client    upstream.DecisionClient
 	providers map[string]types.ProviderConfig
 
@@ -45,6 +45,12 @@ type DecisionsClassifier struct {
 
 	fallback Classifier
 	timeout  time.Duration
+
+	// onlyIfUnset, when true, makes the merge skip this classifier — no
+	// upstream call at all — unless any axis one of its questions fills is
+	// still empty after every classifier declared before it. The gate lives
+	// here so the merge can query it without knowing the concrete type.
+	onlyIfUnset bool
 
 	// maxInputChars caps the text sent as the decision call's state, in
 	// characters. 0 means unlimited; the constructor applies the default, so
@@ -83,20 +89,20 @@ type decisionQuestion struct {
 	instructions string
 }
 
-// NewDecisionsClassifier creates a decision-model-backed classifier. alias
-// names a configured alias (pinned or group) that routes the call, resolved the
-// same way a client-named alias would be, including a group alias's member
-// selection and fallback siblings. questions is the set asked in one call;
-// fallback is used whenever the call fails outright; timeout <= 0 defaults to
-// 10s.
-func NewDecisionsClassifier(name string, resolver *router.AliasResolver, alias string, client upstream.DecisionClient, providers map[string]types.ProviderConfig, questions []DecisionQuestionConfig, fallback Classifier, timeout time.Duration) *DecisionsClassifier {
-	return NewDecisionsClassifierFull(name, resolver, alias, client, providers, questions, fallback, timeout, 0)
+// NewDecisionsClassifier creates a decision-model-backed classifier. target
+// names where the call goes — a configured alias (pinned or group) or a
+// declared provider model name, resolved the same way a client-named alias
+// would be, including a group alias's member selection and fallback siblings.
+// questions is the set asked in one call; fallback is used whenever the call
+// fails outright; timeout <= 0 defaults to 10s.
+func NewDecisionsClassifier(name string, resolver *router.AliasResolver, target *Target, client upstream.DecisionClient, providers map[string]types.ProviderConfig, questions []DecisionQuestionConfig, fallback Classifier, timeout time.Duration) *DecisionsClassifier {
+	return NewDecisionsClassifierFull(name, resolver, target, client, providers, questions, fallback, timeout, 0, false)
 }
 
 // NewDecisionsClassifierFull is NewDecisionsClassifier with an explicit input
 // cap: maxInputChars bounds the state sent to the decision endpoint (see
 // effectiveMaxInputChars — 0 takes the default, negative means unlimited).
-func NewDecisionsClassifierFull(name string, resolver *router.AliasResolver, alias string, client upstream.DecisionClient, providers map[string]types.ProviderConfig, questions []DecisionQuestionConfig, fallback Classifier, timeout time.Duration, maxInputChars int) *DecisionsClassifier {
+func NewDecisionsClassifierFull(name string, resolver *router.AliasResolver, target *Target, client upstream.DecisionClient, providers map[string]types.ProviderConfig, questions []DecisionQuestionConfig, fallback Classifier, timeout time.Duration, maxInputChars int, onlyIfUnset bool) *DecisionsClassifier {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
@@ -114,14 +120,32 @@ func NewDecisionsClassifierFull(name string, resolver *router.AliasResolver, ali
 	return &DecisionsClassifier{
 		name:          name,
 		resolver:      resolver,
-		alias:         alias,
+		target:        target,
 		client:        client,
 		providers:     providers,
 		questions:     qs,
 		fallback:      fallback,
 		timeout:       timeout,
+		onlyIfUnset:   onlyIfUnset,
 		maxInputChars: effectiveMaxInputChars(maxInputChars),
 	}
+}
+
+// gated and gateAxes implement onlyIfUnsetClassifier: the merge gates this
+// classifier behind earlier classifiers on every axis its questions fill. A
+// decisions call is one round trip for several axes, so it is only worth
+// skipping when EVERY axis it could answer is already set — otherwise the
+// remaining unanswered axis justifies the call.
+func (c *DecisionsClassifier) gated() bool { return c.onlyIfUnset }
+
+func (c *DecisionsClassifier) gateAxes() []string {
+	axes := make([]string, 0, len(c.questions))
+	for _, q := range c.questions {
+		if q.axis != "" {
+			axes = append(axes, q.axis)
+		}
+	}
+	return axes
 }
 
 // Classify asks every question in one call. A whole-call failure defers
@@ -205,7 +229,7 @@ func (c *DecisionsClassifier) runFallback(ctx context.Context, req *types.Normal
 // (nothing usable came back) and the fallback should supply every axis; call is
 // still non-nil in that case so the failure has diagnostics.
 func (c *DecisionsClassifier) tryDecide(ctx context.Context, req *types.NormalizedRequest) (verdicts []axisVerdict, call *types.ClassifierCallInfo, ok bool) {
-	if c.resolver == nil || c.alias == "" || c.client == nil || len(c.questions) == 0 {
+	if c.target == nil || c.client == nil || len(c.questions) == 0 {
 		return nil, nil, false
 	}
 
@@ -471,22 +495,9 @@ func (c *DecisionsClassifier) verdictSummary(verdicts []axisVerdict) string {
 	return "decisions classifier answered " + strings.Join(parts, ", ")
 }
 
-// candidates resolves the configured alias into a primary route plus its
-// group-fallback siblings, mirroring the same resolution a client naming this
-// alias directly would get (see router.AliasResolver).
+// candidates resolves the configured target into a primary route plus its
+// group-fallback siblings, mirroring the same resolution a client naming
+// this alias directly would get (see router.AliasResolver).
 func (c *DecisionsClassifier) candidates() ([]types.Route, error) {
-	provider, model, ok, err := c.resolver.Resolve(c.alias)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, fmt.Errorf("alias %q is not configured", c.alias)
-	}
-	cfg, ok := c.providers[provider]
-	if !ok {
-		return nil, fmt.Errorf("alias %q resolved to unconfigured provider %q", c.alias, provider)
-	}
-	primary := types.Route{Provider: provider, Model: model, Config: cfg, Rationale: fmt.Sprintf("classifier alias %q", c.alias)}
-	fallbacks := c.resolver.GroupFallbacks(c.alias, router.AliasMember{Provider: provider, Model: model})
-	return append([]types.Route{primary}, fallbacks...), nil
+	return c.target.routes(c.resolver, c.providers)
 }

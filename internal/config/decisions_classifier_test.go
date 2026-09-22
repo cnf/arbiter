@@ -69,6 +69,31 @@ classifiers:`+domainHeuristic+`
 	}
 }
 
+// only_if_unset on a decisions classifier is accepted — a decision call is
+// exactly the expensive upstream round trip the gate exists to avoid.
+func TestDecisionsClassifierAcceptsOnlyIfUnset(t *testing.T) {
+	if err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "domain-decisions"
+    type: "decisions"
+    only_if_unset: true
+    config:
+      alias: "jev"
+      questions:
+        domain:
+          axis: "domain"
+          type: "choice"
+          labels:
+            code_generation: "wants code written"
+            chat: "small talk"
+            none: "nothing fits"
+          escape: "none"
+      fallback: "domain-heuristic"
+`); err != nil {
+		t.Fatalf("Load: want only_if_unset on a decisions classifier to load, got %v", err)
+	}
+}
+
 // Several questions, several axes, one classifier — the shape Phase B exists
 // for. Each question declares its own axis, so the classifier itself declares
 // none.

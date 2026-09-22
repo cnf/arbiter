@@ -44,11 +44,26 @@ providers:
 # omitted on a "heuristic" classifier (defaults to domain, matching older
 # configs); the legacy "capability_detector" type always fills capabilities.
 #
+# `only_if_unset` (classifier-level, not inside `config:`) gates a model-backed
+# classifier: when true, the classifier is skipped — no upstream call, no cost —
+# unless its axis is still empty after every classifier declared before it. This
+# is the "expensive call runs only when the cheap ones said nothing" shape:
+# declare a heuristic first (always runs, merge decides), then the llm/decisions
+# classifier with only_if_unset, and the model call fires only when the
+# heuristic didn't fill the axis (including an escape/"other" verdict, which
+# fills nothing). Only "llm"/"decisions" may set it; the merge skip is per-axis,
+# so an only_if_unset domain classifier still runs when only the effort axis
+# was filled elsewhere.
+#
 # A `type: "llm"` classifier asks an upstream model to classify instead of
 # matching keywords. Its `config:` takes:
-#   alias:        required — a configured alias the classification call routes
-#                 through (resolved like any client-named alias, so a group
-#                 alias's fallback siblings apply to it too).
+#   alias/model:  exactly one — where the classification call goes.
+#     alias:      a configured alias (resolved like any client-named alias, so
+#                 a group alias's fallback siblings apply to it too).
+#     model:      a declared provider model name ("provider/model"), addressed
+#                 directly with no alias at all — the form a classifier uses
+#                 when it is itself reached as a fallback from another
+#                 classifier, where a client-facing alias would be wrong.
 #   labels:       required — either a list of bare names, or a map of
 #                 name -> description. The description is the category's
 #                 BOUNDARY and is the single biggest lever on accuracy: a bare
@@ -78,7 +93,8 @@ providers:
 # / Jev) typed questions instead of asking a chat model for one word. Nothing is
 # parsed, so an off-list answer is impossible, and every answer carries a real
 # probability. Its `config:` takes:
-#   alias:        required — a configured alias that must resolve to a provider
+#   alias/model:  exactly one — where the decision call goes. Same two forms as
+#                 an llm classifier's, but the target must resolve to a provider
 #                 of type "decisions" (a chat provider here is a load error).
 #   question:     required — the typed questions it asks, ALL in ONE call:
 #     <name>:
@@ -157,8 +173,9 @@ providers:
 #   - name: "domain-llm"
 #     type: "llm"
 #     axis: "domain"
+#     only_if_unset: true          # run only when the heuristic left domain empty
 #     config:
-#       alias: "cheap-claude"
+#       alias: "cheap-claude"      # or model: "claude/claude-3-haiku-20250307"
 #       labels:
 #         code_generation: >-
 #           the user wants code written, modified, refactored, or reviewed —

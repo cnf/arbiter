@@ -80,7 +80,7 @@ const testProvider = "or-decisions"
 func newTestDecisionsClassifier(t *testing.T, client *fakeDecisionClient) *DecisionsClassifier {
 	t.Helper()
 	return NewDecisionsClassifier(
-		"domain-decisions", decisionsResolver("jev", testProvider), "jev",
+		"domain-decisions", decisionsResolver("jev", testProvider), &Target{Alias: "jev"},
 		client, map[string]types.ProviderConfig{testProvider: decisionsProvider(testProvider)},
 		[]DecisionQuestionConfig{{
 			Name: "domain", Axis: AxisDomain, Type: types.DecisionChoice,
@@ -93,7 +93,7 @@ func newTestDecisionsClassifier(t *testing.T, client *fakeDecisionClient) *Decis
 // twoQuestionClassifier is the multi-axis shape Phase B exists for.
 func twoQuestionClassifier(client *fakeDecisionClient) *DecisionsClassifier {
 	return NewDecisionsClassifier(
-		"multi", decisionsResolver("jev", testProvider), "jev",
+		"multi", decisionsResolver("jev", testProvider), &Target{Alias: "jev"},
 		client, map[string]types.ProviderConfig{testProvider: decisionsProvider(testProvider)},
 		[]DecisionQuestionConfig{
 			{Name: "domain", Axis: AxisDomain, Type: types.DecisionChoice, Labels: domainLabels(), Escape: "none"},
@@ -101,6 +101,35 @@ func twoQuestionClassifier(client *fakeDecisionClient) *DecisionsClassifier {
 		},
 		NewHeuristicClassifier("fb", AxisDomain, nil), 5*time.Second,
 	)
+}
+
+// TestDecisionsClassifierModelTargetSendsToDeclaringProvider proves a
+// decisions classifier can target a declared model directly (no alias), the
+// #42 unblock that lets it sit in another classifier's fallback slot.
+func TestDecisionsClassifierModelTargetSendsToDeclaringProvider(t *testing.T) {
+	client := &fakeDecisionClient{responses: map[string]*types.DecisionResponse{
+		testProvider: decisionReply(map[string]types.DecisionAnswer{"domain": choice("chat", 0.9, nil)}),
+	}}
+	c := NewDecisionsClassifier(
+		"domain-decisions", nil, &Target{Model: "~typesafe/jev-latest"},
+		client, map[string]types.ProviderConfig{testProvider: decisionsProvider(testProvider)},
+		[]DecisionQuestionConfig{{
+			Name: "domain", Axis: AxisDomain, Type: types.DecisionChoice,
+			Labels: domainLabels(), Escape: "none",
+		}},
+		NewHeuristicClassifier("fb", AxisDomain, nil), 5*time.Second,
+	)
+
+	sig, err := c.Classify(context.Background(), testRequest())
+	if err != nil {
+		t.Fatalf("Classify returned an error: %v", err)
+	}
+	if sig.Domain != "chat" {
+		t.Errorf("Domain = %q, want chat", sig.Domain)
+	}
+	if len(client.calls) != 1 || client.calls[0] != testProvider {
+		t.Errorf("Decide called with %v, want one call to %s", client.calls, testProvider)
+	}
 }
 
 func testRequest() *types.NormalizedRequest {
@@ -222,7 +251,7 @@ func TestDecisionsClassifierAddsOtherWhenNoEscapeConfigured(t *testing.T) {
 		testProvider: decisionReply(map[string]types.DecisionAnswer{"domain": choice("other", 0.7, nil)}),
 	}}
 	c := NewDecisionsClassifier(
-		"domain-decisions", decisionsResolver("jev", testProvider), "jev",
+		"domain-decisions", decisionsResolver("jev", testProvider), &Target{Alias: "jev"},
 		client, map[string]types.ProviderConfig{testProvider: decisionsProvider(testProvider)},
 		[]DecisionQuestionConfig{{
 			Name: "domain", Axis: AxisDomain, Type: types.DecisionChoice,

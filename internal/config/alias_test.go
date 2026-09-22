@@ -477,6 +477,130 @@ func TestLLMClassifierLoads(t *testing.T) {
 	}
 }
 
+// TestLLMClassifierLoadsWithModelTarget is the #42 unblock: an llm classifier
+// may target a declared provider model name directly (no alias at all), which
+// is what lets it sit in a decisions classifier's fallback slot without
+// forcing a client-facing alias.
+func TestLLMClassifierLoadsWithModelTarget(t *testing.T) {
+	if err := loadConfig(t, baseConfig+`
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"
+    config:
+      model: "claude-3-haiku"
+      labels: ["code_generation"]
+      fallback: "domain-heuristic"
+`); err != nil {
+		t.Fatalf("Load: want an llm classifier with model target to load, got %v", err)
+	}
+}
+
+// only_if_unset is allowed on a model-backed classifier (this is the whole
+// reason it exists — an expensive upstream call that runs only when needed).
+func TestLLMClassifierAcceptsOnlyIfUnset(t *testing.T) {
+	if err := loadConfig(t, baseConfig+`
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"
+    only_if_unset: true
+    config:
+      model: "claude-3-haiku"
+      labels: ["code_generation"]
+      fallback: "domain-heuristic"
+`); err != nil {
+		t.Fatalf("Load: want only_if_unset on an llm classifier to load, got %v", err)
+	}
+}
+
+// only_if_unset on a non-model classifier is rejected: a heuristic makes no
+// upstream call to avoid, and gating it would break its purpose.
+func TestOnlyIfUnsetRejectedOnHeuristic(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    only_if_unset: true
+    config:
+      keywords: { code_generation: ["write"] }
+`)
+	if err == nil {
+		t.Fatalf("Load: want only_if_unset on a heuristic classifier to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "only_if_unset") {
+		t.Fatalf("error = %q, want it to mention only_if_unset", err)
+	}
+}
+
+func TestLLMClassifierRejectsUnknownModelTarget(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"
+    config:
+      model: "does-not-exist"
+      labels: ["code_generation"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), "not a declared model") {
+		t.Fatalf("Load: want an undeclared-model error, got %v", err)
+	}
+}
+
+func TestLLMClassifierRejectsBothAliasAndModel(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"
+    config:
+      alias: "cheap-classifier"
+      model: "claude-3-haiku"
+      labels: ["code_generation"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("Load: want an exactly-one error, got %v", err)
+	}
+}
+
+func TestLLMClassifierRejectsNoTarget(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"
+    config:
+      labels: ["code_generation"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("Load: want an exactly-one error, got %v", err)
+	}
+}
+
 func TestLLMClassifierRejectsUnknownAlias(t *testing.T) {
 	err := loadConfig(t, baseConfig+`
 classifiers:

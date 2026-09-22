@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	arbitererrors "github.com/cnf/arbiter/pkg/errors"
@@ -25,6 +26,7 @@ func TestWriteArbiterErrorMapsTransportFailureToBadGateway(t *testing.T) {
 		{"an out-of-range status becomes 502", arbitererrors.NewUpstreamError("p", 700, "weird", nil), http.StatusBadGateway},
 		{"an upstream's own status passes through", arbitererrors.NewUpstreamError("p", 429, "rate limited", nil), 429},
 		{"a guardrail keeps its status", arbitererrors.NewGuardrailError("g", 429, nil), 429},
+		{"a stop rule keeps its configured status", arbitererrors.NewStopError(406, "not like that"), 406},
 		{"an unknown error is 500", fmt.Errorf("boom"), http.StatusInternalServerError},
 	}
 	for _, tc := range cases {
@@ -33,5 +35,20 @@ func TestWriteArbiterErrorMapsTransportFailureToBadGateway(t *testing.T) {
 		if rec.Code != tc.want {
 			t.Errorf("%s: status = %d, want %d", tc.name, rec.Code, tc.want)
 		}
+	}
+}
+
+// A stop rule's message must reach the client body verbatim — it is the
+// operator's own explanation for the refusal (#43's example:
+// "not like that poopoohead"), and a generic wrapper message here would
+// defeat the point of letting the operator write one at all.
+func TestWriteArbiterErrorStopCarriesMessageToBody(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeArbiterError(rec, arbitererrors.NewStopError(406, "not like that poopoohead"))
+	if rec.Code != 406 {
+		t.Fatalf("status = %d, want 406", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "not like that poopoohead") {
+		t.Errorf("body = %q, want it to contain the stop rule's message", body)
 	}
 }

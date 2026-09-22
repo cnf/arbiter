@@ -2,9 +2,11 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	arbitererrors "github.com/cnf/arbiter/pkg/errors"
 	"github.com/cnf/arbiter/pkg/types"
 )
 
@@ -54,6 +56,12 @@ func NewChainedRouter(name string, routers []Router) *ChainedRouter {
 
 // Route tries each chained router in order, returning the first one that
 // succeeds. If all routers fail, the last error is returned.
+//
+// A StopError is never one of those failures to fall through on: it is a
+// deliberate "refuse this request" decision from a matched rule, not "this
+// router doesn't apply here" — the chain exists to compose the second kind
+// of miss, and treating a stop as one would let a later router quietly
+// override an operator's explicit refusal.
 func (cr *ChainedRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, types.Metadata, error) {
 	if len(cr.routers) == 0 {
 		return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: no routers configured", cr.name)
@@ -64,6 +72,10 @@ func (cr *ChainedRouter) Route(ctx context.Context, req *types.NormalizedRequest
 		route, meta, err := r.Route(ctx, req, signals)
 		if err == nil {
 			return route, meta, nil
+		}
+		var stopErr *arbitererrors.StopError
+		if errors.As(err, &stopErr) {
+			return types.Route{}, types.Metadata{}, err
 		}
 		lastErr = err
 	}

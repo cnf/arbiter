@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	arbitererrors "github.com/cnf/arbiter/pkg/errors"
 	"github.com/cnf/arbiter/pkg/types"
 )
 
@@ -64,16 +65,33 @@ func (c PolicyCondition) String() string {
 }
 
 // PolicyRule maps a condition to a routing target. Exactly one of Target
-// (an alias name, resolved via AliasResolver) or Provider/Model (a literal
-// provider reference) must be set. Model is optional within the literal
-// form: if unset, the request's own model (if any) is preserved, otherwise
-// the provider's first configured model is used — same fallback SimpleRouter
-// uses.
+// (an alias name, resolved via AliasResolver), Provider/Model (a literal
+// provider reference), or Stop (a terminal refusal) must be set. Model is
+// optional within the literal form: if unset, the request's own model (if
+// any) is preserved, otherwise the provider's first configured model is
+// used — same fallback SimpleRouter uses.
 type PolicyRule struct {
 	When     PolicyCondition
-	Target   string // alias name; mutually exclusive with Provider/Model
+	Target   string // alias name; mutually exclusive with Provider/Model/Stop
 	Provider string
 	Model    string
+
+	// Stop makes a matched rule terminal: rather than resolving to a route,
+	// it refuses the request outright with its own status and message. Set
+	// only via the "stop" target shape — mutually exclusive with
+	// Target/Provider/Model. See arbitererrors.StopError for why this
+	// short-circuits ChainedRouter instead of falling through it like an
+	// ordinary "no rule matched" miss.
+	Stop *StopTarget
+}
+
+// StopTarget is a rule's terminal-refusal target: `target: {stop: {error,
+// message}}`. StatusCode is the HTTP status returned to the client (any
+// value the operator chooses — 406 in the ticket's example, but nothing
+// requires it to be a 4xx); Message is returned verbatim as the error body.
+type StopTarget struct {
+	StatusCode int
+	Message    string
 }
 
 // PolicyRouter picks a provider by matching classifier signals against an
@@ -110,11 +128,19 @@ func NewPolicyRouter(name string, rules []PolicyRule, providerConfig map[string]
 	}
 }
 
-// Route returns the provider/model from the first matching rule.
+// Route returns the provider/model from the first matching rule. A matched
+// rule with a Stop target returns an *arbitererrors.StopError instead of a
+// route — a deliberate refusal, not a routing failure — so the caller
+// (ChainedRouter, the pipeline) can tell the two apart. See StopError's own
+// doc for why that distinction matters.
 func (pr *PolicyRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, types.Metadata, error) {
 	for i, rule := range pr.rules {
 		if !rule.When.Matches(signals) {
 			continue
+		}
+
+		if rule.Stop != nil {
+			return types.Route{}, types.Metadata{}, arbitererrors.NewStopError(rule.Stop.StatusCode, rule.Stop.Message)
 		}
 
 		route, err := pr.routeFor(rule, req, signals)

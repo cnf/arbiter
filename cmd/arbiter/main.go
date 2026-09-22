@@ -996,12 +996,13 @@ func buildRouter(rc config.RouterConfig, providers map[string]types.ProviderConf
 
 // policyRules parses the "rules" list out of a policy router's config block.
 // Each rule's "when" clause is optional per-field (a missing field is a
-// wildcard); see router.PolicyCondition. A rule's target is either a named
-// alias ("target") or a literal provider/model ("provider"/"model") — not
-// both. Both the current ("domain"/"cost_class") and deprecated
-// ("intent"/"cost_sensitivity") when-clause key spellings are accepted
-// during the deprecation window; setting both spellings of the same axis on
-// one rule is an error rather than silently picking one.
+// wildcard); see router.PolicyCondition. A rule's target is exactly one of:
+// a named alias ("target" as a string), a literal provider/model
+// ("provider"/"model"), or a terminal refusal ("target: {stop: {error,
+// message}}") — see parseStopTarget. Both the current ("domain"/"cost_class")
+// and deprecated ("intent"/"cost_sensitivity") when-clause key spellings are
+// accepted during the deprecation window; setting both spellings of the same
+// axis on one rule is an error rather than silently picking one.
 func policyRules(cfg map[string]interface{}) ([]router.PolicyRule, error) {
 	raw, _ := cfg["rules"].([]interface{})
 	rules := make([]router.PolicyRule, 0, len(raw))
@@ -1011,14 +1012,46 @@ func policyRules(cfg map[string]interface{}) ([]router.PolicyRule, error) {
 			return nil, fmt.Errorf("rule %d: expected a map", i)
 		}
 
-		target, _ := m["target"].(string)
 		provider, _ := m["provider"].(string)
 		model, _ := m["model"].(string)
-		if target != "" && provider != "" {
-			return nil, fmt.Errorf("rule %d: sets both target and provider; use exactly one", i)
+
+		// "target" is either a plain string (an alias name — the existing
+		// shape) or a map naming a terminal target ({stop: {...}} — the only
+		// one that exists today, but a map shape rather than a dedicated
+		// "stop" key leaves room for a second terminal target later without
+		// another top-level rule field).
+		var target string
+		var stop *router.StopTarget
+		switch t := m["target"].(type) {
+		case string:
+			target = t
+		case map[string]interface{}:
+			stopRaw, ok := t["stop"].(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("rule %d: target map must set \"stop\"", i)
+			}
+			st, err := parseStopTarget(stopRaw)
+			if err != nil {
+				return nil, fmt.Errorf("rule %d: %w", i, err)
+			}
+			stop = st
+		case nil:
+			// no target set; provider/model or an error below decides.
+		default:
+			return nil, fmt.Errorf("rule %d: target must be a string (alias name) or a map ({stop: ...})", i)
 		}
-		if target == "" && provider == "" {
-			return nil, fmt.Errorf("rule %d: missing target or provider", i)
+
+		if stop != nil {
+			if target != "" || provider != "" {
+				return nil, fmt.Errorf("rule %d: sets stop together with target/provider; use exactly one", i)
+			}
+		} else {
+			if target != "" && provider != "" {
+				return nil, fmt.Errorf("rule %d: sets both target and provider; use exactly one", i)
+			}
+			if target == "" && provider == "" {
+				return nil, fmt.Errorf("rule %d: missing target or provider", i)
+			}
 		}
 
 		var when router.PolicyCondition
@@ -1056,9 +1089,25 @@ func policyRules(cfg map[string]interface{}) ([]router.PolicyRule, error) {
 			}
 		}
 
-		rules = append(rules, router.PolicyRule{When: when, Target: target, Provider: provider, Model: model})
+		rules = append(rules, router.PolicyRule{When: when, Target: target, Provider: provider, Model: model, Stop: stop})
 	}
 	return rules, nil
+}
+
+// parseStopTarget parses a rule's `target: {stop: {error, message}}` block.
+// error must be a valid HTTP status code and message must be non-empty — an
+// operator-configured refusal with no explanation is as unhelpful to debug
+// as the empty-axis bug this whole ticket exists to fix.
+func parseStopTarget(m map[string]interface{}) (*router.StopTarget, error) {
+	status := intFromConfig(m, "error")
+	if status < 100 || status > 599 {
+		return nil, fmt.Errorf("stop: \"error\" must be a valid HTTP status code, got %d", status)
+	}
+	message, _ := m["message"].(string)
+	if message == "" {
+		return nil, fmt.Errorf("stop: missing \"message\"")
+	}
+	return &router.StopTarget{StatusCode: status, Message: message}, nil
 }
 
 // stringOneOf reads a string value from exactly one of the given keys,

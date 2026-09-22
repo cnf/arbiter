@@ -845,6 +845,16 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 	routeStart := time.Now()
 	route, _, err := p.router.Route(ctx, req, sig)
 	if err != nil {
+		// A StopError is a deliberate refusal from a matched rule, not a
+		// routing failure — wrapping it in RoutingError would erase its
+		// status/message and the client would see a generic 500 for what
+		// the operator configured as a clean, specific refusal. Passed
+		// through unwrapped so writeArbiterError (internal/http) and the
+		// event-store status mapping below can both see the real type.
+		var stopErr *arbitererrors.StopError
+		if errors.As(err, &stopErr) {
+			return types.Route{}, types.Signals{}, err
+		}
 		return types.Route{}, types.Signals{}, arbitererrors.NewRoutingError("route request", err)
 	}
 	p.logger.LogRouting(ctx, route, sig, time.Since(routeStart))

@@ -152,6 +152,31 @@ func NewUpstreamError(provider string, statusCode int, msg string, cause error) 
 	}
 }
 
+// StopError is raised by a router's terminal `stop` target: the operator
+// wants this exact request refused cleanly, with its own status and
+// message, rather than routed anywhere. It is deliberately a distinct type
+// from RoutingError (a config/routing FAILURE — no rule matched, or the
+// matched target is misconfigured): a stop is a decision, not a failure,
+// and ChainedRouter must never treat it as "this router doesn't apply here,
+// try the next one" the way it does an ordinary routing error — see
+// ChainedRouter.Route.
+type StopError struct {
+	*ArbiterError
+	StatusCode int
+}
+
+// NewStopError creates a new stop error.
+func NewStopError(statusCode int, message string) *StopError {
+	return &StopError{
+		ArbiterError: &ArbiterError{
+			Code:       "STOP",
+			Message:    message,
+			Attributes: make(map[string]interface{}),
+		},
+		StatusCode: statusCode,
+	}
+}
+
 // ConfigError is raised when config loading/validation fails.
 type ConfigError struct {
 	*ArbiterError

@@ -337,12 +337,14 @@ func writeError(w http.ResponseWriter, statusCode int, message string) {
 }
 
 // writeArbiterError maps a pipeline error to an HTTP status code.
-// GuardrailError and UpstreamError carry their own status codes (e.g. a
-// rate-limit guardrail returns 429, a 5xx from upstream is passed through);
+// GuardrailError, StopError, and UpstreamError carry their own status codes
+// (e.g. a rate-limit guardrail returns 429, an operator's `stop` rule
+// returns whatever it configured, a 5xx from upstream is passed through);
 // everything else -> 500, since routing/translation/classification
 // failures are Arbiter's own bugs or misconfiguration, not client error.
 func writeArbiterError(w http.ResponseWriter, err error) {
 	var guardrailErr *arbitererrors.GuardrailError
+	var stopErr *arbitererrors.StopError
 	var upstreamErr *arbitererrors.UpstreamError
 	var translationErr *arbitererrors.TranslationError
 	var unknownModelErr *arbitererrors.UnknownModelError
@@ -350,6 +352,8 @@ func writeArbiterError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.As(err, &guardrailErr):
 		writeError(w, guardrailErr.StatusCode, guardrailErr.Message)
+	case errors.As(err, &stopErr):
+		writeError(w, stopErr.StatusCode, stopErr.Message)
 	case errors.As(err, &unknownModelErr):
 		writeError(w, unknownModelErr.StatusCode, unknownModelErr.Message)
 	case errors.As(err, &upstreamErr):

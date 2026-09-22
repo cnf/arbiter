@@ -2,8 +2,10 @@ package router
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	arbitererrors "github.com/cnf/arbiter/pkg/errors"
 	"github.com/cnf/arbiter/pkg/types"
 )
 
@@ -206,6 +208,85 @@ func TestPolicyRouterTargetWithoutResolverErrors(t *testing.T) {
 }
 
 func TestPolicyRouterChainedWithSimpleFallback(t *testing.T) {
+	policy := NewPolicyRouter("policy", []PolicyRule{
+		{When: PolicyCondition{Domain: "code_generation"}, Provider: "claude"},
+	}, testProviders(), nil, nil)
+	simple := NewSimpleRouter("fallback", "gpt4", "", testProviders())
+	chained := NewChainedRouter("chained", []Router{policy, simple})
+
+	route, _, err := chained.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "chat"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if route.Provider != "gpt4" {
+		t.Errorf("provider = %q, want gpt4 (fallen through to SimpleRouter)", route.Provider)
+	}
+}
+
+// A matched rule's Stop target must short-circuit routing entirely: no
+// route, and an *arbitererrors.StopError carrying the configured status and
+// message — not a generic "no rule matched" miss.
+func TestPolicyRouterStopReturnsStopError(t *testing.T) {
+	rules := []PolicyRule{
+		{When: PolicyCondition{Domain: "unmatched"}, Stop: &StopTarget{StatusCode: 406, Message: "not like that"}},
+		{When: PolicyCondition{}, Provider: "gpt4"},
+	}
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
+
+	_, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "unmatched"})
+	var stopErr *arbitererrors.StopError
+	if !errors.As(err, &stopErr) {
+		t.Fatalf("Route error = %v, want an *arbitererrors.StopError", err)
+	}
+	if stopErr.StatusCode != 406 || stopErr.Message != "not like that" {
+		t.Errorf("StopError = {%d, %q}, want {406, \"not like that\"}", stopErr.StatusCode, stopErr.Message)
+	}
+}
+
+// A Stop target in the catch-all position (When: {}) is the documented
+// "refuse everything that reaches here" shape — it must fire exactly like a
+// stop on a specific rule.
+func TestPolicyRouterStopInCatchAllPosition(t *testing.T) {
+	rules := []PolicyRule{
+		{When: PolicyCondition{Domain: "code_generation"}, Provider: "claude"},
+		{When: PolicyCondition{}, Stop: &StopTarget{StatusCode: 400, Message: "no policy for this request"}},
+	}
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
+
+	_, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "chat"})
+	var stopErr *arbitererrors.StopError
+	if !errors.As(err, &stopErr) {
+		t.Fatalf("Route error = %v, want an *arbitererrors.StopError", err)
+	}
+	if stopErr.StatusCode != 400 {
+		t.Errorf("StatusCode = %d, want 400", stopErr.StatusCode)
+	}
+}
+
+// The core #43 requirement: ChainedRouter must not treat a StopError as
+// "this router doesn't apply here" and fall through to the next one — an
+// operator's explicit refusal must not be quietly overridden by a later
+// router's fallback.
+func TestChainedRouterDoesNotSwallowStop(t *testing.T) {
+	policy := NewPolicyRouter("policy", []PolicyRule{
+		{When: PolicyCondition{}, Stop: &StopTarget{StatusCode: 406, Message: "refused"}},
+	}, testProviders(), nil, nil)
+	simple := NewSimpleRouter("fallback", "gpt4", "", testProviders())
+	chained := NewChainedRouter("chained", []Router{policy, simple})
+
+	_, _, err := chained.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
+	var stopErr *arbitererrors.StopError
+	if !errors.As(err, &stopErr) {
+		t.Fatalf("Route error = %v, want an *arbitererrors.StopError (not a fallthrough to SimpleRouter)", err)
+	}
+	if stopErr.StatusCode != 406 {
+		t.Errorf("StatusCode = %d, want 406", stopErr.StatusCode)
+	}
+}
+
+// The ordinary "no rule matched" miss — no Stop involved — must still fall
+// through a chain exactly as before; only a Stop is terminal.
+func TestChainedRouterStillFallsThroughOnOrdinaryMiss(t *testing.T) {
 	policy := NewPolicyRouter("policy", []PolicyRule{
 		{When: PolicyCondition{Domain: "code_generation"}, Provider: "claude"},
 	}, testProviders(), nil, nil)

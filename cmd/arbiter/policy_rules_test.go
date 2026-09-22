@@ -167,3 +167,143 @@ func TestPolicyRulesKeepsModalitiesAndCapabilitiesSeparate(t *testing.T) {
 		t.Errorf("RequiresInputModalities = %v, want [image] (target-side)", when.RequiresInputModalities)
 	}
 }
+
+// TestPolicyRulesParsesStopTarget is #43 part 2's core parsing case:
+// `target: {stop: {error, message}}` must produce a rule with Stop set and
+// no Target/Provider — the terminal shape, not an alias/literal one.
+func TestPolicyRulesParsesStopTarget(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"when": map[string]interface{}{"domain": "unmatched"},
+				"target": map[string]interface{}{
+					"stop": map[string]interface{}{
+						"error":   406,
+						"message": "not like that poopoohead",
+					},
+				},
+			},
+		},
+	}
+	rules, err := policyRules(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %+v, want 1", rules)
+	}
+	r := rules[0]
+	if r.Stop == nil {
+		t.Fatal("Stop = nil, want a parsed StopTarget")
+	}
+	if r.Stop.StatusCode != 406 || r.Stop.Message != "not like that poopoohead" {
+		t.Errorf("Stop = %+v, want {406, \"not like that poopoohead\"}", r.Stop)
+	}
+	if r.Target != "" || r.Provider != "" {
+		t.Errorf("Target=%q Provider=%q, want both empty on a stop rule", r.Target, r.Provider)
+	}
+	if r.When.Domain != "unmatched" {
+		t.Errorf("When.Domain = %q, want unmatched", r.When.Domain)
+	}
+}
+
+// A YAML config's numbers decode as float64, not int — the same reason
+// intFromConfig exists for long_context_tokens. The stop target's "error"
+// key must accept that shape too, or every real config using it fails.
+func TestPolicyRulesParsesStopTargetErrorAsFloat64(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"target": map[string]interface{}{
+					"stop": map[string]interface{}{
+						"error":   float64(406),
+						"message": "refused",
+					},
+				},
+			},
+		},
+	}
+	rules, err := policyRules(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rules[0].Stop == nil || rules[0].Stop.StatusCode != 406 {
+		t.Fatalf("Stop = %+v, want StatusCode 406", rules[0].Stop)
+	}
+}
+
+// A stop target with no message is rejected: an operator refusal with no
+// explanation is as unhelpful to debug as the unmatchable-escape bug this
+// ticket exists to fix.
+func TestPolicyRulesRejectsStopWithoutMessage(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"target": map[string]interface{}{
+					"stop": map[string]interface{}{"error": 406},
+				},
+			},
+		},
+	}
+	if _, err := policyRules(cfg); err == nil {
+		t.Fatal("expected an error: stop target with no message")
+	}
+}
+
+// An invalid HTTP status code must be rejected at config load, not surface
+// as a confusing runtime failure the first time the rule matches.
+func TestPolicyRulesRejectsStopWithInvalidStatusCode(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"target": map[string]interface{}{
+					"stop": map[string]interface{}{"error": 6000, "message": "nope"},
+				},
+			},
+		},
+	}
+	if _, err := policyRules(cfg); err == nil {
+		t.Fatal("expected an error: stop target with an out-of-range status code")
+	}
+}
+
+// Stop is mutually exclusive with target/provider — combining them is a
+// config mistake worth catching at load rather than silently picking one.
+func TestPolicyRulesRejectsStopCombinedWithProvider(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"provider": "claude",
+				"target": map[string]interface{}{
+					"stop": map[string]interface{}{"error": 406, "message": "nope"},
+				},
+			},
+		},
+	}
+	if _, err := policyRules(cfg); err == nil {
+		t.Fatal("expected an error: rule sets both stop and provider")
+	}
+}
+
+// The catch-all/default fallback position (`when: {}`) is the documented
+// second place a stop target is valid — it must parse identically to a
+// stop on a specific rule.
+func TestPolicyRulesParsesStopInCatchAllPosition(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{"provider": "claude", "when": map[string]interface{}{"domain": "code_generation"}},
+			map[string]interface{}{
+				"target": map[string]interface{}{
+					"stop": map[string]interface{}{"error": 400, "message": "no policy for this request"},
+				},
+			},
+		},
+	}
+	rules, err := policyRules(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 2 || rules[1].Stop == nil {
+		t.Fatalf("rules = %+v, want rule 1 to carry a Stop target", rules)
+	}
+}

@@ -5,6 +5,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -641,13 +642,60 @@ func (p *Pipeline) recordFailed(ctx context.Context, traceID, sessionKey, format
 	})
 }
 
-// capturedStreamBlocks turns the per-index text accumulated from a stream into
-// capture blocks, matching CaptureResponse's indexing (position == block
-// index) so streamed and non-streamed responses store the same shape. Empty
-// entries — a block that produced no text, such as tool_use — are skipped
-// rather than stored as an empty block that would dedup against every other
-// empty block.
-func capturedStreamBlocks(orderedText []string) []store.Block {
+// toolCallAccum reassembles one streamed tool call from its fragments: an
+// identity fragment (id, name) on content_block_start/the first delta, then
+// zero or more argument fragments concatenated in arrival order — the same
+// by-index concatenation an OpenAI client is contractually required to do,
+// done here one layer down so the stored row has the same call an executed
+// client would have made.
+type toolCallAccum struct {
+	id, name, args string
+}
+
+// accumulateToolCall folds one stream event into the per-index tool-call
+// accumulator, growing the slice as needed (mirroring orderedText's growth
+// pattern so a gap — an index skipped because that block produced no delta —
+// stays a nil entry rather than shifting a later call into the wrong slot).
+func accumulateToolCall(calls []*toolCallAccum, evt *types.NormalizedStreamEvent) []*toolCallAccum {
+	if evt.ToolCallIndex >= len(calls) {
+		calls = append(calls, make([]*toolCallAccum, evt.ToolCallIndex-len(calls)+1)...)
+	}
+	if calls[evt.ToolCallIndex] == nil {
+		calls[evt.ToolCallIndex] = &toolCallAccum{}
+	}
+	call := calls[evt.ToolCallIndex]
+	if evt.ToolCallID != "" {
+		call.id = evt.ToolCallID
+	}
+	if evt.ToolCallName != "" {
+		call.name = evt.ToolCallName
+	}
+	call.args += evt.ToolCallArgs
+	return calls
+}
+
+// streamedToolCallNames lists the tool names accumulated from a stream, same
+// shape as toolCallNames on the non-streaming path, so the reader/UI need no
+// changes to read a streamed row's tool_calls_json.
+func streamedToolCallNames(calls []*toolCallAccum) []string {
+	var names []string
+	for _, c := range calls {
+		if c != nil && c.name != "" {
+			names = append(names, c.name)
+		}
+	}
+	return names
+}
+
+// capturedStreamBlocks turns the per-index text and tool-call fragments
+// accumulated from a stream into capture blocks, matching CaptureResponse's
+// indexing (position == block index) so streamed and non-streamed responses
+// store the same shape. Empty text entries are skipped rather than stored as
+// an empty block that would dedup against every other empty block. A tool
+// call's arguments are best-effort JSON: if the accumulated fragments don't
+// parse (a stream that ended mid-argument), the call is stored with a nil
+// input rather than dropped — the id/name are still worth having.
+func capturedStreamBlocks(orderedText []string, toolCalls []*toolCallAccum) []store.Block {
 	var out []store.Block
 	for index, text := range orderedText {
 		if text == "" {
@@ -659,6 +707,39 @@ func capturedStreamBlocks(orderedText []string) []store.Block {
 			Role:     "assistant",
 			MsgIndex: 0,
 			Position: index,
+		})
+	}
+	for index, call := range toolCalls {
+		if call == nil || (call.id == "" && call.name == "") {
+			continue
+		}
+		var input map[string]interface{}
+		if call.args != "" {
+			_ = json.Unmarshal([]byte(call.args), &input) // best-effort; nil on failure
+		}
+		canonical, err := json.Marshal(struct {
+			ID    string                 `json:"id"`
+			Name  string                 `json:"name"`
+			Input map[string]interface{} `json:"input"`
+		}{call.id, call.name, input})
+		if err != nil {
+			continue
+		}
+		out = append(out, store.Block{
+			Kind: "tool_use",
+			Body: canonical,
+			Role: "assistant",
+			// Offset past orderedText's range: ToolCallIndex is a distinct
+			// index space from BlockIndex on the OpenAI-origin path (parallel
+			// tool calls number 0,1,2... independently of the single
+			// candidate's BlockIndex, which is always 0), so using it as-is
+			// would collide with a text block's position. Anthropic's own
+			// stream sets ToolCallIndex equal to BlockIndex, so this offset
+			// costs it nothing beyond not being byte-identical to
+			// CaptureResponse's ordering — the same tolerance orderedText's
+			// own gap-filling already accepts.
+			MsgIndex: 0,
+			Position: len(orderedText) + index,
 		})
 	}
 	return out
@@ -1073,6 +1154,14 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 		// response body can be captured after the fact. A slice indexed by
 		// BlockIndex preserves the block order the client saw.
 		var orderedText []string
+		// toolCalls accumulates tool-call fragments per ToolCallIndex — see
+		// toolCallAccum — so a streamed tool call gets the same recorded row
+		// (tool_calls_json, captured tool_use block) as the non-streaming
+		// path already produces. Before this, the row existed but the call
+		// itself left no trace: not in tool_calls_json (only the non-stream
+		// path set it) and not in captured content (capturedStreamBlocks
+		// only ever emitted text).
+		var toolCalls []*toolCallAccum
 		for evt := range eventChan {
 			evt.TraceID = traceID
 			if evt.MessageModel != "" && evt.MessageModel != served.Model && actualModel == "" {
@@ -1129,6 +1218,14 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 				}
 				orderedText[evt.BlockIndex] += evt.TextDelta
 			}
+			// A tool call's identity (id, name) arrives on content_block_start
+			// (Anthropic) or the first tool_use_delta chunk (OpenAI); every
+			// later fragment carries only the index and a slice of arguments.
+			// evt.ToolCallID/Name/Args are unset on non-tool-call events, so
+			// this only fires for the events that actually carry a call.
+			if evt.ToolCallID != "" || evt.ToolCallName != "" || evt.DeltaType == "tool_use_delta" {
+				toolCalls = accumulateToolCall(toolCalls, evt)
+			}
 			out <- evt
 		}
 
@@ -1151,13 +1248,12 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 		// Execute and handed down here. Both halves must ride on the event: an
 		// earlier version recorded only the response, so every streamed row had
 		// a reply with no prompt, and a session transcript read as a list of
-		// answers to questions nobody asked. Only successfully completed text is
-		// captured — tool_use arguments arrive as JSON fragments and are not
-		// reassembled yet, so those blocks are stored hash-only rather than
-		// guessed at.
+		// answers to questions nobody asked. A tool call's arguments are
+		// reassembled from their fragments the same way orderedText
+		// reassembles text — see toolCallAccum.
 		respContent := content
 		if p.captureContent {
-			respContent.Response = capturedStreamBlocks(orderedText)
+			respContent.Response = capturedStreamBlocks(orderedText, toolCalls)
 		}
 		p.record(store.Event{
 			TraceID:          traceID,
@@ -1179,6 +1275,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 			Error:            errMsg,
 			Stream:           true,
 			Content:          contentOrNil(respContent),
+			ToolCalls:        streamedToolCallNames(toolCalls),
 			Headers:          headers,
 		})
 	}()

@@ -167,11 +167,13 @@ func TestDecisionsClassifierFillsAxisWithModelConfidence(t *testing.T) {
 	}
 }
 
-// The escape label is sent under ITS OWN NAME and choosing it must fill NO axis
-// — so a policy router's rules simply do not match and a chained router takes
-// over. This is the decisions equivalent of the LLM classifier's escape
-// verdict, and it is the assertion most likely to regress silently.
-func TestDecisionsClassifierEscapeFillsNoAxis(t *testing.T) {
+// The escape label is sent under ITS OWN NAME and choosing it must fill the
+// axis with the reserved sentinel types.UnmatchedValue — so a `when:
+// {domain: unmatched}` policy rule can match it explicitly, and any real
+// value from another classifier still beats it in a merge. This is the
+// decisions equivalent of the LLM classifier's escape verdict, and it is the
+// assertion most likely to regress silently.
+func TestDecisionsClassifierEscapeFillsAxisWithUnmatched(t *testing.T) {
 	client := &fakeDecisionClient{responses: map[string]*types.DecisionResponse{
 		testProvider: decisionReply(map[string]types.DecisionAnswer{
 			"domain": choice("none", 0.88, map[string]float64{"none": 0.88, "chat": 0.12}),
@@ -183,8 +185,8 @@ func TestDecisionsClassifierEscapeFillsNoAxis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	if sig.Domain != "" {
-		t.Fatalf("Domain = %q, want empty (escape fills no axis)", sig.Domain)
+	if sig.Domain != types.UnmatchedValue {
+		t.Fatalf("Domain = %q, want %q (escape fills the axis with the sentinel)", sig.Domain, types.UnmatchedValue)
 	}
 	// Still a recorded, successful call: a confident "nothing fits" is a real
 	// judgement, not a failure.
@@ -268,8 +270,8 @@ func TestDecisionsClassifierAddsOtherWhenNoEscapeConfigured(t *testing.T) {
 	if _, ok := criteria["other"]; !ok {
 		t.Fatal("no `other` option added for a config with no escape label")
 	}
-	if sig.Domain != "" {
-		t.Fatalf("Domain = %q, want empty — `other` is the escape verdict when no escape label is configured", sig.Domain)
+	if sig.Domain != types.UnmatchedValue {
+		t.Fatalf("Domain = %q, want %q — `other` is the escape verdict when no escape label is configured", sig.Domain, types.UnmatchedValue)
 	}
 	if sig.ClassifierCalls[0].Error != "" {
 		t.Fatalf("the `other` escape was recorded as a failure: %q", sig.ClassifierCalls[0].Error)

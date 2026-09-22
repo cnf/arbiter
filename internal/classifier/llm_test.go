@@ -314,10 +314,11 @@ func TestSystemPromptUsesConfiguredInstructions(t *testing.T) {
 }
 
 // TestLLMClassifierEscapeLabelFillsNoAxis is the escape-label behavior: the
-// model's "nothing fits" is a successful verdict that fills no axis, so a policy
-// router's rules simply do not match rather than the operator having to write a
-// rule for a literal "unknown" domain. Confidence stays 1.0 because it IS a real
-// judgment, and the call is still recorded.
+// model's "nothing fits" is a successful verdict that fills the axis with the
+// reserved sentinel types.UnmatchedValue, so a policy router's `when: {domain:
+// unmatched}` rule can match it explicitly rather than the operator writing a
+// rule for a literal "unknown" domain. Confidence stays 1.0 because it IS a
+// real judgment, and the call is still recorded.
 func TestLLMClassifierEscapeLabelFillsNoAxis(t *testing.T) {
 	withEscape := []types.Label{
 		{Name: "code_generation"}, {Name: "chat"}, {Name: "none"},
@@ -329,8 +330,8 @@ func TestLLMClassifierEscapeLabelFillsNoAxis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify returned an error: %v", err)
 	}
-	if sig.Domain != "" {
-		t.Errorf("Domain = %q, want empty (the escape verdict fills no axis)", sig.Domain)
+	if sig.Domain != types.UnmatchedValue {
+		t.Errorf("Domain = %q, want %q (the escape verdict fills the axis with the sentinel)", sig.Domain, types.UnmatchedValue)
 	}
 	if sig.Confidence != 1.0 {
 		t.Errorf("Confidence = %v, want 1.0 (a confident 'nothing fits' is a real judgment)", sig.Confidence)
@@ -361,8 +362,8 @@ func TestLLMClassifierBareNoneIsEscapeWhenConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify returned an error: %v", err)
 	}
-	if sig.Domain != "" {
-		t.Errorf("Domain = %q, want empty (a bare 'none' is the escape verdict)", sig.Domain)
+	if sig.Domain != types.UnmatchedValue {
+		t.Errorf("Domain = %q, want %q (a bare 'none' is the escape verdict)", sig.Domain, types.UnmatchedValue)
 	}
 }
 

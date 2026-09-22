@@ -187,21 +187,28 @@ func (c *DecisionsClassifier) Classify(ctx context.Context, req *types.Normalize
 }
 
 // fillAxis writes one answered axis onto Signals. An escape verdict arrives
-// here as an empty value, which is the point: a policy router's
-// `when: {domain: ...}` rules then simply do not match and a chained router
-// takes over, instead of the operator writing a rule for a literal "unknown"
-// domain.
+// here as an empty value, which is filled with the reserved sentinel
+// types.UnmatchedValue (except on the capabilities axis, an additive set with
+// no single "nothing matched" value — see types.UnmatchedValue's own doc) so
+// a policy router's `when: {domain: unmatched}` rule can match it explicitly,
+// instead of every wildcard rule matching a silently empty axis.
+//
+// Called only for a question resolveAnswers actually answered (escape or
+// real label alike) — never for a dropped/unanswered question — so there is
+// no "nothing happened here" case left to special-case away.
 func fillAxis(sig *types.Signals, axis, value string, capabilities []string) {
-	if value == "" && len(capabilities) == 0 {
+	if axis == AxisCapabilities {
+		sig.RequiredCapabilities = capabilities
 		return
+	}
+	if value == "" {
+		value = types.UnmatchedValue
 	}
 	switch axis {
 	case AxisEffort:
 		sig.Effort = value
 	case AxisCostClass:
 		sig.CostClass = value
-	case AxisCapabilities:
-		sig.RequiredCapabilities = capabilities
 	default:
 		sig.Domain = value
 	}

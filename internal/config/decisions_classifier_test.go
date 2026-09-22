@@ -235,6 +235,28 @@ classifiers:`+domainHeuristic+`
 	}
 }
 
+// "unmatched" is the sentinel value #43 reserves for an escape verdict (see
+// types.UnmatchedValue) — a real label of that name would be indistinguishable
+// in a `when: {domain: unmatched}` rule from "nothing matched".
+func TestDecisionsClassifierRejectsReservedUnmatchedLabel(t *testing.T) {
+	err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "domain-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        domain:
+          axis: "domain"
+          type: "choice"
+          labels: ["code_generation", "unmatched"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), `"unmatched" is reserved`) {
+		t.Fatalf("want a reserved-label error, got %v", err)
+	}
+}
+
 // A decisions classifier fills the axis its questions declare, so an axis on
 // the classifier itself is a second, silently-ignored answer to the same
 // question.

@@ -789,6 +789,34 @@ classifiers:
 	}
 }
 
+// "unmatched" is the sentinel value #43 reserves for an escape verdict (see
+// types.UnmatchedValue) — a real label of that name would be indistinguishable
+// in a `when: {domain: unmatched}` rule from "nothing matched".
+func TestLLMClassifierRejectsReservedUnmatchedLabel(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+aliases:
+  cheap-classifier:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku"
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write"] }
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"
+    config:
+      alias: "cheap-classifier"
+      labels: ["code_generation", "unmatched"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), `"unmatched" is reserved`) {
+		t.Fatalf("Load: want a reserved-label error, got %v", err)
+	}
+}
+
 // TestLLMClassifierRejectsNonStringInstructions keeps a typo'd shape (a list, a
 // number) from being silently dropped by the builder — the failure mode where
 // validation accepts what construction ignores.

@@ -175,3 +175,22 @@ const (
 // canonical (current) names; the config layer also accepts the deprecated
 // spellings and maps them onto these.
 var KnownAxes = []string{AxisDomainName, AxisEffortName, AxisCostClassName, AxisCapabilitiesName}
+
+// UnmatchedValue is the reserved sentinel a scalar axis (domain, effort,
+// cost_class) is filled with when a model-backed classifier reaches its
+// escape verdict — the configured `escape:` label, or the auto-added
+// `other` when a decisions classifier declares none. Before this existed,
+// an escape verdict filled no axis at all: no `when:` rule could match it,
+// every wildcard rule matched it, and a merge silently discarded it in
+// favour of any other classifier's value, real or not. `unmatched` makes
+// that outcome a first-class value an operator can write `when: {domain:
+// unmatched}` against — see MergedClassifier.Classify for the merge rule
+// (a real value always beats it; it only fills the axis when nothing else
+// did) and validateLLMClassifiers/validateDecisionsClassifiers for why a
+// configured label may never be named this.
+//
+// Deliberately not used for the capabilities axis: RequiredCapabilities is
+// an additive set (a request needs vision AND tool_use), not a single
+// contested value, so "nothing matched" has no analogous sentinel there —
+// an unfilled capabilities axis is just an empty slice, same as before.
+const UnmatchedValue = "unmatched"

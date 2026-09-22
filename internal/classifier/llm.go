@@ -150,28 +150,41 @@ func (c *LLMClassifier) Classify(ctx context.Context, req *types.NormalizedReque
 }
 
 // fillAxis writes the chosen label onto whichever Signals field this instance
-// fills. An escape verdict leaves every axis empty, which is the point: a
-// policy router's `when: {domain: ...}` rules then simply do not match and a
-// chained router takes over, instead of the operator having to write a rule for
-// a literal "unknown" domain.
+// fills. An escape verdict (label == nil) fills the axis with the reserved
+// sentinel types.UnmatchedValue instead of leaving it empty — see
+// MergedClassifier.Classify for what that buys: a `when: {domain: unmatched}`
+// rule can now match it, and a real value from any other classifier always
+// outscores it in the merge.
 //
-// The axis still counts as classified — Confidence 1.0, one recorded call — so
-// the empty value reads as "the model said nothing fits", not as "no classifier
-// ran". MergedClassifier keys its per-axis pick on a non-empty value, so an
-// escape verdict leaves whichever other classifier fills that axis to win.
+// The axis still counts as classified — Confidence 1.0, one recorded call —
+// so the sentinel reads as "the model said nothing fits", not as "no
+// classifier ran". Capabilities is the one axis excluded: it is an additive
+// set (vision AND tool_use can both apply), not a single contested value, so
+// an escape verdict there leaves RequiredCapabilities empty, same as before —
+// see types.UnmatchedValue's own doc for why.
 func (c *LLMClassifier) fillAxis(sig *types.Signals, label *types.Label) {
 	if label == nil {
+		if c.axis != AxisCapabilities {
+			c.fillAxisValue(sig, types.UnmatchedValue)
+		}
 		return
 	}
+	c.fillAxisValue(sig, label.Name)
+}
+
+// fillAxisValue writes value onto whichever Signals field this instance
+// fills — the one place both a real label and the escape sentinel go through,
+// so the two can never disagree about which field an axis name maps to.
+func (c *LLMClassifier) fillAxisValue(sig *types.Signals, value string) {
 	switch c.axis {
 	case AxisEffort:
-		sig.Effort = label.Name
+		sig.Effort = value
 	case AxisCostClass:
-		sig.CostClass = label.Name
+		sig.CostClass = value
 	case AxisCapabilities:
-		sig.RequiredCapabilities = []string{label.Name}
+		sig.RequiredCapabilities = []string{value}
 	default:
-		sig.Domain = label.Name
+		sig.Domain = value
 	}
 }
 

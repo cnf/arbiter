@@ -491,6 +491,13 @@ func (c *Config) validateLLMClassifiers() error {
 			if seen[key] {
 				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: label %q is declared more than once", cc.Name, l.Name), nil)
 			}
+			// "unmatched" is the reserved sentinel value an escape verdict
+			// fills the axis with (see types.UnmatchedValue) — a real label
+			// of that name would be indistinguishable in a `when:` rule from
+			// "nothing matched".
+			if key == types.UnmatchedValue {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: label %q is reserved — it is the sentinel value an escape verdict fills the axis with", cc.Name, l.Name), nil)
+			}
 			seen[key] = true
 		}
 		// An escape label must be one of the declared labels: it is the name
@@ -645,6 +652,14 @@ func (c *Config) validateDecisionsClassifiers() error {
 			// keyed by name, and the second write would win silently.
 			if seen["other"] {
 				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: label \"other\" is reserved (it is the option name sent for the escape label)", cc.Name, qname), nil)
+			}
+
+			// "unmatched" is the reserved sentinel value an escape verdict
+			// fills the axis with (see types.UnmatchedValue) — a real label
+			// of that name would be indistinguishable in a `when:` rule from
+			// "nothing matched".
+			if seen[types.UnmatchedValue] {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: label \"unmatched\" is reserved — it is the sentinel value an escape verdict fills the axis with", cc.Name, qname), nil)
 			}
 
 			// An escape label must be one of the declared labels: it is the

@@ -364,3 +364,78 @@ func TestMergedClassifierLeavesAxisConfidenceNilWhenUnused(t *testing.T) {
 		t.Fatalf("AxisConfidence = %v, want nil when no classifier reported per-axis values", sig.AxisConfidence)
 	}
 }
+
+// TestMergedClassifierRealValueBeatsUnmatchedRegardlessOfConfidence is the
+// core #43 merge rule: an escape verdict (types.UnmatchedValue) must never
+// outrank a real value, even when the escape call reported HIGHER confidence
+// than the real one. A plain highest-confidence-wins rule would get this
+// backwards — "I'm 90% sure nothing fits" must still lose to "I'm 60% sure
+// it's code_generation".
+func TestMergedClassifierRealValueBeatsUnmatchedRegardlessOfConfidence(t *testing.T) {
+	unmatched := fakeAxisClassifier{domain: types.UnmatchedValue, confidence: 0.9}
+	real := fakeAxisClassifier{domain: "code_generation", confidence: 0.6}
+
+	merged := NewMergedClassifier("merged", []Classifier{unmatched, real})
+	sig, err := merged.Classify(context.Background(), req("anything"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.Domain != "code_generation" {
+		t.Fatalf("Domain = %q, want code_generation — a real value must beat a higher-confidence unmatched verdict", sig.Domain)
+	}
+}
+
+// The declared-order complement: a real value recorded FIRST must not be
+// displaced by a later, higher-confidence escape verdict either — unmatched
+// only ever fills an axis that is still completely empty.
+func TestMergedClassifierUnmatchedNeverDisplacesEarlierRealValue(t *testing.T) {
+	real := fakeAxisClassifier{domain: "code_generation", confidence: 0.4}
+	unmatched := fakeAxisClassifier{domain: types.UnmatchedValue, confidence: 0.95}
+
+	merged := NewMergedClassifier("merged", []Classifier{real, unmatched})
+	sig, err := merged.Classify(context.Background(), req("anything"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.Domain != "code_generation" {
+		t.Fatalf("Domain = %q, want code_generation — a later unmatched verdict must not displace an earlier real value", sig.Domain)
+	}
+}
+
+// TestMergedClassifierUnmatchedFillsOnlyTrulyEmptyAxis proves the other half:
+// when NO classifier produces a real value, the escape sentinel does fill the
+// axis — an unmatched verdict is a real, visible outcome, not silence.
+func TestMergedClassifierUnmatchedFillsOnlyTrulyEmptyAxis(t *testing.T) {
+	unmatched := fakeAxisClassifier{domain: types.UnmatchedValue, confidence: 0.8}
+
+	merged := NewMergedClassifier("merged", []Classifier{unmatched})
+	sig, err := merged.Classify(context.Background(), req("anything"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.Domain != types.UnmatchedValue {
+		t.Fatalf("Domain = %q, want %q — with nothing else to fill the axis, the escape verdict must be visible", sig.Domain, types.UnmatchedValue)
+	}
+}
+
+// TestMergedClassifierGatedRunsWhenOnlyUnmatchedRecorded proves an
+// only_if_unset classifier still runs after an earlier classifier's escape
+// verdict: "nothing fits" is not an answer that should suppress a later,
+// more specific classifier from getting its own shot at the axis.
+func TestMergedClassifierGatedRunsWhenOnlyUnmatchedRecorded(t *testing.T) {
+	unmatched := fakeAxisClassifier{domain: types.UnmatchedValue, confidence: 0.9}
+	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("code_generation")}}
+	llm := NewLLMClassifierFull("domain-llm", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, 0, 0, true)
+
+	merged := NewMergedClassifier("merged", []Classifier{unmatched, llm})
+	sig, err := merged.Classify(context.Background(), req("please write a function"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(u.calls) != 1 {
+		t.Fatalf("gated llm classifier made %d upstream calls, want 1 — an unmatched verdict must not count as \"axis set\"", len(u.calls))
+	}
+	if sig.Domain != "code_generation" {
+		t.Fatalf("Domain = %q, want code_generation (the gated classifier's real answer)", sig.Domain)
+	}
+}

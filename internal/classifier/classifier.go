@@ -345,18 +345,85 @@ func axisScore(sig types.Signals, axis string) float64 {
 	return sig.Confidence
 }
 
-// axesAllSet reports whether every named axis has been filled by an earlier
-// classifier in this merge. merged holds the accumulated values;
-// axisConfidence tracks which axes carry a score (an axis with a recorded
-// score was filled, even when the merge later replaced the value with a
-// higher-confidence one). An empty axes list means "no axes gate this
-// classifier" — treated as not-all-set so it still runs.
+// mergeAxisValue applies one classifier's verdict for one scalar axis
+// (Domain, Effort, CostClass) to the merge in progress. target points at the
+// merged Signals field for this axis; axisConfidence records the score that
+// won it, keyed by axis name.
+//
+// Three rules, checked in order:
+//
+//  1. A zero-or-absent value, or a zero confidence, fills nothing — "no
+//     confidence" and "no signal" must look identical, or a classifier that
+//     is completely unsure would overwrite a better answer (see
+//     TestMergedClassifierZeroConfidenceFillsNoAxis).
+//  2. A real value (anything but the types.UnmatchedValue escape sentinel)
+//     always beats an axis currently holding UnmatchedValue, REGARDLESS of
+//     confidence — an escape verdict is "nothing fits", which must never
+//     outrank an actual answer just because the escape call happened to be
+//     more confident about having nothing to say. Among two real values the
+//     usual per-axis highest-confidence-wins rule applies.
+//  3. UnmatchedValue only fills the axis when it is currently completely
+//     unset — a real value already recorded, however low its confidence, is
+//     never displaced by "nothing fits".
+func mergeAxisValue(target *string, axisConfidence map[string]float64, axis, value string, score float64) {
+	if value == "" || score <= 0 {
+		return
+	}
+	switch current := *target; current {
+	case "":
+		*target = value
+		axisConfidence[axis] = score
+	case types.UnmatchedValue:
+		if value != types.UnmatchedValue {
+			*target = value
+			axisConfidence[axis] = score
+		} else if score > axisConfidence[axis] {
+			axisConfidence[axis] = score
+		}
+	default: // current already holds a real value
+		if value != types.UnmatchedValue && score > axisConfidence[axis] {
+			*target = value
+			axisConfidence[axis] = score
+		}
+	}
+}
+
+// axisValue reads back the value the merge has accumulated so far for axis,
+// from the same scalar fields mergeAxisValue writes. Capabilities has no
+// scalar value to read (it's additive, see types.UnmatchedValue's doc) and is
+// not reachable here in practice — gateAxes never names it — so it reports
+// empty rather than assuming an unknown axis is unset.
+func axisValue(sig *types.Signals, axis string) string {
+	switch axis {
+	case AxisEffort:
+		return sig.Effort
+	case AxisCostClass:
+		return sig.CostClass
+	case AxisDomain:
+		return sig.Domain
+	default:
+		return ""
+	}
+}
+
+// axesAllSet reports whether every named axis has been filled with a REAL
+// value by an earlier classifier in this merge. An axis holding only the
+// escape sentinel types.UnmatchedValue counts as still unset: "nothing fits"
+// is not an answer that should make a later, more specific classifier skip
+// its own attempt. merged holds the accumulated values; axisConfidence
+// tracks which axes carry a recorded score (an unmatched verdict does record
+// one, so this alone cannot distinguish the two cases — axisValue does). An
+// empty axes list means "no axes gate this classifier" — treated as
+// not-all-set so it still runs.
 func axesAllSet(axes []string, merged *types.Signals, axisConfidence map[string]float64) bool {
 	if len(axes) == 0 {
 		return false
 	}
 	for _, axis := range axes {
 		if _, ok := axisConfidence[axis]; !ok {
+			return false
+		}
+		if axisValue(merged, axis) == types.UnmatchedValue {
 			return false
 		}
 	}
@@ -402,18 +469,9 @@ func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedR
 			sawAxisConfidence = true
 		}
 
-		if sig.Domain != "" && axisScore(sig, AxisDomain) > axisConfidence[AxisDomain] {
-			axisConfidence[AxisDomain] = axisScore(sig, AxisDomain)
-			merged.Domain = sig.Domain
-		}
-		if sig.Effort != "" && axisScore(sig, AxisEffort) > axisConfidence[AxisEffort] {
-			axisConfidence[AxisEffort] = axisScore(sig, AxisEffort)
-			merged.Effort = sig.Effort
-		}
-		if sig.CostClass != "" && axisScore(sig, AxisCostClass) > axisConfidence[AxisCostClass] {
-			axisConfidence[AxisCostClass] = axisScore(sig, AxisCostClass)
-			merged.CostClass = sig.CostClass
-		}
+		mergeAxisValue(&merged.Domain, axisConfidence, AxisDomain, sig.Domain, axisScore(sig, AxisDomain))
+		mergeAxisValue(&merged.Effort, axisConfidence, AxisEffort, sig.Effort, axisScore(sig, AxisEffort))
+		mergeAxisValue(&merged.CostClass, axisConfidence, AxisCostClass, sig.CostClass, axisScore(sig, AxisCostClass))
 		for _, capability := range sig.RequiredCapabilities {
 			if !capSeen[capability] {
 				capSeen[capability] = true

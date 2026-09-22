@@ -10,7 +10,9 @@ behaviour.
 
 Written 2026-09-20, at `develop` = `0327600`; §5 and §9 updated 2026-09-21 at
 `develop` = `6ef15bf`; §5, §6, and new §10 updated 2026-09-21 at `develop` =
-`3124670`; §6 and new §11 updated 2026-09-22 at `develop` = `f55d60d`. Run
+`3124670`; §6 and new §11 updated 2026-09-22 at `develop` = `f55d60d`; §6 and
+new §12 updated 2026-09-22 at `develop` = `e796405`; #43 landed. §6 and new
+§13 updated 2026-09-22 at `develop` = `84d917c`; #5 and #34 landed. Run
 `git log --oneline -1` for the truth.
 
 ---
@@ -169,27 +171,15 @@ a fresh title request rather than a code change.
 
 ## 6. Open work, in priority order
 
-Run `gh issue list --state open` for the live list. As of `f55d60d`
-(2026-09-22), open: **#4, #5, #8, #9, #11, #14, #17, #18, #20, #21, #22, #23,
-#24, #26, #34, #36, #38, #40, #41, #42**. Closed since §5/§10 were last
-written: **#27, #28, #31, #37, #39** (cache-tracking work, 2026-09-21b/22
-sessions) and **#13** (post-guardrail content view shipped, `f55d60d`) — see
-§11 for #31's closing evidence and #42.
+Run `gh issue list --state open` for the live list. As of `84d917c`
+(2026-09-22b, §13), open: **#4, #8, #9, #11, #14, #17, #18, #20, #21, #22,
+#23, #24, #26, #36, #38, #40, #41**. Closed since §5/§10 were last written:
+**#27, #28, #31, #37, #39, #13, #43, #42, #5, #34** (see §11–§13).
 
 **High priority, real gaps:**
-- **#5** — a request that fails routing or is rejected by a guardrail gets **no
-  row at all**. `recordRejected` writes content refs under
-  `owner_kind="rejected"` and nothing else. Biggest single hole in the
-  visibility goal. Design sketch exists in `feedback.md`'s now-historical
-  "Open" section — read it before starting, it's still the right shape.
-- **#34** — a streamed tool call leaves no record (`tool_calls_json` unwritten).
-- **#42** — new, filed 2026-09-22: `type: "llm"` classifiers have no
-  config-load check that their `alias:` resolves to a concrete model, which
-  is why `domain-llm` is permanently commented out in the deployed config —
-  its natural alias (`llm-arbiter`, a force-alias) validates cleanly and then
-  fails at runtime. See §11.
-- **#4** — META umbrella for the visibility goal; #8/#9 are its still-open
-  children.
+- **#4** — META umbrella for the visibility goal. **#5** and **#34** (its
+  two biggest formerly-open children) are now closed (§13); **#8/#9** are
+  still open children.
 
 **Labels worth filtering on:** `anthropic-client` marks every ticket touching
 the Anthropic-facing wire interface specifically (currently #22, #23, #36,
@@ -490,3 +480,120 @@ from `HEAD` (this file) and updated §6/§11 in place rather than continuing
 from the truncated version. If a future session finds `PICKUP.md` unexpectedly
 short again, `git checkout HEAD -- PICKUP.md` recovers the real one — check
 `git diff HEAD -- PICKUP.md` before trusting an on-disk copy that looks thin.
+
+---
+
+## 12. Session 2026-09-22b — #43 shipped (both parts), PICKUP written
+
+**#43 shipped, both parts, on `develop` (unpushed).** `git status -sb` says
+how far ahead. The ticket ("Escape verdicts unmatchable + no config way to
+stop/return an error") is CLOSED — shipped in the three commits below, closed on
+2026-09-22 (see the board note under "Board as of this session"). Three commits,
+in order:
+
+| commit | what |
+|---|---|
+| `19005dd` | **#43 part 1**: escape verdicts fill their axis with a reserved `unmatched` sentinel — previously they filled nothing (empty string), so no `when:` rule could target them and merges silently lost them. Capabilities axis deliberately excluded (additive set, not a contested value). Merge precedence: real value beats `unmatched`; `unmatched` fills only an empty axis. |
+| `31c801d` | **#43 part 2**: a `target: {stop: {error, message}}` rule target. New `StopError` type (`pkg/errors`) so `ChainedRouter` can't swallow it as a routing miss; `resolveRoute` passes it unwrapped (never into `RoutingError` → 500); `writeArbiterError` maps it to its configured status + message. Stop works in normal and catch-all positions. |
+| `e796405` | **docs**: README routing section + example config show the stop target. |
+
+**State for the next session:**
+
+- `feedback.md` at repo root is **untracked, pre-existing, not mine** — leave
+  it alone.
+- PICKUP.md itself is **modified in the working tree** (this §12 + the §6 #42
+  correction + header line). It is part of this handoff, not a feature — a
+  fresh session edits/commits it as its own handoff.
+- Last verification: `devenv shell --no-tui -- bash -c 'LITELLM_URL=http://localhost:4000/v1 go test ./...'` is **green**; `go vet ./...` clean; `gofmt -l` shows only three pre-existing unrelated files (`internal/config/title_signature_test.go`, `internal/ui/grouping_tail_test.go`, `internal/ui/grouping_test.go`). README/PICKUP changes need no Go checks.
+- **#43's test discipline was followed** (see §4): before calling part 2 done I
+  reverted the `resolveRoute` change and confirmed
+  `TestExecutePropagatesStopErrorUnwrapped` fails *for the right reason* (the
+  stop became a bare `RoutingError`); same for `TestChainedRouterDoesNotSwallowStop`.
+- **One subtlety worth remembering:** `ArbiterError.Unwrap()` means
+  `errors.As` can see a `StopError` *nested inside* a `RoutingError`. That's
+  why the pipeline test asserts with a direct type assertion (`err.(*StopError)`),
+  not `errors.As` — a wrapped stop would still pass `errors.As` and the test
+  would prove nothing about unwrap-vs-wrap.
+
+**Board as of this session** (`gh issue list --state open`): #43 was **open at the
+time the PICKUP draft was written** — shipped but unclosed — and has since been
+closed by the user's request (this session, closing comment + `gh issue close 43`,2026-09-22T18:08Z; verify with `gh issue view 43 --json state`). #42
+is closed (by `4591e98`, commit title "Closes #42"). Still open — **#5**
+(route failures / guardrail rejections get no requests row — the biggest
+visibility hole,, still the top open gap; PICKUP §6 has the design pointer),
+**#34** (streamed tool calls leave no record), **#41** ("full block" link
+wired to wrong endpoint — no page shows an untruncated block body)...
+**#40** (prompt_rewrite prefix/exact anchor to whole field — silent no-op in
+multi-source prompts), **#38** (provider headers applied after per-request
+headers, so static config overrides the client's `anthropic-beta`), **#36**
+(OpenAI stream chunks stamp block index onto `choices[].index`),
+**#26/#24/#21/#20/#18/#17/#14/#11/#9/#8/#4** (formerly "medium/low";
+see §6 for the write-ups — nothing changed this session on those). §6's stale
+#42 listing corrected above.
+
+**README now documents** the policy rule targets: alias (`target: "…"`),
+provider/model, or terminal refusal `target: {stop: {error, message}}` — with
+the status/message-validation rule and that a stop short-circuits the whole
+router chain (most useful in a catch-all position).
+
+**This session also wrote a skill** (user-local, not in this repo):
+`~/.hermes/skills/cnf/session-handoff/` encodes how to write a handoff doc —
+distilled from PICKUP.md's own conventions. Not tracked in git. It will not
+be loadable until a future session (hermes caches skill list at startup).
+
+---
+
+## 13. Session 2026-09-22c — #5 and #34 shipped, both closed on the board
+
+**#5 and #34 both shipped, on `develop` (unpushed).** `git status -sb` says
+how far ahead. Two commits, in order:
+
+| commit | what |
+|---|---|
+| `2db3665` | **#5**: a pre-guardrail rejection and a routing failure (including a `stop` refusal) now get a real `requests` row instead of a content-only stub under the old `owner_kind="rejected"`. Both call sites build a full `store.Event` and go through the same `p.record(...)` path the upstream-failure case already used — copied, not redesigned. Status codes centralized into one `pkg/errors` helper shared by the HTTP layer and the pipeline (previously only `writeArbiterError` had the mapping — avoids recreating the `status_code=0` bug fixed earlier). Every client-facing error body now prefixed `arbiter: ` at the single `writeError` choke point. **Dead-code removal folded into this same commit** (user's explicit choice, not deferred): `recordRejected`/`rejectionID`/`RecordRejected`/`ContentRecorder` and the `owner_kind="rejected"` write path are gone from `pipeline.go`/`writer.go`; `schema.sql`'s comment documents `'rejected'` as historical-only, kept so pre-#5 rows still read. |
+| `84d917c` | **#34**: a streamed tool call now leaves the same evidence the non-streaming path already produced. New `toolCallAccum` reassembles a tool call's id/name/args fragments beside the existing `orderedText` accumulator in `executeStream`'s per-event loop (same by-index concatenation an OpenAI client is already contractually required to do). `Event.ToolCalls` is now set on the streaming record call (`streamedToolCallNames`, same shape `toolCallNames` already produces for non-streaming — reader/UI need no changes). `capturedStreamBlocks` now also emits `tool_use` blocks, positioned past the text index range (`ToolCallIndex` is a distinct index space from `BlockIndex` on the OpenAI-origin wire, so using it as-is would collide with a text block's position). Malformed/truncated argument JSON degrades to a nil input rather than dropping the call. |
+
+**Both issues closed on the GitHub board this session** (`gh issue close 5`,
+`gh issue close 34`), each with a comment noting the fix is on `develop` and
+not yet pushed to origin — the board says closed but the code is only in this
+repo's local `develop` until someone pushes.
+
+**State for the next session:**
+
+- `feedback.md` at repo root is **untracked, pre-existing** — its #5 design
+  sketch is now historical (the design it sketched shipped in `2db3665`, close
+  enough to what was built that no rewrite is needed); leave the file alone.
+- PICKUP.md itself is **modified in the working tree** (this §13 + the header
+  line + §6 rewrite). Part of this handoff, not a feature — a fresh session
+  commits it as its own handoff, same convention as every prior session here.
+- Last verification (both commits): `devenv shell --no-tui -- bash -c
+  'export LITELLM_URL=http://localhost:4000/v1; go build ./... && go vet
+  ./... && go test ./... && golangci-lint run ./...'` all green; `gofmt -l`
+  shows only the same three pre-existing unrelated files noted in §12.
+- **§4's test discipline was followed for both.** #5: stashed the four
+  production files, confirmed `capture_test.go`/`stop_test.go` failed for the
+  old-behavior reason, popped the stash. #34: reverted each of the fix's three
+  parts (fragment accumulation, `Event.ToolCalls` on the record call,
+  `capturedStreamBlocks` emitting `tool_use`) one at a time and confirmed the
+  new test (`stream_tool_calls_test.go`) failed for that part's own reason
+  each time, then restored.
+- **One design note worth keeping:** `capturedStreamBlocks`'s tool-call
+  `Position` is deliberately `len(orderedText) + index`, not the raw
+  `ToolCallIndex` — Anthropic's stream sets `ToolCallIndex == BlockIndex`
+  (they're the same number), but on the OpenAI-origin wire path
+  `ToolCallIndex` numbers parallel tool calls independently of `BlockIndex`
+  (which is always 0 for a single candidate). Using it unoffset would have
+  collided a tool-call block's position with a text block's.
+
+**Board as of this session** (`gh issue list --state open --limit 40`): 17
+open — **#4** (meta, still open — #8/#9 are its remaining open children now
+that #5/#34 are closed), **#38, #36** (bugs, no priority label, no design
+gate), **#9, #8** (medium, UI client column / sort order), **#14, #11**
+(medium, design-gated), **#41, #40, #23, #22, #18** (low, bugs), **#26, #24,
+#21, #20, #17** (low, design-gated features). No priority:high bugs remain
+open other than the #4 tracker itself.
+
+**Not done, and deliberately not started:** nothing was pushed to origin.
+`develop` is 29 commits ahead of `origin/develop`, same as every session
+before this one — pushing was never asked for and PICKUP has never
+recommended it unprompted.

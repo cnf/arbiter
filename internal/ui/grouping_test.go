@@ -447,3 +447,87 @@ func atoiOrZero(s string) int {
 	}
 	return n
 }
+
+// classifierRow builds a classifier row for #8's trace-nesting tests. A
+// classifier call is never streamed and has no session key of its own
+// derivation reasons (see PICKUP's landmines), so a distinct helper is
+// clearer than threading a lot of overrides through lineRow.
+func classifierRow(id int64, traceID string, mutate func(*store.RequestRow)) requestRowView {
+	r := store.RequestRow{
+		ID:         id,
+		TraceID:    traceID,
+		Ts:         "2026-09-20 12:00:00.000000000 +0000 UTC",
+		TsRaw:      "2026-09-20 12:00:00.000000000 +0000 UTC",
+		Provider:   "openrouter-decisions",
+		Model:      "~typesafe/jev-latest",
+		StatusCode: 200,
+		Kind:       "classifier",
+	}
+	if mutate != nil {
+		mutate(&r)
+	}
+	return requestRowView{RequestRow: r}
+}
+
+// TestAttachTraceChildrenNestsUnderItsParent is #8's core case: a classifier
+// call and the client request that spawned it share a trace_id, and the
+// classifier must render as the client line's child rather than as an
+// unrelated top-level row — regardless of which one's ts sorts first, which
+// is the whole reason nesting exists (see attachTraceChildren's doc comment).
+func TestAttachTraceChildrenNestsUnderItsParent(t *testing.T) {
+	parent := lineRow(2, func(r *store.RequestRow) { r.TraceID = "t1" })
+	child := classifierRow(1, "t1", nil)
+
+	// Classifier finishes (and is written) after the client row here, i.e.
+	// it would sort *above* its parent under plain ts DESC — the #8 bug.
+	lines := foldRequestLines([]requestRowView{child, parent})
+	if len(lines) != 1 {
+		t.Fatalf("got %d top-level lines, want 1 (the child must nest, not stand alone)", len(lines))
+	}
+	if lines[0].Head.ID != parent.ID {
+		t.Fatalf("top-level line is %d, want the parent (%d)", lines[0].Head.ID, parent.ID)
+	}
+	if len(lines[0].Children) != 1 || lines[0].Children[0].Head.ID != child.ID {
+		t.Fatalf("parent's children = %+v, want exactly the classifier row (%d)", lines[0].Children, child.ID)
+	}
+	if !lines[0].Children[0].IsChild {
+		t.Error("the nested classifier line is not marked IsChild")
+	}
+}
+
+// TestAttachTraceChildrenLeavesOrphansAtTopLevel covers #19's own finding: a
+// classifier row whose parent client row never landed (a rejected/failed
+// request) has no trace sibling on the page. It must still render — folding
+// is a summary of the list, not a filter on it — just unnested.
+func TestAttachTraceChildrenLeavesOrphansAtTopLevel(t *testing.T) {
+	orphan := classifierRow(1, "no-such-trace", nil)
+	lines := foldRequestLines([]requestRowView{orphan})
+	if len(lines) != 1 {
+		t.Fatalf("got %d lines, want 1 (the orphaned classifier row, unnested)", len(lines))
+	}
+	if lines[0].Head.ID != orphan.ID || lines[0].IsChild {
+		t.Errorf("orphan rendered as %+v, want the classifier row itself, not marked as a child", lines[0])
+	}
+}
+
+// TestAttachTraceChildrenMatchesAnyTurnOfAFoldedRun is the folded-run edge
+// case in attachTraceChildren's own doc comment: a client line can stand for
+// several streamed turns, each with its own trace_id, and only the newest
+// (Head) is shown. A classifier tied to an *older* folded turn must still
+// find its parent line rather than being reported as an orphan.
+func TestAttachTraceChildrenMatchesAnyTurnOfAFoldedRun(t *testing.T) {
+	older := lineRow(1, func(r *store.RequestRow) { r.TraceID = "older-turn" })
+	newer := lineRow(2, func(r *store.RequestRow) { r.TraceID = "newer-turn" })
+	child := classifierRow(3, "older-turn", nil)
+
+	lines := foldRequestLines([]requestRowView{child, newer, older})
+	if len(lines) != 1 {
+		t.Fatalf("got %d top-level lines, want 1 (the folded run, with the classifier nested)", len(lines))
+	}
+	if !lines[0].Run {
+		t.Fatalf("the two client rows should have folded into one run; got Run=%v", lines[0].Run)
+	}
+	if len(lines[0].Children) != 1 || lines[0].Children[0].Head.ID != child.ID {
+		t.Fatalf("the run's children = %+v, want the classifier tied to its older turn", lines[0].Children)
+	}
+}

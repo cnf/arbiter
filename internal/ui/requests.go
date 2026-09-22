@@ -23,16 +23,16 @@ import (
 const defaultListLimit = 100
 
 // requestKindFilter turns the optional ?kind= query parameter into a
-// store.RequestFilter.Kind value. Absent means "client" — the default view
-// is real traffic only, not Arbiter's own internal requests (classifier
-// calls today; title-gen/subagent calls later, same column). The literal
-// value "all" means no filter at all; anything else is used verbatim as an
-// exact match.
+// store.RequestFilter.Kind value. Absent and the literal "all" both mean no
+// filter — the default view is everything, client traffic and Arbiter's own
+// internal requests (classifier calls today; title-gen/subagent calls later)
+// alike, since #8's nesting (see attachTraceChildren) is what makes a
+// classifier row legible next to the request that spawned it rather than
+// something to hide by default. Anything else is used verbatim as an exact
+// match, so ?kind=client still narrows to real traffic only.
 func requestKindFilter(raw string) string {
 	switch raw {
-	case "":
-		return "client"
-	case "all":
+	case "", "all":
 		return ""
 	default:
 		return raw
@@ -53,10 +53,10 @@ type requestFilterView struct {
 	LimitRaw       string
 
 	// KindRaw is the query param exactly as given ("" for the default
-	// "client"-only view, "all", or an explicit kind) — not the resolved
-	// filter value, which collapses "" and "all" to the same "no filter"
-	// meaning and would make the form unable to tell them apart when
-	// re-rendering which option is selected.
+	// "everything" view, "all" (the same thing spelled out), or an explicit
+	// kind) — not the resolved filter value, which collapses "" and "all" to
+	// the same "no filter" meaning and would make the form unable to tell
+	// them apart when re-rendering which option is selected.
 	KindRaw string
 
 	// ReqKindRaw is ?request_kind= as typed: what the request IS ("title",
@@ -126,6 +126,24 @@ type requestLineView struct {
 	// Run is true when this line stands for more than one request and is
 	// therefore a collapsed line rather than an ordinary request row.
 	Run bool
+
+	// Children holds non-client rows (classifier calls today) tied to this
+	// line by trace_id — see attachTraceChildren. They render immediately
+	// beneath their parent regardless of `ts`, which is the whole point:
+	// the classifier that serves a request routinely *finishes* before its
+	// parent (a fast child call inside a slower still-running request), and
+	// sorting by finish time alone put it above the row that caused it. A
+	// child is rendered, never re-sorted into the top-level list, so the
+	// list's own newest-first order (a separate, unrelated axis — see #8)
+	// is undisturbed by this.
+	Children []requestLineView
+
+	// IsChild marks a line rendered inside another line's Children. It only
+	// changes markup (indentation, a quieter row style); it is not a
+	// grouping identity and the tail does not need to know about it, since
+	// the live tail does not yet nest arrivals under their parent (#8's
+	// current scope is a static-page concern, not a live one).
+	IsChild bool
 
 	// Attr is Key reduced to a short, attribute-safe identifier, so the live
 	// tail can find the line a newly-arrived request belongs to instead of
@@ -297,6 +315,72 @@ func foldRequestLines(rows []requestRowView) []requestLineView {
 				Count: 1,
 			})
 		}
+	}
+	return attachTraceChildren(out)
+}
+
+// attachTraceChildren nests each non-client line (a classifier call today)
+// under the client line sharing its trace_id, so a request and the one
+// classifier call `trace_id` ties to it (#19 confirmed this is always 1:1 —
+// every trace with a classifier call holds exactly one) render as one visual
+// unit instead of two unrelated-looking rows.
+//
+// This exists because ordering alone does not fix legibility (#8): a
+// classifier call frequently *finishes* before the request that spawned it —
+// it is a fast detour inside a slower still-running request — so `ts DESC`
+// can put the child above or below its own cause depending on timing.
+// Nesting sidesteps the sort question entirely: a child always renders under
+// its parent, wherever the parent sits in the list. The top-level list order
+// (#8's derived-arrival-vs-finish-time question) is untouched here; this only
+// changes what happens once a row and its cause are both on the page.
+//
+// A client *line* can be a folded run of several streamed turns (see
+// foldRequestLines), and only its Head's row is shown — but each turn folded
+// into it is its own request with its own trace_id, and a classifier can
+// belong to any of them, not just the newest. So the match is keyed on every
+// row inside every client line, not just Head, or a classifier tied to an
+// older turn of a folded run would show up as unmatched.
+//
+// A non-client line with no client sibling on this page (its parent fell off
+// the page, or never got a client row at all — #19 found 65 such traces,
+// consistent with a rejected/failed request whose client row was never
+// written) stays at the top level, in its original position, rather than
+// being dropped or moved: this is a summary of the list, not a filter on it,
+// matching foldRequestLines's own rule.
+func attachTraceChildren(lines []requestLineView) []requestLineView {
+	byTrace := make(map[string]int, len(lines)) // trace_id -> line's own index in `lines`
+	for i, line := range lines {
+		if line.Head.Kind != "client" {
+			continue
+		}
+		for _, row := range line.Rows {
+			if row.TraceID != "" {
+				byTrace[row.TraceID] = i
+			}
+		}
+	}
+
+	children := make(map[int][]requestLineView, len(lines)) // parent's index in `lines` -> its children
+	origToOut := make(map[int]int, len(lines))               // index in `lines` -> index in `out`, client lines only
+	out := make([]requestLineView, 0, len(lines))
+	for i, line := range lines {
+		if line.Head.Kind == "client" {
+			origToOut[i] = len(out)
+			out = append(out, line)
+			continue
+		}
+		if parent, ok := byTrace[line.Head.TraceID]; ok && line.Head.TraceID != "" {
+			line.IsChild = true
+			children[parent] = append(children[parent], line)
+			continue
+		}
+		// No client sibling on this page: keep it where it was.
+		origToOut[i] = len(out)
+		out = append(out, line)
+	}
+
+	for parent, kids := range children {
+		out[origToOut[parent]].Children = kids
 	}
 	return out
 }
@@ -525,10 +609,13 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 	//   - ?flat=1, which renders one row per request and would otherwise be a
 	//     lie about the store ("every completed request") the moment a page
 	//     needed more rows than were fetched to fill its lines;
-	//   - a classifier/counts-style selection (kind=all or an explicit kind),
-	//     where a line's count is itself the thing being studied.
+	//   - an explicit single-kind selection (e.g. kind=classifier), where a
+	//     line's count is itself the thing being studied. The default view
+	//     (blank, or the equivalent "all") is a normal paged browse of mixed
+	//     kinds and keeps defaultListLimit — only a narrow, specific kind
+	//     widens.
 	if h.reader != nil {
-		if fv.Flat || f.Kind != "client" {
+		if fv.Flat || (fv.KindRaw != "" && fv.KindRaw != "all") {
 			f.Limit = maxRequestRows
 		}
 		rows, err := h.reader.ListRequests(r.Context(), f)

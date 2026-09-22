@@ -79,9 +79,18 @@ live tail matches a newly-arrived request against: a polled row whose key is
 already on screen bumps that line's count instead of adding a line, which is the
 difference between a live grouped view and one that grows a duplicate line per
 poll. A one-row line carries no key, so a row that arrives alone is prepended as
-its own line exactly as before. */}}
+its own line exactly as before.
+
+A line's Children (see attachTraceChildren, #8) render immediately above it in
+document order — this list is newest-first top-to-bottom, so "cause before
+effect" (the parent renders before its classifier child, unconditionally, per
+the #8 decision) means the child's row comes first in the HTML and the parent's
+own row after, putting the parent visually on top. Recursive through this same
+template — a classifier call has no children of its own today, but nothing
+here assumes exactly one level of nesting. */}}
 {{define "req-line"}}
-  <tr data-id="{{.Head.ID}}"{{if .Attr}} data-key="{{.Attr}}"{{end}}{{if .Run}} class="run"{{end}}>
+  {{range .Children}}{{template "req-line" .}}{{end}}
+  <tr data-id="{{.Head.ID}}"{{if .Attr}} data-key="{{.Attr}}"{{end}}{{if or .Run .IsChild}} class="{{if .Run}}run{{end}}{{if .IsChild}} trace-child{{end}}"{{end}}>
     <td class="when"><a href="/admin/ui/requests/{{.Head.ID}}">{{clock .Head.Ts}}</a>
       {{if .Run}}<a class="count" href="{{.OpenHref}}" data-count="{{.Count}}"
          title="this line stands for {{.Count}} streamed requests on the page loaded — open them as individual rows">{{.Count}}×</a>

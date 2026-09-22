@@ -239,6 +239,13 @@ table.grid tr.run .count {
 }
 table.grid tr.run .count:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); }
 
+/* A trace child (a classifier call today) rendered under the request that
+   spawned it — see attachTraceChildren, #8. Indented and quieter so the eye
+   still lands on the request first; nothing fancier, the table itself is
+   getting a broader redesign soon. */
+table.grid tr.trace-child td.when { padding-left: 1.5rem; color: var(--muted); }
+table.grid tr.trace-child { background: color-mix(in srgb, var(--line) 25%, transparent); }
+
 .pager { display: flex; align-items: center; gap: 0.75rem; margin: 0.6rem 0 0; color: var(--muted); font-size: 12px; }
 
 .status {

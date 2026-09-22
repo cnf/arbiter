@@ -21,9 +21,9 @@ honest, so a filter state can be reloaded, shared or bookmarked. */}}
   </label>
   <label>kind
     <select name="kind">
-      <option value=""{{if eq .F.KindRaw ""}} selected{{end}}>client</option>
+      <option value=""{{if eq .F.KindRaw ""}} selected{{end}}>all</option>
+      <option value="client"{{if eq .F.KindRaw "client"}} selected{{end}}>client</option>
       <option value="classifier"{{if eq .F.KindRaw "classifier"}} selected{{end}}>classifier</option>
-      <option value="all"{{if eq .F.KindRaw "all"}} selected{{end}}>all</option>
     </select>
   </label>
   <label>request

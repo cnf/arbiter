@@ -448,9 +448,10 @@ func TestActualModelHiddenWhenAbsent(t *testing.T) {
 	}
 }
 
-// The request list defaults to client traffic only, and a non-client row
-// gets a visible tag when explicitly shown — same contract as the JSON
-// surface, exercised here against the actual rendered HTML.
+// The request list defaults to showing every kind (client traffic plus
+// Arbiter's own internal requests, tagged so they're distinguishable), and an
+// explicit ?kind=client narrows to real traffic only — same contract as the
+// JSON surface, exercised here against the actual rendered HTML.
 func TestRequestListDefaultsToClientKindAndTagsOthers(t *testing.T) {
 	h, _ := newSeededHandler(t,
 		store.Event{TraceID: "client-row", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1},
@@ -461,19 +462,49 @@ func TestRequestListDefaultsToClientKindAndTagsOthers(t *testing.T) {
 	// for the classifier row — since the row markup carries no other field
 	// that identifies which event produced it.
 	def := serve(t, h, "GET", "/admin/ui/requests", false).Body.String()
-	if strings.Contains(def, `data-id="2"`) {
-		t.Errorf("default view included the classifier row; body = %s", firstLine(def))
-	}
 	if !strings.Contains(def, `data-id="1"`) {
 		t.Errorf("default view is missing the client row; body = %s", firstLine(def))
 	}
-
-	all := serve(t, h, "GET", "/admin/ui/requests?kind=all", false).Body.String()
-	if !strings.Contains(all, `data-id="2"`) {
-		t.Errorf("?kind=all is missing the classifier row; body = %s", firstLine(all))
+	if !strings.Contains(def, `data-id="2"`) {
+		t.Errorf("default view is missing the classifier row; body = %s", firstLine(def))
 	}
-	if !strings.Contains(all, `class="tag kind"`) {
-		t.Errorf("classifier row has no kind tag; body = %s", firstLine(all))
+	if !strings.Contains(def, `class="tag kind"`) {
+		t.Errorf("classifier row has no kind tag in the default view; body = %s", firstLine(def))
+	}
+
+	clientOnly := serve(t, h, "GET", "/admin/ui/requests?kind=client", false).Body.String()
+	if strings.Contains(clientOnly, `data-id="2"`) {
+		t.Errorf("?kind=client included the classifier row; body = %s", firstLine(clientOnly))
+	}
+	if !strings.Contains(clientOnly, `data-id="1"`) {
+		t.Errorf("?kind=client is missing the client row; body = %s", firstLine(clientOnly))
+	}
+}
+
+// TestRequestListRendersClassifierAboveItsParent is #8's visible ordering
+// contract: the page is newest-first top-to-bottom, and the decision was
+// "parent before child, unconditionally" where before means later in that
+// top-to-bottom reading — i.e. lower down, since lower = earlier in time on
+// this page. So the parent's own row must render UNDER its classifier child's
+// row in the actual HTML, not above it, regardless of which of the two this
+// store returns with the smaller ts/id (see attachTraceChildren, and the
+// reqrow.html req-line doc comment it's paired with).
+func TestRequestListRendersClassifierAboveItsParent(t *testing.T) {
+	h, _ := newSeededHandler(t,
+		store.Event{TraceID: "shared-trace", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1},
+		store.Event{TraceID: "shared-trace", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1, Kind: "classifier"},
+	)
+
+	body := serve(t, h, "GET", "/admin/ui/requests", false).Body.String()
+	parentPos := strings.Index(body, `data-id="1"`)
+	childPos := strings.Index(body, `data-id="2"`)
+	if parentPos == -1 || childPos == -1 {
+		t.Fatalf("expected both rows in the page; body = %s", firstLine(body))
+	}
+	if childPos > parentPos {
+		t.Errorf("classifier row (id 2) rendered at byte %d, after its parent (id 1) at byte %d; "+
+			"want the classifier ABOVE the parent, since the page reads newest-first top-to-bottom "+
+			"and the parent is fixed as chronologically first (#8)", childPos, parentPos)
 	}
 }
 

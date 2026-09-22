@@ -409,6 +409,11 @@ routers:
           provider: "claude"           # skipped unless claude accepts images
         - when: {}                     # catch-all
           provider: "claude"
+        - when: { domain: "unmatched" }  # or refuse instead of degrading:
+          target:                        #   target: {stop: {error, message}}
+            stop:
+              error: 406
+              message: "requests in this domain are not supported"
   - name: "primary"
     type: "simple"                     # chained after policy: last-resort default
     config:
@@ -457,6 +462,26 @@ precedence order:
    leaves effort to classify), then the first matching policy rule wins. A
    policy router errors when nothing matches, so chain a `simple` router after
    it (or write a catch-all rule) to degrade instead of failing.
+
+A rule's target is exactly one of: a named alias (`target: "…"`), a literal
+provider/model (`provider:`/`model:`), or a **terminal refusal**. A refusal rule
+matches like any other and then stops the request outright instead of routing
+it:
+
+```yaml
+- when: { domain: "unmatched" }
+  target:
+    stop:
+      error: 406
+      message: "requests in this domain are not supported"
+```
+
+`error` must be a valid HTTP status code and `message` non-empty; the client
+gets exactly that status with the message as the error body, and the refusal is
+recorded like any other rejection. A `stop` rule short-circuits the whole
+router chain — a later fallback router can't override an explicit refusal — and
+is most useful in a catch-all position (`when: {}`) to refuse everything that
+no earlier rule covers.
 
 Aliases are client-facing and appear in `/models` alongside provider models
 (listed with provider `"alias"`). Any rule `target` may name an alias, and a

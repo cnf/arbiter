@@ -5,8 +5,6 @@ package pipeline
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/http"
@@ -325,10 +323,11 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		mutated, err := g.ApplyPre(ctx, req)
 		if err != nil {
 			p.logger.LogGuardrail(ctx, g.Name(), "rejected", false)
-			// A guardrail rejection is a real request the operator will want to
-			// see ("why was this refused?"), and it never reaches the requests
-			// table. Its content goes in under owner_kind="rejected".
-			p.recordRejected(traceID, content)
+			// A guardrail rejection is a real request the operator will want
+			// to see ("why was this refused?") — #5: "nothing invisible", it
+			// gets a real requests row like any other failed client request,
+			// not a content-only stub under owner_kind="rejected".
+			p.recordFailed(ctx, traceID, sessionKey, format, req.Model, start, err, content)
 			return nil, err
 		}
 		p.logger.LogGuardrail(ctx, g.Name(), "applied", true)
@@ -348,10 +347,10 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 
 	route, sig, err := p.resolveRoute(ctx, req, hasKey)
 	if err != nil {
-		// Routing failed (no rule matched and no fallback router, or a config
-		// the request can't be routed under). Same reasoning as a guardrail
-		// rejection: the content is worth keeping even though no row will exist.
-		p.recordRejected(traceID, content)
+		// Routing failed (no rule matched and no fallback router, a config
+		// the request can't be routed under, or a deliberate `stop` rule).
+		// Same reasoning as a guardrail rejection (#5): give it a real row.
+		p.recordFailed(ctx, traceID, sessionKey, format, req.Model, start, err, content)
 		return nil, err
 	}
 
@@ -617,23 +616,29 @@ func (p *Pipeline) classifierContent(call *types.ClassifierCallInfo) *store.Capt
 	return contentOrNil(c)
 }
 
-// recordRejected stores the captured content of a request that will never get
-// a requests row. It is a no-op when capture is off or nothing was captured,
-// so the error paths cost nothing in the default configuration.
-//
-// The id passed as the owner is derived from the trace id, which is stable for
-// one request across all its error paths and distinguishes it from other
-// rejections. It is not a rowid and there is no row: content_refs records the
-// owner as ('rejected', <this>) on purpose, so a later change of policy that
-// gives rejected requests real rows can promote them without rewriting these
-// references (see content_refs in schema.sql).
-func (p *Pipeline) recordRejected(traceID string, content store.CapturedContent) {
-	if !p.captureContent || content.Empty() {
-		return
-	}
-	if rec, ok := p.store.(store.ContentRecorder); ok {
-		rec.RecordRejected(rejectionID(traceID), content)
-	}
+// recordFailed stores a full requests row for a request that never reached
+// (or was refused before reaching) an upstream: a pre-guardrail rejection or
+// a routing failure (#5 — "nothing invisible": these are real client
+// requests that merely failed, not a separate invisible class). It mirrors
+// the upstream-failure recording below it, with no route/provider/model
+// resolved yet (routing is exactly what failed) and cost left at its zero
+// value, which is correct — nothing reached a provider to spend anything on.
+// arbitererrors.StatusFor is the same status mapping internal/http uses to
+// answer the client, so the row's status_code always matches what the
+// client was actually told.
+func (p *Pipeline) recordFailed(ctx context.Context, traceID, sessionKey, format, model string, start time.Time, err error, content store.CapturedContent) {
+	p.record(store.Event{
+		TraceID:    traceID,
+		SessionKey: sessionKey,
+		Format:     format,
+		Model:      model,
+		AliasUsed:  p.aliasName(model),
+		LatencyMs:  time.Since(start).Milliseconds(),
+		StatusCode: arbitererrors.StatusFor(err),
+		Error:      err.Error(),
+		Content:    contentOrNil(content),
+		Headers:    headersFromContext(ctx),
+	})
 }
 
 // capturedStreamBlocks turns the per-index text accumulated from a stream into
@@ -667,15 +672,6 @@ func contentOrNil(c store.CapturedContent) *store.CapturedContent {
 		return nil
 	}
 	return &c
-}
-
-// rejectionID turns a trace id into the stable numeric owner id used for
-// rejected content. Hashing keeps it collision-resistant and independent of
-// how the trace id was formed; only the low 63 bits are kept so the value is
-// always a positive int64.
-func rejectionID(traceID string) int64 {
-	sum := sha256.Sum256([]byte("rejected:" + traceID))
-	return int64(binary.BigEndian.Uint64(sum[:8]) >> 1)
 }
 
 // aliasName reports the alias the client named, if req.Model resolves to one.

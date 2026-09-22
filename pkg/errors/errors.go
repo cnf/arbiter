@@ -1,6 +1,7 @@
 package errors
 
 import (
+	stderrors "errors"
 	"fmt"
 	"time"
 )
@@ -191,5 +192,44 @@ func NewConfigError(msg string, cause error) *ConfigError {
 			Cause:      cause,
 			Attributes: make(map[string]interface{}),
 		},
+	}
+}
+
+// StatusFor is the single source of truth for "what HTTP status does this
+// pipeline error map to", shared by internal/http (what the client is told)
+// and internal/pipeline (what gets recorded in the requests row for #5 —
+// "nothing invisible"). Keeping one function means the two can never drift
+// apart the way status_code=0-vs-502 already did once for upstream failures
+// (see pipeline.upstreamFailureStatus's comment).
+//
+// GuardrailError, StopError, UnknownModelError, and UpstreamError carry their
+// own status; everything else (RoutingError, ClassificationError,
+// TranslationError's post_routing phase, and any error this package doesn't
+// know about) is Arbiter's own bug or misconfiguration, not client error, so
+// it maps to 500.
+func StatusFor(err error) int {
+	var guardrailErr *GuardrailError
+	var stopErr *StopError
+	var unknownModelErr *UnknownModelError
+	var upstreamErr *UpstreamError
+	var translationErr *TranslationError
+
+	switch {
+	case stderrors.As(err, &guardrailErr):
+		return guardrailErr.StatusCode
+	case stderrors.As(err, &stopErr):
+		return stopErr.StatusCode
+	case stderrors.As(err, &unknownModelErr):
+		return unknownModelErr.StatusCode
+	case stderrors.As(err, &upstreamErr):
+		status := upstreamErr.StatusCode
+		if status < 400 || status > 599 {
+			return 502
+		}
+		return status
+	case stderrors.As(err, &translationErr):
+		return translationErr.StatusCode
+	default:
+		return 500
 	}
 }

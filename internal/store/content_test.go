@@ -148,78 +148,42 @@ func TestContentIsReassembledInOrder(t *testing.T) {
 	}
 }
 
-// TestRejectedContentIsStoredWithoutARequestRow proves the (b)-now shape: a
-// request Arbiter never recorded still gets its content stored, under
-// owner_kind="rejected", so "why was this refused" has something to look at.
-func TestRejectedContentIsStoredWithoutARequestRow(t *testing.T) {
+// TestRefusedRequestContentIsVisibleInAggregates proves #5's store-layer
+// invariant: a refused request (pipeline.recordFailed's Event — a real row,
+// status_code + error set, content under owner_kind="request" like any other
+// client request) is NOT invisible to the queries that join requests — the
+// opposite of the pre-#5 owner_kind="rejected" design, which existed
+// specifically to keep a refusal out of every aggregate.
+func TestRefusedRequestContentIsVisibleInAggregates(t *testing.T) {
 	w, r := captureFixture(t)
 	ctx := context.Background()
 
-	w.RecordRejected(42, CapturedContent{
-		Request: []Block{textBlock("user", 0, 0, "a request that got rejected")},
+	w.Record(Event{
+		TraceID: "t-refused", Format: "openai", Model: "m", Kind: "client",
+		StatusCode: 429, Error: "guardrail g: request blocked by prompt match",
+		Content: &CapturedContent{Request: []Block{textBlock("user", 0, 0, "a request that will be refused")}},
 	})
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// No request row was written...
 	var requests int64
 	if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM requests`).Scan(&requests); err != nil {
 		t.Fatalf("count requests: %v", err)
 	}
-	if requests != 0 {
-		t.Errorf("requests rows = %d, want 0 for a rejection", requests)
-	}
-
-	// ...but the content and its reference are there, addressed as 'rejected'.
-	var kind string
-	if err := r.db.QueryRowContext(ctx,
-		`SELECT owner_kind FROM content_refs WHERE owner_id = 42`).Scan(&kind); err != nil {
-		t.Fatalf("read rejected ref: %v", err)
-	}
-	if kind != "rejected" {
-		t.Errorf("owner_kind = %q, want rejected", kind)
-	}
-
-	blocks, err := r.contentFor(ctx, "rejected", 42)
-	if err != nil {
-		t.Fatalf("contentFor: %v", err)
-	}
-	if len(blocks) != 1 || blocks[0].Body != "a request that got rejected" {
-		t.Errorf("rejected content = %+v, want the one block back", blocks)
-	}
-}
-
-// TestRejectedContentIsInvisibleToRequestQueries is the other half of the (b)
-// contract: storing rejections must not leak into anything that reads requests,
-// or every aggregate would silently include traffic that never succeeded.
-func TestRejectedContentIsInvisibleToRequestQueries(t *testing.T) {
-	w, r := captureFixture(t)
-	ctx := context.Background()
-
-	w.RecordRejected(7, CapturedContent{
-		Request: []Block{textBlock("user", 0, 0, "rejected content that must not leak")},
-	})
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	// The "repeated content" query joins requests, so a rejection must not
-	// appear in it no matter how often the same text is rejected.
-	repeated, err := r.RepeatedContent(ctx, WindowFrom(time.Hour), 1, 0, 50)
-	if err != nil {
-		t.Fatalf("RepeatedContent: %v", err)
-	}
-	if len(repeated) != 0 {
-		t.Errorf("repeated content = %+v, want none (rejections join no requests)", repeated)
+	if requests != 1 {
+		t.Fatalf("requests rows = %d, want 1 — a refused request must get a real row", requests)
 	}
 
 	overall, err := r.Overall(ctx, WindowFrom(time.Hour))
 	if err != nil {
 		t.Fatalf("Overall: %v", err)
 	}
-	if overall.Requests != 0 {
-		t.Errorf("Overall.Requests = %d, want 0", overall.Requests)
+	if overall.Requests != 1 {
+		t.Errorf("Overall.Requests = %d, want 1 — the refusal is real client traffic, not invisible", overall.Requests)
+	}
+	if overall.Errors != 1 {
+		t.Errorf("Overall.Errors = %d, want 1 (status_code 429 >= 400)", overall.Errors)
 	}
 }
 

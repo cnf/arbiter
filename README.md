@@ -302,8 +302,9 @@ disappearing.
 The content tables sit in the same file and the same write transaction as the
 request row, so a request can never be half-stored: its row and its bodies
 commit together or not at all. `content_refs.owner_kind` distinguishes
-`'request'` from `'rejected'`, which is what lets content for a refused
-request exist without a `requests` row to point at.
+`'request'` from `'rejected'` — the latter now unused by any live write path
+(see "Nothing invisible" below) but kept as a schema value so old rows stay
+readable.
 
 ## Architecture
 
@@ -1752,15 +1753,22 @@ thereafter, on its own connection so it never contends with the writer. There is
 no reference count to keep correct; that is deliberate, because refcounts are
 where content-addressed collectors historically go wrong.
 
-Requests Arbiter *rejects* — a normalize failure, a pre-guardrail refusal, a
-routing failure — never get a row in `requests`, but their content is still
-stored, with `owner_kind = 'rejected'`. "Why was this refused" is a first-class
-question for a router, and those requests would otherwise leave no content
-trace at all. Their references are addressed by `(owner_kind, owner_id)` rather
-than by a bare request id, so a later decision to give rejected requests real
-rows is an insert plus an update, not a rewrite of the read queries. Rejected
-content is deliberately invisible to every query that joins `requests`, so it
-cannot leak into the aggregates.
+Requests Arbiter refuses — a pre-guardrail rejection, a routing failure, or an
+operator's `stop` rule (see "Routing rules" below) — get a **real row in
+`requests`**, the same as any other client request: `status_code` and `error`
+set from the same mapping (`pkg/errors.StatusFor`) that decides what the
+client itself is told, `kind` stays `"client"`, and captured content attaches
+the normal way under `owner_kind = 'request'`. "If it happened, it should be
+shown" (#5) — a request Arbiter refused is not a separate, invisible class of
+traffic, so it appears in the requests list, `/admin/stats`, and every cost
+aggregate exactly like a served request. Cost is `0` when nothing reached a
+provider (the common case — a guardrail or routing refusal happens before any
+upstream call); a failure *after* an upstream call already went through the
+upstream-failure path, which records the real spend. A refusal this early has
+no resolved `provider`/`model` — those columns are blank, which reads as
+"never got that far" rather than a defect. (A translation failure — the
+payload didn't even parse — has no conversation to record at all, so it gets
+neither a row nor stored content; there is nothing to show.)
 
 Classifier note: `axis` is optional on a `heuristic` classifier (defaults to
 `domain`, as before this field existed). The legacy `capability_detector` type

@@ -329,19 +329,19 @@ func isSensitiveHeader(name string) bool {
 	return false
 }
 
-// writeError writes a plain JSON error body.
+// writeError writes a plain JSON error body, prefixed so it's unambiguous
+// which service produced it (relevant once Arbiter sits behind other
+// proxies in the same chain).
 func writeError(w http.ResponseWriter, statusCode int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "arbiter: " + message})
 }
 
-// writeArbiterError maps a pipeline error to an HTTP status code.
-// GuardrailError, StopError, and UpstreamError carry their own status codes
-// (e.g. a rate-limit guardrail returns 429, an operator's `stop` rule
-// returns whatever it configured, a 5xx from upstream is passed through);
-// everything else -> 500, since routing/translation/classification
-// failures are Arbiter's own bugs or misconfiguration, not client error.
+// writeArbiterError maps a pipeline error to an HTTP status code via
+// arbitererrors.StatusFor — the same mapping internal/pipeline uses to
+// record the status on a request that never reached upstream (#5), so the
+// two can never disagree about what a given error "is".
 func writeArbiterError(w http.ResponseWriter, err error) {
 	var guardrailErr *arbitererrors.GuardrailError
 	var stopErr *arbitererrors.StopError
@@ -349,22 +349,19 @@ func writeArbiterError(w http.ResponseWriter, err error) {
 	var translationErr *arbitererrors.TranslationError
 	var unknownModelErr *arbitererrors.UnknownModelError
 
+	status := arbitererrors.StatusFor(err)
 	switch {
 	case errors.As(err, &guardrailErr):
-		writeError(w, guardrailErr.StatusCode, guardrailErr.Message)
+		writeError(w, status, guardrailErr.Message)
 	case errors.As(err, &stopErr):
-		writeError(w, stopErr.StatusCode, stopErr.Message)
+		writeError(w, status, stopErr.Message)
 	case errors.As(err, &unknownModelErr):
-		writeError(w, unknownModelErr.StatusCode, unknownModelErr.Message)
+		writeError(w, status, unknownModelErr.Message)
 	case errors.As(err, &upstreamErr):
-		status := upstreamErr.StatusCode
-		if status < 400 || status > 599 {
-			status = http.StatusBadGateway
-		}
 		writeError(w, status, upstreamErr.Message)
 	case errors.As(err, &translationErr):
-		writeError(w, translationErr.StatusCode, translationErr.Message)
+		writeError(w, status, translationErr.Message)
 	default:
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, status, err.Error())
 	}
 }

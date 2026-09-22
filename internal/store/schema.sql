@@ -88,15 +88,16 @@ CREATE TABLE IF NOT EXISTS content (
 
 -- Which blocks belonged to which request, in order.
 --
--- owner_kind/owner_id rather than a plain request_id foreign key: a request
--- that Arbiter rejects (normalize failure, a pre-guardrail rejection, a
--- routing failure) never gets a requests row, but its content is still worth
--- storing — "why was this rejected" is a first-class question for a router.
--- Those rows use owner_kind='rejected'; promoting them later is an INSERT plus
--- an UPDATE of owner_kind/owner_id, with no change to these queries.
+-- owner_kind/owner_id rather than a plain request_id foreign key: historically
+-- this let a request Arbiter refused (a pre-guardrail rejection, a routing
+-- failure) store content under owner_kind='rejected' with no requests row to
+-- point at. #5 changed that — a refused request now gets a real requests row
+-- like any other client request (see pipeline.recordFailed), so every live
+-- write uses owner_kind='request'. The column stays untyped and 'rejected'
+-- remains a legal historical value so any pre-#5 database keeps reading.
 CREATE TABLE IF NOT EXISTS content_refs (
-    owner_kind TEXT    NOT NULL,   -- "request" | "rejected"
-    owner_id   INTEGER NOT NULL,   -- requests.id, or the rejection's rowid
+    owner_kind TEXT    NOT NULL,   -- "request" (also, historically, "rejected" — see above)
+    owner_id   INTEGER NOT NULL,   -- requests.id
     direction  TEXT    NOT NULL,   -- "request" (as sent) | "request_guardrailed" (as it went upstream, when a pre-guardrail ran) | "response"
     msg_index  INTEGER NOT NULL,   -- position of the message in the conversation
     position   INTEGER NOT NULL,   -- position of the block within the message

@@ -12,23 +12,13 @@ import (
 	"github.com/cnf/arbiter/pkg/types"
 )
 
-// capturingRecorder records both normal events and rejections, which is what a
-// real SQLiteWriter does. Adding the rejection method here is deliberate: the
-// pipeline type-asserts store.ContentRecorder, so a writer without it would
-// silently stop capturing rejections, and this fake would hide that.
+// capturingRecorder records events, standing in for a real SQLiteWriter.
 type capturingRecorder struct {
-	events    []store.Event
-	rejected  []store.CapturedContent
-	rejectIDs []int64
+	events []store.Event
 }
 
 func (w *capturingRecorder) Record(ev store.Event) {
 	w.events = append(w.events, ev)
-}
-
-func (w *capturingRecorder) RecordRejected(id int64, c store.CapturedContent) {
-	w.rejectIDs = append(w.rejectIDs, id)
-	w.rejected = append(w.rejected, c)
 }
 
 // eavesdropNormalizer returns a request with a client-supplied system prompt and
@@ -250,9 +240,12 @@ func TestCaptureStreamOffRecordsNoContent(t *testing.T) {
 	}
 }
 
-// TestRejectedRequestContentIsRecorded proves the (b) decision at the pipeline
-// level: a request a pre-guardrail refuses still gets its content stored, under
-// a rejection id, so "why was this refused" has something to show.
+// TestRejectedRequestContentIsRecorded proves the #5 decision at the
+// pipeline level: a request a pre-guardrail refuses gets a real requests
+// row (status_code + error set, kind stays "client"), with its content
+// attached the normal way — not a content-only stub under a separate
+// "rejected" owner kind, which would leave it invisible in the requests
+// table, /admin/stats, and every cost aggregate.
 func TestRejectedRequestContentIsRecorded(t *testing.T) {
 	fu := &fakeUpstream{}
 	w := &capturingRecorder{}
@@ -268,42 +261,38 @@ func TestRejectedRequestContentIsRecorded(t *testing.T) {
 		t.Fatal("Execute returned nil error, want the guardrail rejection")
 	}
 
-	if len(w.rejected) != 1 {
-		t.Fatalf("rejections recorded = %d, want 1", len(w.rejected))
+	if len(w.events) != 1 {
+		t.Fatalf("events recorded = %d, want 1 — a refused request must still get a requests row", len(w.events))
 	}
-	if len(w.events) != 0 {
-		t.Errorf("events recorded = %d, want 0 (a rejected request gets no request row)", len(w.events))
+	ev := w.events[0]
+	if ev.StatusCode == 0 {
+		t.Error("status_code = 0, want the guardrail's real status")
 	}
-	blocks := w.rejected[0].Request
-	if len(blocks) == 0 {
-		t.Fatal("no content captured for the rejection")
+	if ev.Error == "" {
+		t.Error("error = \"\", want the guardrail's rejection message")
+	}
+	if ev.Kind != "client" && ev.Kind != "" {
+		t.Errorf("kind = %q, want \"client\" (empty defaults to client) — a refused request is still client traffic", ev.Kind)
+	}
+	if ev.Content == nil || len(ev.Content.Request) == 0 {
+		t.Fatal("no content captured for the refused request")
 	}
 	var found bool
-	for _, b := range blocks {
+	for _, b := range ev.Content.Request {
 		if string(b.Body) == "a request that will be refused" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("rejected content = %+v, want the user's text", blocks)
-	}
-
-	// The rejection id is derived from the trace id, so it is stable for this
-	// request and distinct from other rejections.
-	if w.rejectIDs[0] == 0 {
-		t.Error("rejection id is 0; a stable non-zero owner id is required")
-	}
-	other := rejectionID("t-reject")
-	if w.rejectIDs[0] != other {
-		t.Errorf("rejection id = %d, want the trace-derived %d", w.rejectIDs[0], other)
-	}
-	if rejectionID("t-other") == other {
-		t.Error("different trace ids produced the same rejection id")
+		t.Errorf("captured content = %+v, want the user's text", ev.Content.Request)
 	}
 }
 
-// TestRejectedContentIsNotCapturedWhenCaptureOff keeps the rejection path
-// consistent with the normal one: no capture means no writes anywhere.
+// TestRejectedContentIsNotCapturedWhenCaptureOff proves #5's row is
+// unconditional: capture_content only ever gates the request/response
+// bodies, never the row itself — "nothing invisible" holds even with
+// capture off, so a refused request still gets a requests row with its
+// status and error, just no Content attached.
 func TestRejectedContentIsNotCapturedWhenCaptureOff(t *testing.T) {
 	w := &capturingRecorder{}
 	p := NewPipeline(
@@ -315,8 +304,11 @@ func TestRejectedContentIsNotCapturedWhenCaptureOff(t *testing.T) {
 	if _, err := p.Execute(context.Background(), []byte("refused"), "openai", "t1", ""); err == nil {
 		t.Fatal("Execute returned nil error, want a rejection")
 	}
-	if len(w.rejected) != 0 {
-		t.Errorf("rejections recorded = %d, want 0 with capture off", len(w.rejected))
+	if len(w.events) != 1 {
+		t.Fatalf("events recorded = %d, want 1 — the row is unconditional, capture only gates Content", len(w.events))
+	}
+	if w.events[0].Content != nil {
+		t.Errorf("Content = %+v, want nil with capture off", w.events[0].Content)
 	}
 }
 

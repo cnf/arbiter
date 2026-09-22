@@ -236,42 +236,6 @@ func TestContentByHashReturnsTheStoredBodyAndDistinguishesNotFound(t *testing.T)
 	}
 }
 
-// TestRequestsForContentExcludesRejections mirrors the guard on RepeatedContent:
-// a rejected request has no requests row, so a block whose only references are
-// rejections must not produce a drill-down row — the owner_id space is shared
-// between requests.id and a rejection rowid, so a missing owner_kind filter
-// would link a rejected block to an unrelated request.
-func TestRequestsForContentExcludesRejections(t *testing.T) {
-	w, r := captureFixture(t)
-	ctx := context.Background()
-
-	// One real request, so owner_id 1 exists and the id space is populated.
-	w.Record(Event{
-		TraceID: "t", SessionKey: "s1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
-		Content: &CapturedContent{Request: []Block{
-			textBlock("user", 0, 0, "a normal request body with enough characters"),
-		}},
-	})
-	// A rejected capture whose owner_id collides with a requests.id.
-	w.RecordRejected(1, CapturedContent{
-		Request: []Block{textBlock("user", 0, 0, "rejected text that must not be reachable")},
-	})
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	var hash []byte
-	err := r.db.QueryRowContext(ctx,
-		`SELECT hash FROM content_refs WHERE owner_kind = 'rejected' LIMIT 1`).Scan(&hash)
-	if err != nil {
-		t.Fatalf("no rejected ref seeded: %v", err)
-	}
-
-	rows, err := r.RequestsForContent(ctx, ContentHashHex(hash), 50)
-	if err != nil {
-		t.Fatalf("RequestsForContent: %v", err)
-	}
-	if len(rows) != 0 {
-		t.Errorf("drill-down returned %d rows for a rejected-only block, want 0: %+v", len(rows), rows)
-	}
-}
+// TestRequestsForContentExcludesRejections is now moot: no live write path
+// ever produces owner_kind='rejected' rows (#5 — see schema.sql's comment on
+// content_refs). Removed along with RecordRejected/rejectionID.

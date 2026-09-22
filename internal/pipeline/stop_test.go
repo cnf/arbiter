@@ -52,16 +52,21 @@ func TestExecutePropagatesStopErrorUnwrapped(t *testing.T) {
 	if stopErr.StatusCode != 406 || stopErr.Message != "not like that poopoohead" {
 		t.Errorf("StopError = {%d, %q}, want {406, \"not like that poopoohead\"}", stopErr.StatusCode, stopErr.Message)
 	}
-	// A stop is a rejection, not a completed request: nothing may be recorded
-	// as a normal event, but the refusal's content must still be captured
-	// under the rejected owner so the operator can see what was refused.
-	if len(w.events) != 0 {
-		t.Errorf("events = %+v, want none — a stop is a rejection, not a completed request row", w.events)
+	// #5: a refused request (a stop is a refusal, same as a guardrail
+	// rejection or a routing failure) gets a real requests row now — status
+	// and error set, content attached the normal way — not a content-only
+	// stub under the separate "rejected" owner kind.
+	if len(w.events) != 1 {
+		t.Fatalf("events = %+v, want exactly 1 — a stop is a refused client request, not an invisible one", w.events)
 	}
-	if len(w.rejected) != 1 {
-		t.Fatalf("rejected = %+v, want exactly 1 rejection recorded", w.rejected)
+	ev := w.events[0]
+	if ev.StatusCode != 406 {
+		t.Errorf("events[0].StatusCode = %d, want 406 (the stop's configured status)", ev.StatusCode)
 	}
-	if len(w.rejected[0].Request) == 0 {
-		t.Error("rejected[0].Request = empty, want the refused request's content captured")
+	if ev.Error != stopErr.Error() {
+		t.Errorf("events[0].Error = %q, want %q", ev.Error, stopErr.Error())
+	}
+	if ev.Content == nil || len(ev.Content.Request) == 0 {
+		t.Error("events[0].Content.Request = empty, want the refused request's content captured")
 	}
 }

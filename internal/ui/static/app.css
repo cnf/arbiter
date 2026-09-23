@@ -661,3 +661,125 @@ details.preamble[open] > summary { margin-bottom: 0.4rem; }
   font-family: var(--mono);
   font-size: 0.78125rem;
 }
+
+/* Session transcript (#48). No chat bubbles: each turn is a full-width block
+   with a colored left border for direction, and metadata sits in a rail
+   beside the blocks rather than a row between them (DESIGN.md). */
+.transcript { display: flex; flex-direction: column; gap: var(--space-lg); max-width: 78ch; }
+
+.turn {
+  display: grid;
+  grid-template-columns: 15ch 1fr;
+  gap: var(--space-md);
+  align-items: start;
+}
+@media (max-width: 760px) {
+  .turn { grid-template-columns: 1fr; }
+}
+
+.turn-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.turn-rail .turnno { font-family: var(--mono); font-weight: 600; color: var(--ink); }
+.turn-rail .turnmodel { font-size: 11px; }
+.turn-rail .turnnums { display: flex; flex-direction: column; gap: 1px; font-size: 11px; }
+.turn-rail .turnnums .cost { color: var(--ink); }
+.turn-rail .turnwhy { max-width: 15ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
+.turn-rail .turnlink { font-size: 11px; }
+
+.turn-body { display: flex; flex-direction: column; gap: var(--space-sm); min-width: 0; }
+
+.preamble { display: flex; flex-direction: column; gap: var(--space-sm); }
+.fieldlabel { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; }
+
+/* One content block: left border marks direction (never a filled bubble),
+   consistent whether it holds prose, a tool call, or a tool result. */
+.block {
+  border-left: 3px solid var(--line);
+  padding: var(--space-xs) 0 var(--space-xs) var(--space-md);
+  min-width: 0;
+}
+.block.dir-request { border-left-color: var(--secondary); }
+.block.dir-response { border-left-color: var(--primary); }
+.blocktag { margin-bottom: 3px; }
+.blocktext {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.turn-replay { font-size: 11px; }
+
+/* No nested scrollboxes: long text fades under a gradient and expands
+   in place on click, rather than an inner overflow:auto box (DESIGN.md). */
+.showmore { position: relative; max-height: 168px; overflow: hidden; }
+.showmore.is-short { max-height: none; }
+.showmore.is-expanded { max-height: none; }
+.showmore-fade {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 2.5em;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  pointer-events: none;
+}
+.showmore.is-short .showmore-fade, .showmore.is-expanded .showmore-fade { display: none; }
+.showmore-btn {
+  margin-top: 2px;
+  padding: 1px 8px;
+  font-size: 11px;
+  color: var(--secondary-ink);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+}
+
+/* Small pill action — a chip is a button that opens more detail (raw JSON,
+   a guardrail diff), distinct from .tag which is a passive label. */
+.chip {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 7px;
+  margin: 2px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  color: var(--muted);
+  background: var(--surface);
+  cursor: pointer;
+}
+.chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+.chip.warn:hover { background: color-mix(in srgb, var(--warn) 10%, transparent); }
+
+/* Tool call/result: the `tool` color, not `warn` — a tool call is neutral
+   information, not a problem state (DESIGN.md). Content-first: the
+   summarized command/pattern/path is what's shown; the {id,name,input}
+   envelope is a chip away, not the default view. */
+.toolcall, .toolresult { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.tag.tool { color: var(--tool); border-color: color-mix(in srgb, var(--tool) 40%, transparent); }
+.toolname { font-size: 11px; color: var(--tool); }
+.toolsummary {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.toolsummary.generic { color: var(--muted); }
+.toolresult.is-error .blocktext { color: var(--err); }
+
+/* Guardrail-modified content: collapsed by default behind a warn chip; the
+   diff itself renders unified-diff style when the chip's popover opens. */
+.diff { font-family: var(--mono); font-size: 0.78125rem; }
+.diffline { display: flex; gap: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diffmark { flex: none; width: 1ch; color: var(--muted); }
+.diff-eq { color: var(--muted); }
+.diff-del { color: var(--err); text-decoration: line-through; }
+.diff-del .diffmark { color: var(--err); }
+.diff-add { color: var(--ok); }
+.diff-add .diffmark { color: var(--ok); }

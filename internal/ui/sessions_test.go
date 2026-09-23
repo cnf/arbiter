@@ -172,7 +172,7 @@ func TestTranscriptSeparatesNewContentFromReplay(t *testing.T) {
 	// once per turn behind a collapsed <details>, which would ship the same
 	// bytes to the browser and leave the page just as large.
 	preCount := 0
-	for _, m := range regexp.MustCompile(`(?s)<pre>(.*?)</pre>`).FindAllStringSubmatch(body, -1) {
+	for _, m := range regexp.MustCompile(`(?s)<pre[^>]*>(.*?)</pre>`).FindAllStringSubmatch(body, -1) {
 		if strings.Contains(m[1], "you are a helpful assistant") {
 			preCount++
 		}
@@ -193,7 +193,7 @@ func TestTranscriptSeparatesNewContentFromReplay(t *testing.T) {
 	for _, want := range []string{"first question please", "second question please", "third question please",
 		"answer one", "answer two", "answer three"} {
 		found := false
-		for _, m := range regexp.MustCompile(`(?s)<pre>(.*?)</pre>`).FindAllStringSubmatch(body, -1) {
+		for _, m := range regexp.MustCompile(`(?s)<pre[^>]*>(.*?)</pre>`).FindAllStringSubmatch(body, -1) {
 			if strings.Contains(m[1], want) {
 				found = true
 				break

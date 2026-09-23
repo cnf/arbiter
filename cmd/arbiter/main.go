@@ -259,6 +259,7 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	r.HandleFunc("/admin/ui/requests/tail", arbiterhttp.Gate(forwardAuthHeader, adminUI.TailHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}/content", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestContentHandler)).Methods("GET")
+	r.HandleFunc("/admin/ui/requests/{id}/guardrail-diff", arbiterhttp.Gate(forwardAuthHeader, adminUI.GuardrailDiffHandler)).Methods("GET")
 
 	// Conversations. The key is a query parameter, not a path segment: session
 	// keys are opaque and may be arbitrary client-supplied header values, so a

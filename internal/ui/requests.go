@@ -451,7 +451,7 @@ func attachTraceChildren(lines []requestLineView) []requestLineView {
 	}
 
 	children := make(map[int][]requestLineView, len(lines)) // parent's index in `lines` -> its children
-	origToOut := make(map[int]int, len(lines))               // index in `lines` -> index in `out`, client lines only
+	origToOut := make(map[int]int, len(lines))              // index in `lines` -> index in `out`, client lines only
 	out := make([]requestLineView, 0, len(lines))
 	for i, line := range lines {
 		if line.Head.Kind == "client" {
@@ -1081,4 +1081,56 @@ func (h *Handler) RequestContentHandler(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	h.render(w, r, "request", "request-content", view)
+}
+
+// guardrailDiffView is the diff fragment: one block's before/after text,
+// rendered as a unified line diff. Requested on demand (see #48's
+// "guardrail touch" chip) rather than computed eagerly for every block —
+// almost every request has at most one touched block (the system preamble),
+// so this is cheap even though the mechanism itself is general.
+type guardrailDiffView struct {
+	OK  bool
+	Ops []store.DiffOp
+}
+
+// GuardrailDiffHandler handles GET
+// /admin/ui/requests/{id}/guardrail-diff?msg=N&pos=M: the line-level diff
+// between what the client sent and what actually went upstream for one
+// block. Msg/pos are query parameters, not part of the block itself, because
+// this is reached from a trigger element that only carries the block's
+// position — the same reasoning as the hash-based /content?hash= link.
+func (h *Handler) GuardrailDiffHandler(w http.ResponseWriter, r *http.Request) {
+	if disabled := h.storeDisabled(w, r); disabled && fragmentsRequested(r) {
+		return
+	}
+	id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
+	if err != nil || id < 1 {
+		h.fail(w, r, http.StatusBadRequest, "request id must be a positive integer")
+		return
+	}
+	msgIndex, err1 := strconv.ParseInt(r.URL.Query().Get("msg"), 10, 64)
+	position, err2 := strconv.ParseInt(r.URL.Query().Get("pos"), 10, 64)
+	if err1 != nil || err2 != nil {
+		h.fail(w, r, http.StatusBadRequest, "msg and pos must be integers")
+		return
+	}
+
+	view := guardrailDiffView{}
+	if h.reader != nil {
+		before, after, ok, err := h.reader.GuardrailDiff(r.Context(), id, msgIndex, position)
+		if err != nil {
+			h.logger.LogError(r.Context(), "error", err,
+				map[string]interface{}{"phase": "admin_ui_guardrail_diff"})
+			h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
+			return
+		}
+		view.OK = ok
+		if ok {
+			view.Ops = store.LineDiff(before, after)
+		}
+	}
+	// Always a fragment: this is reached only from a "guardrail touch" chip's
+	// htmx fetch, never a page a reader navigates to directly, so there is no
+	// full-page form to fall back to (unlike render's page/fragment split).
+	h.exec(w, r, h.fragments, "fragments", "guardrail-diff", view)
 }

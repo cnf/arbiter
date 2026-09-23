@@ -543,6 +543,17 @@ type ContentBlock struct {
 	BlockType string `json:"block_type"`
 	Body      string `json:"body,omitempty"`
 	Captured  bool   `json:"captured"`
+
+	// GuardrailTouched is true when a pre-guardrail ran on this request and
+	// left a distinct byte-for-byte-different capture at this block's
+	// (MsgIndex, Position) — the block the client sent differs from the block
+	// that actually went upstream. It is cheap to compute (both directions
+	// are already fetched by contentFor for every request) so it is set on
+	// every block rather than only the system preamble, even though the
+	// preamble is by far the common case in practice. The UI renders it as a
+	// "guardrail touch" chip; the diff itself is fetched on demand via
+	// GuardrailDiff, not eagerly — see #48.
+	GuardrailTouched bool `json:"guardrail_touched,omitempty"`
 }
 
 // ContentForRequest returns the captured blocks belonging to one request, in
@@ -586,6 +597,13 @@ func (r *Reader) ContentForRequest(ctx context.Context, id int64, showAsSent boo
 // request side", not which of the two captures produced it. Without this
 // relabel, any turn where a pre-guardrail actually ran would silently skip
 // those checks — they all match on the literal string "request".
+//
+// It also marks GuardrailTouched on any kept block whose hash differs from
+// its counterpart in the direction being dropped — the block the client sent
+// is not byte-identical to what went upstream at that (MsgIndex, Position).
+// This runs over data already fetched for every request, so it costs nothing
+// extra to check every block rather than special-casing the system preamble,
+// even though the preamble is by far the common real-world case (#48).
 func filterRequestDirection(blocks []ContentBlock, hasGuardrailed, showAsSent bool) []ContentBlock {
 	if !hasGuardrailed {
 		// Nothing to filter: either no pre-guardrail ran, or capture never
@@ -597,10 +615,23 @@ func filterRequestDirection(blocks []ContentBlock, hasGuardrailed, showAsSent bo
 	if showAsSent {
 		drop = "request_guardrailed"
 	}
+	// otherHash indexes the dropped direction's blocks by position, so the
+	// kept direction can tell "same bytes" from "guardrail touched" without a
+	// second query.
+	type key struct{ msgIndex, position int64 }
+	otherHash := make(map[key]string, len(blocks))
+	for _, b := range blocks {
+		if b.Direction == drop {
+			otherHash[key{b.MsgIndex, b.Position}] = b.Hash
+		}
+	}
 	out := make([]ContentBlock, 0, len(blocks))
 	for _, b := range blocks {
 		if b.Direction == drop {
 			continue
+		}
+		if h, ok := otherHash[key{b.MsgIndex, b.Position}]; ok && h != b.Hash {
+			b.GuardrailTouched = true
 		}
 		if b.Direction == "request_guardrailed" {
 			b.Direction = "request"
@@ -608,6 +639,35 @@ func filterRequestDirection(blocks []ContentBlock, hasGuardrailed, showAsSent bo
 		out = append(out, b)
 	}
 	return out
+}
+
+// GuardrailDiff returns the before/after text for one request-side block, so
+// the UI can render an inline line-level diff on demand — see #48. before is
+// the client's original text (Direction "request"), after is what actually
+// went upstream (Direction "request_guardrailed"). ok is false when either
+// side is missing (no pre-guardrail ran on this request, no block at this
+// position, or one side was not captured as text), in which case there is
+// nothing to diff.
+func (r *Reader) GuardrailDiff(ctx context.Context, id int64, msgIndex, position int64) (before, after string, ok bool, err error) {
+	rows, err := r.contentFor(ctx, "request", id)
+	if err != nil {
+		return "", "", false, err
+	}
+	var haveBefore, haveAfter bool
+	for _, b := range rows {
+		if b.MsgIndex != msgIndex || b.Position != position {
+			continue
+		}
+		switch b.Direction {
+		case "request":
+			before = b.Body
+			haveBefore = b.Captured
+		case "request_guardrailed":
+			after = b.Body
+			haveAfter = b.Captured
+		}
+	}
+	return before, after, haveBefore && haveAfter, nil
 }
 
 // contentFor is the shared body behind ContentForRequest and (once rejected

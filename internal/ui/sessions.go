@@ -131,6 +131,14 @@ type transcriptBlock struct {
 	store.ContentBlock
 	RequestID int64
 	turnIndex int
+
+	// ToolCall and ToolResult hold the content-first rendering for
+	// BlockType "tool_use"/"tool_result" respectively — nil/zero for every
+	// other block type. Computed once here rather than in the template,
+	// since it requires decoding the block's canonical JSON body (see
+	// internal/ui/toolcall.go).
+	ToolCall   *toolCallView
+	ToolResult *toolResultView
 }
 
 // transcriptTurn is one request/response exchange in a conversation.
@@ -251,6 +259,18 @@ func (h *Handler) SessionHandler(w http.ResponseWriter, r *http.Request) {
 
 			for _, b := range blocks {
 				tb := transcriptBlock{ContentBlock: b, RequestID: t.ID}
+				switch b.BlockType {
+				case "tool_use":
+					if b.Captured {
+						v := parseToolCall(b.Body)
+						tb.ToolCall = &v
+					}
+				case "tool_result":
+					if b.Captured {
+						v := parseToolResult(b.Body)
+						tb.ToolResult = &v
+					}
+				}
 				_, previouslySeen := seen[b.Hash]
 				if b.Direction == "request" && previouslySeen {
 					// Request-side and already shown: this turn is re-sending

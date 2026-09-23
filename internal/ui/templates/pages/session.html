@@ -8,8 +8,7 @@
   <span class="mono">{{tokens .TotalInput}}</span> in /
   <span class="mono">{{tokens .TotalOutput}}</span> out ·
   <span class="mono">{{usd .TotalCost}}</span> ·
-  <a href="{{requestsForSession .Key}}">request-level view</a> ·
-  <a href="/admin/ui/requests/{{(index .Turns 0).Request.ID}}">first request</a>
+  <a href="{{requestsForSession .Key}}">request-level view</a>
 </p>
 {{if .Capped}}<p class="muted">Showing the first {{len .Turns}} turns; this
   conversation is longer.</p>{{end}}

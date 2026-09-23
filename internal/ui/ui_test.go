@@ -108,6 +108,7 @@ func serve(t *testing.T, h *Handler, method, target string, hx bool) *httptest.R
 	r.HandleFunc("/admin/ui/requests/tail", h.TailHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}", h.RequestHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}/content", h.RequestContentHandler).Methods("GET")
+	r.HandleFunc("/admin/ui/requests/{id}/guardrail-diff", h.GuardrailDiffHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/sessions", h.SessionsHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/session", h.SessionHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/overview", h.OverviewHandler).Methods("GET")

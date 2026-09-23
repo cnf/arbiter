@@ -180,3 +180,110 @@ func RepeatedBoundsNote() string {
 	return fmt.Sprintf("min_requests %d or more, min_sessions 0 or more, limit 1-%d",
 		MinRepeatedRequests, MaxRepeatedLimit)
 }
+
+// ParentSession is the session a title-generation (or other non-client
+// auxiliary) request belongs to, as inferred after the fact — the request
+// itself carries no explicit parent pointer, so this is always a match
+// against other rows, never a stored relationship.
+type ParentSession struct {
+	SessionKey string `json:"session_key"`
+	// Matches is how many client requests support this match. For a
+	// SessionKeyMatch it is every other client row sharing the same
+	// session_key; for a ContentHashMatch it is the count that made
+	// GROUP BY win the tie-break, not a total.
+	Matches int64 `json:"matches"`
+	// Method records which tier produced the match, so a caller (the UI)
+	// can say *how* confident the link is instead of presenting both kinds
+	// identically. See ParentSessionForTitle's doc comment for the two
+	// tiers.
+	Method string `json:"method"`
+}
+
+const (
+	// ParentMatchSessionKey is the exact-match tier: the title request's own
+	// session_key is shared by other client requests, because the client
+	// sent the same session-affinity header on both. See config's
+	// session_affinity.header and Hermes' session_affinity_header.
+	ParentMatchSessionKey = "session_key"
+
+	// ParentMatchContentHash is the fallback tier: no session_key overlap,
+	// so the match is inferred from shared user-turn content blocks
+	// instead (a client resends its history, so an old title's own request
+	// text reappears verbatim in the real conversation's later turns).
+	ParentMatchContentHash = "content_hash"
+)
+
+// ParentSessionForTitle finds the session a request_kind='title' (or other
+// non-client) request most likely belongs to.
+//
+// Two tiers, tried in order:
+//
+//  1. Session-key match: if the request's own session_key is shared by any
+//     client request, that is the parent — exact and free of false
+//     positives, but only fires when the client sent the same
+//     session-affinity header (e.g. X-Session-Id) on the auxiliary call as
+//     on its real turns. Hermes documents doing exactly this.
+//  2. Content-hash fallback: join on the request's own user-role content
+//     blocks against other requests' user-role blocks, excluding itself and
+//     other title requests (two title-gen retries for the same opener would
+//     otherwise "match" each other), and pick the session_key with the most
+//     supporting requests — a client resends its whole history each turn,
+//     so several prior requests in the real session legitimately match.
+//
+// Returns ok=false when neither tier finds anything — a client that sends no
+// session-affinity header and whose title text doesn't verbatim-reappear
+// (e.g. it was expanded/wrapped downstream before the real send) is outside
+// what this method can prove. That is a distinct state from capture_content
+// being off, which the caller must check separately: tier 2 requires content
+// capture, but tier 1 does not, so a capture-off deployment can still resolve
+// a parent through session_key alone.
+func (r *Reader) ParentSessionForTitle(ctx context.Context, requestID int64) (ParentSession, bool, error) {
+	const sessionKeyQuery = `
+SELECT r2.session_key, COUNT(*) AS n
+FROM requests r1
+JOIN requests r2 ON r2.session_key = r1.session_key
+WHERE r1.id = ?
+  AND r1.session_key IS NOT NULL AND r1.session_key != ''
+  AND r2.id != r1.id
+  AND r2.kind = 'client'
+  AND (r2.request_kind IS NULL OR r2.request_kind != 'title')
+GROUP BY r2.session_key`
+
+	var sk sql.NullString
+	var n int64
+	err := r.db.QueryRowContext(ctx, sessionKeyQuery, requestID).Scan(&sk, &n)
+	switch {
+	case err == nil:
+		return ParentSession{SessionKey: sk.String, Matches: n, Method: ParentMatchSessionKey}, true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		// fall through to tier 2
+	default:
+		return ParentSession{}, false, fmt.Errorf("parent session by session_key: %w", err)
+	}
+
+	const contentHashQuery = `
+SELECT r2.session_key, COUNT(*) AS n
+FROM content_refs cr1
+JOIN content_refs cr2 ON cr2.hash = cr1.hash
+JOIN requests r2 ON r2.id = cr2.owner_id
+WHERE cr1.owner_kind = 'request' AND cr1.owner_id = ?
+  AND cr1.direction = 'request' AND cr1.role = 'user'
+  AND cr2.owner_kind = 'request'
+  AND cr2.direction = 'request' AND cr2.role = 'user'
+  AND cr2.owner_id != ?
+  AND r2.kind = 'client'
+  AND (r2.request_kind IS NULL OR r2.request_kind != 'title')
+GROUP BY r2.session_key
+ORDER BY n DESC
+LIMIT 1`
+
+	err = r.db.QueryRowContext(ctx, contentHashQuery, requestID, requestID).Scan(&sk, &n)
+	switch {
+	case err == nil:
+		return ParentSession{SessionKey: sk.String, Matches: n, Method: ParentMatchContentHash}, true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return ParentSession{}, false, nil
+	default:
+		return ParentSession{}, false, fmt.Errorf("parent session by content hash: %w", err)
+	}
+}

@@ -239,3 +239,172 @@ func TestContentByHashReturnsTheStoredBodyAndDistinguishesNotFound(t *testing.T)
 // TestRequestsForContentExcludesRejections is now moot: no live write path
 // ever produces owner_kind='rejected' rows (#5 — see schema.sql's comment on
 // content_refs). Removed along with RecordRejected/rejectionID.
+
+// idFor finds the id of the single request matching a trace_id, for tests
+// that need to name a specific row to query against — ListRequests doesn't
+// expose a trace_id filter, so this reads the id back the same way
+// RequestsForContent tests already do (rows[N].ID), keyed on TraceID to make
+// each test's intent readable instead of relying on insertion order.
+func idFor(t *testing.T, r *Reader, traceID string) int64 {
+	t.Helper()
+	rows, err := r.ListRequests(context.Background(), RequestFilter{})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	for _, row := range rows {
+		if row.TraceID == traceID {
+			return row.ID
+		}
+	}
+	t.Fatalf("no request with trace_id %q", traceID)
+	return 0
+}
+
+// TestParentSessionForTitlePrefersSessionKeyMatch is the exact-match tier: a
+// title request sharing its session_key with real client traffic (the same
+// session-affinity header sent on both) must resolve to that session without
+// needing the content-hash fallback at all — and must win even when a
+// content-hash match to a *different* session would also be available, since
+// the header is authoritative in a way string-equality on caller-visible text
+// never is.
+func TestParentSessionForTitlePrefersSessionKeyMatch(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	const opener = "please write me a haiku about the ocean, thank you"
+
+	// Real session, header-affine: three client turns share session_key
+	// "hermes-conv-1", and the title request also carries that same key.
+	w.Record(Event{TraceID: "client-1", SessionKey: "hermes-conv-1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: []Block{textBlock("user", 0, 0, opener)}}})
+	w.Record(Event{TraceID: "client-2", SessionKey: "hermes-conv-1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: []Block{textBlock("user", 0, 0, opener), textBlock("user", 1, 0, "a follow-up turn")}}})
+	w.Record(Event{TraceID: "title-1", SessionKey: "hermes-conv-1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200, RequestKind: "title",
+		Content: &CapturedContent{Request: []Block{textBlock("user", 0, 0, opener)}}})
+
+	// A decoy: a *different* session whose first turn happens to be the
+	// exact same opener text, so a content-hash join alone would also match
+	// it — proving tier 1 doesn't fall through to tier 2 once it has an
+	// answer.
+	w.Record(Event{TraceID: "decoy", SessionKey: "unrelated-session", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: []Block{textBlock("user", 0, 0, opener)}}})
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	titleID := idFor(t, r, "title-1")
+	got, ok, err := r.ParentSessionForTitle(ctx, titleID)
+	if err != nil {
+		t.Fatalf("ParentSessionForTitle: %v", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want a match")
+	}
+	if got.Method != ParentMatchSessionKey {
+		t.Errorf("Method = %q, want %q", got.Method, ParentMatchSessionKey)
+	}
+	if got.SessionKey != "hermes-conv-1" {
+		t.Errorf("SessionKey = %q, want hermes-conv-1", got.SessionKey)
+	}
+	if got.Matches != 2 {
+		t.Errorf("Matches = %d, want 2 (the two client rows sharing the key)", got.Matches)
+	}
+}
+
+// TestParentSessionForTitleFallsBackToContentHash covers a title request
+// with no session-affinity header (its own session_key is a lone content
+// hash, shared with nothing) — the parent must still be found by matching
+// its user-turn text against a real session's history.
+func TestParentSessionForTitleFallsBackToContentHash(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	const opener = "summarize this codebase for me please, it's fairly large"
+
+	w.Record(Event{TraceID: "client-1", SessionKey: "content-derived-key-1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: []Block{textBlock("user", 0, 0, opener)}}})
+	w.Record(Event{TraceID: "client-2", SessionKey: "content-derived-key-1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: []Block{textBlock("user", 0, 0, opener), textBlock("user", 1, 0, "second turn")}}})
+	// No session_key at all shared with the client rows above — this is the
+	// no-header case.
+	w.Record(Event{TraceID: "title-1", SessionKey: "title-own-key", Format: "openai", Provider: "p", Model: "m", StatusCode: 200, RequestKind: "title",
+		Content: &CapturedContent{Request: []Block{textBlock("user", 0, 0, opener)}}})
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	titleID := idFor(t, r, "title-1")
+	got, ok, err := r.ParentSessionForTitle(ctx, titleID)
+	if err != nil {
+		t.Fatalf("ParentSessionForTitle: %v", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want a match")
+	}
+	if got.Method != ParentMatchContentHash {
+		t.Errorf("Method = %q, want %q", got.Method, ParentMatchContentHash)
+	}
+	if got.SessionKey != "content-derived-key-1" {
+		t.Errorf("SessionKey = %q, want content-derived-key-1", got.SessionKey)
+	}
+	if got.Matches != 2 {
+		t.Errorf("Matches = %d, want 2 (both client rows contain the opener block)", got.Matches)
+	}
+}
+
+// TestParentSessionForTitleExcludesOtherTitleRequests is the self-collision
+// guard: two title-gen retries for the identical conversation opener share
+// no real parent, and must not match each other via the content-hash tier —
+// only a real client turn counts as evidence of a parent session.
+func TestParentSessionForTitleExcludesOtherTitleRequests(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	const opener = "identical opener retried twice by the title generator"
+
+	w.Record(Event{TraceID: "title-1", SessionKey: "title-key-1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200, RequestKind: "title",
+		Content: &CapturedContent{Request: []Block{textBlock("user", 0, 0, opener)}}})
+	w.Record(Event{TraceID: "title-2", SessionKey: "title-key-2", Format: "openai", Provider: "p", Model: "m", StatusCode: 200, RequestKind: "title",
+		Content: &CapturedContent{Request: []Block{textBlock("user", 0, 0, opener)}}})
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	titleID := idFor(t, r, "title-1")
+	got, ok, err := r.ParentSessionForTitle(ctx, titleID)
+	if err != nil {
+		t.Fatalf("ParentSessionForTitle: %v", err)
+	}
+	if ok {
+		t.Fatalf("ok = true (%+v), want no match — the only content-hash hit is another title request", got)
+	}
+}
+
+// TestParentSessionForTitleNoMatchIsNotAnError is the plain negative case: a
+// title request whose text never reappears (e.g. wrapped/expanded before the
+// real send) and whose session_key nobody else shares must return ok=false,
+// not an error — the caller (UI) treats that as "no parent found", distinct
+// from a query failure.
+func TestParentSessionForTitleNoMatchIsNotAnError(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	w.Record(Event{TraceID: "title-1", SessionKey: "lonely-key", Format: "openai", Provider: "p", Model: "m", StatusCode: 200, RequestKind: "title",
+		Content: &CapturedContent{Request: []Block{textBlock("user", 0, 0, "a title-gen request nothing else ever matches")}}})
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	titleID := idFor(t, r, "title-1")
+	got, ok, err := r.ParentSessionForTitle(ctx, titleID)
+	if err != nil {
+		t.Fatalf("ParentSessionForTitle: %v", err)
+	}
+	if ok {
+		t.Fatalf("ok = true (%+v), want no match", got)
+	}
+}

@@ -432,6 +432,12 @@ routers:
 # BEFORE pre-guardrails, so the client's own system prompt is what is stored,
 # never the text Arbiter injects.
 #
+# It is also what powers the fallback tier of tying a title-generation request
+# back to the session it named (see the `request-kind` classifier above and
+# session_affinity below): with capture off, only the session-affinity-header
+# match can link a title row to its parent, and the admin UI says so instead
+# of looking like the link silently failed.
+#
 # `content_ttl` is how long captured bodies are kept (a Go duration — "72h",
 # NOT "3d"). Empty or "0" means NEVER EXPIRE, deliberately: retention is
 # opt-in, so an upgrade cannot silently start deleting data. Request metadata
@@ -470,6 +476,14 @@ guardrails:
 # the pin whenever the user steps away, after which the next turn re-routes to
 # a cold provider and pays full price. A provider may override it with its own
 # cache_ttl.
+#
+# The same header is also the primary (and cheapest) way Arbiter ties a
+# title-generation request back to the session it named: a client that sends
+# this header on every call — Hermes does, by design, on its title-gen calls
+# specifically — makes the title row's own session_key equal to its parent's,
+# an exact indexed lookup with no need for capture_content at all. Without the
+# header, linking falls back to a content-hash join that DOES need
+# capture_content — see that setting above.
 #
 # session_affinity:
 #   header: "X-Session-Id"

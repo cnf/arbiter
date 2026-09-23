@@ -408,6 +408,8 @@ routers:
           provider: "gpt4"             # ...or a literal provider/model
         - when: { requires_input_modalities: ["image"] }
           provider: "claude"           # skipped unless claude accepts images
+        - when: { request_kind: "title" }  # who's asking, not what it's about
+          target: "cheap-claude"       # title-gen traffic never needs a big model
         - when: {}                     # catch-all
           provider: "claude"
         - when: { domain: "unmatched" }  # or refuse instead of degrading:
@@ -463,6 +465,15 @@ precedence order:
    leaves effort to classify), then the first matching policy rule wins. A
    policy router errors when nothing matches, so chain a `simple` router after
    it (or write a catch-all rule) to degrade instead of failing.
+
+A rule's `when` clause can also match `request_kind` — a request's **kind**
+(`"title"`, later `"subagent"`) rather than what it's about. It is not a
+classification axis (no confidence, no force-alias target — see
+`types.Signals.RequestKind`), but it is still a legitimate thing to route on:
+a title-generation call is identified by the `request-kind` classifier
+(see "Matching a request's own text" below) and a rule like
+`when: { request_kind: "title" }` sends it to a cheap/fast alias instead of
+whatever model the client happened to name.
 
 A rule's target is exactly one of: a named alias (`target: "…"`), a literal
 provider/model (`provider:`/`model:`), or a **terminal refusal**. A refusal rule

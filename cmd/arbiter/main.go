@@ -1003,6 +1003,8 @@ func buildRouter(rc config.RouterConfig, providers map[string]types.ProviderConf
 // and deprecated ("intent"/"cost_sensitivity") when-clause key spellings are
 // accepted during the deprecation window; setting both spellings of the same
 // axis on one rule is an error rather than silently picking one.
+// "request_kind" matches types.Signals.RequestKind exactly ("title", later
+// "subagent") — not an axis, but still a legitimate rule condition.
 func policyRules(cfg map[string]interface{}) ([]router.PolicyRule, error) {
 	raw, _ := cfg["rules"].([]interface{})
 	rules := make([]router.PolicyRule, 0, len(raw))
@@ -1069,6 +1071,7 @@ func policyRules(cfg map[string]interface{}) ([]router.PolicyRule, error) {
 			when.CostClass = costClass
 
 			when.Effort, _ = w["effort"].(string)
+			when.RequestKind, _ = w["request_kind"].(string)
 			if caps, ok := w["capabilities"].([]interface{}); ok {
 				for _, c := range caps {
 					if s, ok := c.(string); ok {

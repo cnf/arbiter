@@ -357,9 +357,12 @@ routers:
 # router so unmatched requests fall through to a default instead of failing.
 # A rule's target is either `target:` (an alias name) or `provider:`/`model:`
 # (a literal provider/model) — not both. `when` keys are domain, effort,
-# cost_class, and capabilities; the deprecated spellings `intent` and
-# `cost_sensitivity` are still accepted (but not alongside their replacement
-# on the same rule).
+# cost_class, capabilities, and request_kind; the deprecated spellings
+# `intent` and `cost_sensitivity` are still accepted (but not alongside their
+# replacement on the same rule). `request_kind` matches a request's kind
+# ("title", later "subagent") rather than what it's about — not an axis, but
+# still a legitimate routing condition; see the `request-kind` classifier
+# above.
 #
 #  - name: "policy"
 #    type: "policy"
@@ -373,6 +376,8 @@ routers:
 #          provider: "gpt4"
 #        - when: { cost_class: "budget" }
 #          provider: "local"
+#        - when: { request_kind: "title" }
+#          target: "cheap-claude"
 #  - name: "primary"
 #    type: "simple"
 #    config:

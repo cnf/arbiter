@@ -29,7 +29,9 @@ startup version-logging feature shipped. New §21 added 2026-09-23e at
 `develop` = `b8907e8` — #45 (admin UI rebuild) scoped and split into 5 native
 GitHub sub-issues (#46-#50); #46 (phase 1: tokens/layout/popover) shipped and
 closed. New §22 added 2026-09-23f at `develop` = `76fb7ea` — #47 (phase 2:
-requests page — routing chain, kind chips, threading) shipped and closed. Run `git log --oneline -1` for the truth.
+requests page — routing chain, kind chips, threading) shipped and closed.
+New §23 added 2026-09-23g at `develop` = `0cd748f` — #48 (phase 3: session
+transcript) shipped and closed. Run `git log --oneline -1` for the truth.
 
 ---
 
@@ -1376,6 +1378,108 @@ closing comment summarizing what shipped and how it was verified.
   cross-page-conventions section — whichever phase touches the session
   transcript or sessions index should read `reqrow.html`/`app.css`'s new
   rules before inventing new conventions.
+- No other open work generated this session.
+
+---
+
+## 23. Session 2026-09-23g — #48 (phase 3: session transcript) shipped and closed
+
+**Scope (DESIGN.md "Session transcript"):** no chat bubbles (full-width block,
+colored left border for direction — user=secondary, assistant=primary);
+metadata in a rail beside the blocks, not a row between them; no nested
+scrollboxes (gradient-fade + "show more" instead of `overflow:auto`);
+full-screen popover reuse (#46) for very long content; content-first tool
+call/result rendering (summarized command/pattern/path per known tool name,
+raw `{id,name,input}` JSON behind a toggle); a collapsed "modified by
+guardrail" `warn` chip that fetches its line-level diff on demand rather than
+showing it inline.
+
+**What actually changed:**
+- `internal/store/reader.go` — `ContentBlock.GuardrailTouched` (set in
+  `filterRequestDirection` by comparing each kept block's hash against its
+  counterpart in the dropped direction at the same `(msg_index, position)` —
+  free, since both directions are already fetched per request) and
+  `Reader.GuardrailDiff(id, msgIndex, position)` (fetches the before/after
+  text for one touched block).
+- `internal/store/diff.go` — hand-rolled line-level LCS diff (`LineDiff`/
+  `DiffOp`: `"eq"`/`"del"`/`"add"`). No new dependency — `go.mod` still has
+  only fsnotify/uuid/gorilla/yaml.
+- `internal/ui/toolcall.go` — decodes a `tool_use`/`tool_result` block's
+  canonical JSON body (see `store.blockBody`) into a content-first view:
+  `terminal`/`bash`/`shell`/`exec` → command string, `grep`/`search`/`find` →
+  pattern+path, `edit`/`write`/`patch`/`read` → file path; unrecognized tool
+  names get a generic `key=value` fallback, not a hard failure. Raw JSON is
+  always computed and available behind a toggle.
+- `internal/ui/requests.go` — `GuardrailDiffHandler` at
+  `GET /admin/ui/requests/{id}/guardrail-diff?msg=&pos=`, an htmx fragment,
+  registered alongside `RequestContentHandler`'s existing pattern.
+- `internal/ui/sessions.go` — `transcriptBlock` now carries the parsed
+  `ToolCall`/`ToolResult` view (computed once per block in the handler, not
+  in the template).
+- `internal/ui/templates/pages/session.html`,
+  `internal/ui/templates/partials/session-turns.html`,
+  `internal/ui/templates/partials/guardrail-diff.html` — new, from scratch.
+  Old `internal/ui/templates/partials/turn.html` **deleted** — it was
+  pre-#45 markup (`.turnmeta`/`.block`/`.blockmeta`/`.preamble` as originally
+  named) and the greenfield directive from #45/#47 treats it as not existing,
+  same as `reqrow.html`'s predecessor was treated in #47.
+- `internal/ui/static/showmore.js` — new: the gradient-fade "show more"
+  toggle, reused by any long block text or tool result. Delegated click
+  listener, height-measured on load and after any htmx swap, same
+  self-contained IIFE style as `popover.js`.
+- `internal/ui/static/app.css` — new `.transcript`/`.turn`/`.turn-rail`/
+  `.block`/`.preamble`/`.toolcall`/`.toolresult`/`.diff`/`.chip`/`.showmore`
+  rules, reusing #46/#47's tokens (`--tool`, `--warn`, `--kind-*`) and
+  `.tag`/`.sesschip`/`.axes` conventions rather than inventing new ones.
+
+**Tests:** `sessions_test.go`'s markup assertions updated to the new
+structure — `id="turn-N"` kept (added alongside the new `data-turn`
+attribute, since the test's turn-order/scoping checks use it and there was
+no reason to break them), `.preamble` section class, the `<pre>` regex
+loosened to `<pre[^>]*>` to match the added `class="blocktext"` attribute —
+same "rewrite assertions against new markup" precedent #47 set. New
+coverage: `internal/store/diff_test.go` (LCS correctness: pure
+insert/delete, adjacent replace, identical-input no-op, empty-string edges),
+`internal/ui/toolcall_test.go` (known tool-name families, unknown-name
+fallback, canonical-JSON decode + malformed-body degrade),
+`internal/ui/toolcall_transcript_test.go` (content-first rendering end to
+end through the transcript handler), `internal/ui/guardrail_diff_test.go`
+(chip renders only when touched, diff fragment renders del/add/eq).
+
+**Verified, not just claimed:**
+- `go build ./...`, `go vet ./...` clean.
+- `go test ./...` clean except the same pre-existing failures: the 5
+  `internal/ui` ones §17/§20/§21/§22 already named
+  (`TestOverviewPivotsAndRanks`, `TestOverviewExplainsSingleValuedDimension`,
+  `TestOverviewEpochShowsPerRequest`, `TestSeriesEndpointShape`,
+  `TestSessionIndexAndTranscript`) plus 2 in `internal/config`
+  (`TestShippedArbiterYAMLLoads`, `TestShippedTitlePatternsAreTheIntendedRegexes`
+  — the shipped `arbiter.yaml` is missing a litellm endpoint, unrelated to
+  UI work). Confirmed pre-existing by `git stash -u` back to `1b66d93`
+  (pre-#48) and re-running the same failing tests — identical failure set,
+  before any of this session's files existed.
+  `TestSessionIndexAndTranscript` specifically fails only on its
+  sessions-index assertions (checking `/admin/ui/sessions`, i.e. #49's
+  scope, not yet built) — every assertion against the transcript page itself
+  passes.
+- Pre-commit hooks (gitleaks, golangci-lint, ripsecrets, trufflehog) passed
+  on the `0cd748f` commit (run inside `devenv shell`).
+
+**Board:** `gh issue close 48` run this session with a closing comment.
+
+**State for the next session:**
+
+- `internal/classifier/match_test.go` still carries the **unrelated, on-hold
+  debug change** — not touched, not re-checked this session; `git stash
+  list` still shows the same `stash@{0}` from §22 (never popped).
+- `feedback.md` at repo root is untracked, pre-existing — untouched.
+- **#49 (sessions index) or #50 (discovery) is next** per #45's phase order —
+  neither read this session; check `gh issue list` for exact scope before
+  starting. The transcript's new conventions
+  (`.transcript`/`.turn`/`.block`/`.chip`/`.showmore`/`showmore.js`) are now
+  the reference implementation for anything else that needs to show long
+  captured content or a tool call, per the same "reuse, don't reinvent" rule
+  #47 set for `.reqrow`/`.tag.kind-*`.
 - No other open work generated this session.
 
 ---

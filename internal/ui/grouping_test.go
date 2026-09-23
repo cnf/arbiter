@@ -573,7 +573,7 @@ func TestAttachTitleChildrenNestsUnderResolvedParent(t *testing.T) {
 	title := titleRow(1, "title-own-session", nil)
 
 	lines := foldRequestLines([]requestRowView{title, parent})
-	lines = attachTitleChildren(lines, resolverFor(map[int64]string{1: "real-session"}))
+	lines = attachTitleChildren(lines, true, resolverFor(map[int64]string{1: "real-session"}))
 
 	if len(lines) != 1 {
 		t.Fatalf("got %d top-level lines, want 1 (the title must nest, not stand alone)", len(lines))
@@ -587,17 +587,21 @@ func TestAttachTitleChildrenNestsUnderResolvedParent(t *testing.T) {
 	if !lines[0].Children[0].IsChild {
 		t.Error("the nested title line is not marked IsChild")
 	}
+	if lines[0].Children[0].TitleParentState != titleParentNested {
+		t.Errorf("nested title's TitleParentState = %v, want titleParentNested (zero value — Children/IsChild already say it nested)", lines[0].Children[0].TitleParentState)
+	}
 }
 
 // TestAttachTitleChildrenLeavesUnresolvedAtTopLevel covers ok=false from the
-// resolver — no session_key match, no content-hash match either (neither
-// tier of ParentSessionForTitle found anything). The title still renders,
-// same as an orphaned classifier call: folding is a summary of the list, not
-// a filter on it.
+// resolver with capture_content on — neither tier of ParentSessionForTitle
+// found anything, including tier 2, which could actually run. The title
+// still renders, same as an orphaned classifier call: folding is a summary
+// of the list, not a filter on it. TitleParentState must say the join
+// genuinely searched and missed, not that it couldn't run.
 func TestAttachTitleChildrenLeavesUnresolvedAtTopLevel(t *testing.T) {
 	title := titleRow(1, "lonely-session", nil)
 	lines := foldRequestLines([]requestRowView{title})
-	lines = attachTitleChildren(lines, resolverFor(nil))
+	lines = attachTitleChildren(lines, true, resolverFor(nil))
 
 	if len(lines) != 1 {
 		t.Fatalf("got %d lines, want 1 (the unresolved title row, unnested)", len(lines))
@@ -605,22 +609,50 @@ func TestAttachTitleChildrenLeavesUnresolvedAtTopLevel(t *testing.T) {
 	if lines[0].Head.ID != title.ID || lines[0].IsChild {
 		t.Errorf("unresolved title rendered as %+v, want the title row itself, not marked as a child", lines[0])
 	}
+	if lines[0].TitleParentState != titleParentNotFound {
+		t.Errorf("TitleParentState = %v, want titleParentNotFound (capture was on, tier 2 ran and missed)", lines[0].TitleParentState)
+	}
+}
+
+// TestAttachTitleChildrenLeavesUnresolvedCaptureOff covers the same ok=false
+// case, but with capture_content off: tier 2 (content-hash) could not run at
+// all, so this is an expected gap, not a failed search, and the state must
+// say so distinctly from TestAttachTitleChildrenLeavesUnresolvedAtTopLevel.
+// This is piece 3 of #11.
+func TestAttachTitleChildrenLeavesUnresolvedCaptureOff(t *testing.T) {
+	title := titleRow(1, "lonely-session", nil)
+	lines := foldRequestLines([]requestRowView{title})
+	lines = attachTitleChildren(lines, false, resolverFor(nil))
+
+	if len(lines) != 1 {
+		t.Fatalf("got %d lines, want 1 (the unresolved title row, unnested)", len(lines))
+	}
+	if lines[0].Head.ID != title.ID || lines[0].IsChild {
+		t.Errorf("unresolved title rendered as %+v, want the title row itself, not marked as a child", lines[0])
+	}
+	if lines[0].TitleParentState != titleParentNotFoundCaptureOff {
+		t.Errorf("TitleParentState = %v, want titleParentNotFoundCaptureOff (tier 2 could not run)", lines[0].TitleParentState)
+	}
 }
 
 // TestAttachTitleChildrenLeavesUnplaceableAtTopLevel covers a resolved
 // parent session_key with no line on this page (the parent session's
 // requests aren't in the current window/filter) — the title must stay
-// top-level rather than being silently dropped.
+// top-level rather than being silently dropped, and the state must say this
+// is a paging fact, not a capture-config one, regardless of capture_content.
 func TestAttachTitleChildrenLeavesUnplaceableAtTopLevel(t *testing.T) {
 	title := titleRow(1, "title-own-session", nil)
 	lines := foldRequestLines([]requestRowView{title})
-	lines = attachTitleChildren(lines, resolverFor(map[int64]string{1: "session-not-on-page"}))
+	lines = attachTitleChildren(lines, false, resolverFor(map[int64]string{1: "session-not-on-page"}))
 
 	if len(lines) != 1 {
 		t.Fatalf("got %d lines, want 1 (the unplaceable title row, unnested)", len(lines))
 	}
 	if lines[0].Head.ID != title.ID || lines[0].IsChild {
 		t.Errorf("unplaceable title rendered as %+v, want the title row itself, not marked as a child", lines[0])
+	}
+	if lines[0].TitleParentState != titleParentFound {
+		t.Errorf("TitleParentState = %v, want titleParentFound (resolved, just not on this page) even with capture off", lines[0].TitleParentState)
 	}
 }
 
@@ -633,7 +665,7 @@ func TestAttachTitleChildrenDoesNotNestUnderAnotherTitle(t *testing.T) {
 	title2 := titleRow(2, "shared-key", nil)
 
 	lines := foldRequestLines([]requestRowView{title2, title1})
-	lines = attachTitleChildren(lines, resolverFor(map[int64]string{2: "shared-key"}))
+	lines = attachTitleChildren(lines, true, resolverFor(map[int64]string{2: "shared-key"}))
 
 	if len(lines) != 2 {
 		t.Fatalf("got %d top-level lines, want 2 (titles must not nest under each other)", len(lines))
@@ -655,7 +687,7 @@ func TestAttachTitleChildrenComposesWithTraceChildren(t *testing.T) {
 	title := titleRow(1, "title-own-session", nil)
 
 	lines := foldRequestLines([]requestRowView{title, classifier, parent})
-	lines = attachTitleChildren(lines, resolverFor(map[int64]string{1: "real-session"}))
+	lines = attachTitleChildren(lines, true, resolverFor(map[int64]string{1: "real-session"}))
 
 	if len(lines) != 1 {
 		t.Fatalf("got %d top-level lines, want 1", len(lines))

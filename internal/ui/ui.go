@@ -16,6 +16,7 @@ import (
 	stdhtml "html/template"
 	"io/fs"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/cnf/arbiter/internal/logging"
@@ -59,6 +60,22 @@ type Handler struct {
 	// makes Last-Modified and ETag useless; a content-derived query parameter
 	// is the only mechanism available.
 	assetVersion string
+
+	// captureContent mirrors storage.capture_content (see
+	// pipeline.Pipeline.captureContent) — the UI's own copy rather than a
+	// read through the pipeline, since the two packages don't otherwise
+	// depend on each other. atomic.Bool because SetCaptureContent is called
+	// from a config reload, which runs concurrently with request handling.
+	//
+	// It exists so the request list can tell "title-gen's parent session
+	// couldn't be inferred because nothing was captured to join on" apart
+	// from "content was captured and still no parent was found" — the same
+	// distinction content.html already draws for one request's own body,
+	// extended to the cross-request join piece 1 added. Tier 1 of
+	// ParentSessionForTitle (the session_key match) needs no capture at all,
+	// so this only changes how a *miss* is explained, never whether a hit is
+	// shown.
+	captureContent atomic.Bool
 }
 
 // New builds the UI around an already-open Reader. A nil reader is the
@@ -76,6 +93,17 @@ func New(reader *store.Reader, l logging.Logger) *Handler {
 		assetsFS:     sub,
 		assetVersion: versionOf(assets),
 	}
+}
+
+// SetCaptureContent records whether storage.capture_content is on, so the
+// request list can explain a title-gen line with no resolvable parent
+// correctly. Like Pipeline.SetCaptureContent, it is a setter called once at
+// wiring time and again on every config reload — capture_content can change
+// between wiring and this session's traffic, whereas the request list is
+// rendered per-request, so the two write and read at different times and via
+// different goroutines. The atomic makes that safe without a mutex.
+func (h *Handler) SetCaptureContent(on bool) {
+	h.captureContent.Store(on)
 }
 
 // versionOf hashes the whole embedded tree. Hashing everything rather than per

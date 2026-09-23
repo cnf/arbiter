@@ -30,11 +30,11 @@ func newTestRouter(t *testing.T, configPath, forwardAuthHeader string) (*arbiter
 		t.Fatalf("build pipeline: %v", err)
 	}
 	h := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg), cfg.SessionAffinity.Header), logger)
+	adminUI := ui.New(nil, logger)
 	admin := arbiterhttp.NewAdminHandler(func(ctx context.Context) error {
-		return reload(ctx, configPath, h, logger, store.NoopWriter{}, nil, nil)
+		return reload(ctx, configPath, h, logger, store.NoopWriter{}, nil, nil, adminUI)
 	}, logger)
 	stats := arbiterhttp.NewStatsHandler(nil, logger)
-	adminUI := ui.New(nil, logger)
 	return h, newRouter(h, admin, stats, adminUI, forwardAuthHeader)
 }
 

@@ -107,6 +107,7 @@ here assumes exactly one level of nesting. */}}
     <td class="num">{{dur .Head.LatencyMs}}</td>
     <td class="axes">
       {{if .Head.RequestKind}}<span class="tag reqkind" title="what this request is, not who sent it">{{.Head.RequestKind}}</span>{{end}}
+      {{if and (eq .Head.RequestKind "title") .TitleParentState.Note}}<span class="tag" title="{{.TitleParentState.Note}}">no parent shown</span>{{end}}
       {{if .Head.Domain}}<span class="tag">{{.Head.Domain}}</span>{{end}}
       {{if .Head.Effort}}<span class="tag">{{.Head.Effort}}</span>{{end}}
       {{if .Head.CostClass}}<span class="tag">{{.Head.CostClass}}</span>{{end}}

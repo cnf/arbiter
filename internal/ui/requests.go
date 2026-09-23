@@ -155,6 +155,64 @@ type requestLineView struct {
 	// the "you can still open it up" affordance. It is a real URL, not a DOM
 	// toggle, because the page's filters are the address bar.
 	OpenHref string
+
+	// TitleParentState says why a request_kind="title" line is or is not
+	// nested under a parent — see attachTitleChildren and titleParentState.
+	// Empty for every other line: the whole question ("why isn't this
+	// nested") only makes sense for a title line, and Children/IsChild alone
+	// already say everything a classifier line needs to say.
+	TitleParentState titleParentState
+}
+
+// titleParentState is the three-way answer a title line needs and a
+// classifier line does not: a classifier's trace_id link is exact and always
+// resolvable when its parent is on the page, so "not nested" only ever means
+// "orphan, parent not on this page". A title line's link is inferred, and
+// the inference itself can fail in a way that is not a data gap — capture
+// being off is a config state, not a missing fact — so the reader needs to
+// know which of the three happened rather than seeing an unnested title line
+// and assuming the feature is broken.
+type titleParentState int
+
+const (
+	// titleParentNested means attachTitleChildren placed this line under a
+	// parent; TitleParentState is not rendered in this case (Children/IsChild
+	// on the parent already show it).
+	titleParentNested titleParentState = iota
+
+	// titleParentFound means ParentSessionForTitle resolved a session, but
+	// that session has no line on the current page (a different filter
+	// window, or paged out) — a data-availability gap, not a capture gap.
+	titleParentFound
+
+	// titleParentNotFoundCaptureOff means neither tier of
+	// ParentSessionForTitle matched, and storage.capture_content is off —
+	// tier 2 (content-hash) could not have run, so this is expected, not a
+	// failure of the join.
+	titleParentNotFoundCaptureOff
+
+	// titleParentNotFound means neither tier matched even though capture is
+	// on — tier 2 genuinely searched and found nothing (e.g. the client
+	// wrapped/expanded the text before the real send, so no verbatim block
+	// reappears — see PICKUP.md §17).
+	titleParentNotFound
+)
+
+// Note is the human-readable explanation for TitleParentState, rendered next
+// to an unnested title line so a reader sees *why* rather than assuming the
+// feature silently failed. Empty for titleParentNested — Children/IsChild on
+// the parent already say everything in that case.
+func (s titleParentState) Note() string {
+	switch s {
+	case titleParentFound:
+		return "parent session not on this page"
+	case titleParentNotFoundCaptureOff:
+		return "no parent found — capture_content is off, so only the session-id link could be tried"
+	case titleParentNotFound:
+		return "no parent found"
+	default:
+		return ""
+	}
 }
 
 // lineKeySeparator splits the parts of a group key. A NUL cannot occur in any
@@ -402,7 +460,7 @@ func attachTraceChildren(lines []requestLineView) []requestLineView {
 // This shares the classifier nesting's known display quirk with streamed
 // runs (grouping/stream-collapsing) — tracked separately, not addressed
 // here; see PICKUP.md.
-func attachTitleChildren(lines []requestLineView, resolveParent func(requestID int64) (sessionKey string, ok bool)) []requestLineView {
+func attachTitleChildren(lines []requestLineView, captureContent bool, resolveParent func(requestID int64) (sessionKey string, ok bool)) []requestLineView {
 	bySession := make(map[string]int, len(lines)) // session_key -> line's own index in `lines`, non-title client lines only
 	for i, line := range lines {
 		if line.Head.Kind != "client" || line.Head.RequestKind == "title" {
@@ -432,6 +490,18 @@ func attachTitleChildren(lines []requestLineView, resolveParent func(requestID i
 				children[parent] = append(children[parent], line)
 				continue
 			}
+			// Resolved to a real session, just not one with a line on this
+			// page (a different filter window, or paged out) — a page-
+			// scoping fact, not a capture-config one.
+			line.TitleParentState = titleParentFound
+		} else if captureContent {
+			// Both tiers ran and neither matched — tier 2 genuinely searched.
+			line.TitleParentState = titleParentNotFound
+		} else {
+			// Tier 1 (session_key) found nothing, and tier 2 (content-hash)
+			// could not run at all with capture off — an expected gap, not
+			// a failed join.
+			line.TitleParentState = titleParentNotFoundCaptureOff
 		}
 		// No resolvable parent, or its session has no line on this page: keep
 		// it where it was.
@@ -713,7 +783,7 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 		view.Lines = foldRequestLines(view.Rows)
 		if h.reader != nil {
 			ctx := r.Context()
-			view.Lines = attachTitleChildren(view.Lines, func(id int64) (string, bool) {
+			view.Lines = attachTitleChildren(view.Lines, h.captureContent.Load(), func(id int64) (string, bool) {
 				p, ok, err := h.reader.ParentSessionForTitle(ctx, id)
 				if err != nil || !ok {
 					return "", false

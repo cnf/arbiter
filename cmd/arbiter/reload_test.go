@@ -90,7 +90,7 @@ func TestWatchConfigReloads(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		if err := watchConfig(ctx, path, h, logger, store.NoopWriter{}, nil, nil); err != nil {
+		if err := watchConfig(ctx, path, h, logger, store.NoopWriter{}, nil, nil, nil); err != nil {
 			t.Errorf("watchConfig: %v", err)
 		}
 	}()
@@ -126,7 +126,7 @@ func TestWatchConfigRejectsInvalidReload(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		_ = watchConfig(ctx, path, h, logger, store.NoopWriter{}, nil, nil)
+		_ = watchConfig(ctx, path, h, logger, store.NoopWriter{}, nil, nil, nil)
 	}()
 	time.Sleep(100 * time.Millisecond)
 

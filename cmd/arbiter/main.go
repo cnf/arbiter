@@ -93,19 +93,28 @@ func main() {
 		os.Exit(1)
 	}
 	handler := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg), cfg.SessionAffinity.Header), logger)
+
+	// The admin UI reads the same Reader as the JSON surface. It is a separate
+	// package rather than more handlers on stats because it brings its own
+	// embedded templates and assets; its dependencies are identical. Built
+	// here, ahead of admin's reload closure, because that closure captures it.
+	adminUI := ui.New(reader, logger)
+	// See buildPipeline's matching SetCaptureContent call: the UI needs its
+	// own copy of the same wiring-time policy, not a read through the
+	// pipeline, because piece 3 of #11 uses it to explain a title-gen line
+	// with no resolvable parent (tier 2 of ParentSessionForTitle cannot run
+	// with capture off, and that is a different situation from tier 2
+	// running and finding nothing).
+	adminUI.SetCaptureContent(cfg.Storage.CaptureContent)
+
 	admin := arbiterhttp.NewAdminHandler(func(ctx context.Context) error {
-		return reload(ctx, *configPath, handler, logger, writer, cooldowns, reader)
+		return reload(ctx, *configPath, handler, logger, writer, cooldowns, reader, adminUI)
 	}, logger)
 	// The cooldown reset is bound to the shared store, so it clears the state the
 	// live pipeline is actually using.
 	admin.SetClearCooldowns(cooldowns.ClearForAdmin)
 
 	stats := arbiterhttp.NewStatsHandler(reader, logger)
-
-	// The admin UI reads the same Reader as the JSON surface. It is a separate
-	// package rather than more handlers on stats because it brings its own
-	// embedded templates and assets; its dependencies are identical.
-	adminUI := ui.New(reader, logger)
 
 	// Content retention runs on its own goroutine and its own connection, so an
 	// expiry sweep never blocks a request. With no TTL configured, content never
@@ -148,7 +157,7 @@ func main() {
 	watchCtx, stopWatch := context.WithCancel(context.Background())
 	defer stopWatch()
 	go func() {
-		if err := watchConfig(watchCtx, *configPath, handler, logger, writer, cooldowns, reader); err != nil {
+		if err := watchConfig(watchCtx, *configPath, handler, logger, writer, cooldowns, reader, adminUI); err != nil {
 			slog.Error("config watcher stopped", "error", err)
 		}
 	}()

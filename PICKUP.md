@@ -19,7 +19,9 @@ only, no code landed; #11 is the next target. New §16 added 2026-09-22e at
 `develop` = `635644c` — #11's routing half shipped (grouping half still
 open). New §17 added 2026-09-23 at `develop` = `fa41aa4` — #11's grouping
 half piece 1 (the `ParentSessionForTitle` query) shipped; pieces 2 (UI) and 3
-(degraded-mode signal) still open. Run `git log --oneline -1` for the truth.
+(degraded-mode signal) still open. New §18 added 2026-09-23 at `develop` =
+`28aa378` — piece 2 (nest a title line under its resolved parent in the UI)
+also shipped; only piece 3 remains. Run `git log --oneline -1` for the truth.
 
 ---
 
@@ -196,7 +198,7 @@ user has said he doesn't use today (he does use the Anthropic **upstream**,
 i.e. routing to Claude models — that's a different, unaffected path; see §10).
 
 **Medium/low**, no change in status: #8 (see above — half done), #9,
-**#11 (routing half shipped; grouping half piece 1/3 shipped — see §17)**,
+**#11 (routing half + grouping pieces 1/2 shipped; piece 3 open — see §18)**,
 #14, #17, #18, #20, #21, #22, #23, #24, #26, #36, #38, #40, #41.
 
 **#17** — Phase D (`min_confidence`) is now *unblocked* (its blocker #6
@@ -943,3 +945,86 @@ confirmed.
   UI shows). Neither started.
 - Board unchanged (`gh issue view 11` still OPEN — correctly, since UI/
   degrade pieces remain).
+
+---
+
+## 18. Session 2026-09-23b — #11 grouping half, piece 2: UI nesting
+
+**One commit, on `develop` (unpushed): `28aa378`.** Ships piece 2 of §17's
+remaining scope. Only piece 3 (visible degrade when `capture_content` is
+off) is left on #11.
+
+| commit | what |
+|---|---|
+| `28aa378` | **#11 grouping half, piece 2**: new `attachTitleChildren` (`internal/ui/requests.go`), run after `foldRequestLines`/`attachTraceChildren` in `RequestsHandler`. Nests a `request_kind="title"` line under the client line for the session `Reader.ParentSessionForTitle` resolved to — same `Children`/`IsChild` rendering `attachTraceChildren` already uses for a classifier call (#8), reused because it's the established pattern, not because the matching logic is shared. |
+
+**Why this isn't just a call to `attachTraceChildren`:** that function keys
+on `trace_id` equality, which only exists between a request and a sub-call
+*it itself spawned* (a classifier call inside the same `pipeline.Execute`).
+A title-gen request is a separate, later, top-level HTTP call with no
+`trace_id` in common with the session it titles — the only link is what
+piece 1's query inferred. So `attachTitleChildren` takes a `resolveParent`
+callback (backed by `ParentSessionForTitle` in the handler, a plain map in
+tests) and keys on the *session_key of the resolved parent* instead. It runs
+as its own pass, after the trace-based one, and the two compose (tested
+directly: a page with both a classifier child and a title child under one
+parent nests both).
+
+**Self-collision guarded at this layer too, redundantly with piece 1's
+query:** `attachTitleChildren`'s own session index (`bySession`) is only
+built from non-title client lines, so even if two title lines somehow
+shared a session_key, neither could become the other's parent. Belt and
+braces — piece 1 already excludes this in SQL, but the UI layer doesn't
+trust that as its only guard.
+
+**User's framing going in, confirmed correct:** "piece 2 ... it'll have the
+same quirk as classifier calls visually, but it'll be solved with the
+grouping thing later on. It's only a visual thing." That's the actual shape
+of what shipped — a title line nested via `Children` inherits whatever the
+existing stream-collapsing/grouping bug already does to a nested classifier
+line, unchanged and unaddressed here. Not investigated or touched this
+session; still tracked as the separate, already-known "stream stacking"
+issue.
+
+**Test discipline followed:** flipped `attachTitleChildren`'s `bySession`
+filter to admit title lines (`Kind != "client"` only, dropping the
+`RequestKind == "title"` exclusion), confirmed
+`TestAttachTitleChildrenDoesNotNestUnderAnotherTitle` fails for the right
+reason (two titles nest into one line instead of staying at two), restored,
+full suite green again. `golangci-lint run ./internal/ui/...` clean. `gofmt
+-l` flags `grouping_test.go`/`grouping_tail_test.go`/`requests.go` — all
+three **pre-existing** on `develop` before this session's edits (confirmed
+via `git stash`, same file set §16 already flagged); this session added no
+new gofmt violations.
+
+**`internal/ui` still has the same 5 pre-existing failing tests** flagged
+in §17 (`TestOverviewPivotsAndRanks` and siblings) — reproduced identically
+with this commit's files stashed out, unrelated to this change, still not
+investigated.
+
+**State for the next session:**
+
+- `internal/classifier/match_test.go` still has the **unrelated, on-hold
+  debug session's uncommitted change** — set aside via `git stash`/`git
+  stash pop` around this session's commit too. Still uncommitted on
+  purpose.
+- `feedback.md` at repo root is **untracked, pre-existing** — untouched.
+- PICKUP.md itself is **modified in the working tree** (this §18 + the
+  header line + §6 update) — commit it as its own handoff.
+- **#11's only remaining scope is piece 3**: make `capture_content: false`
+  visibly degrade tier 2 of `ParentSessionForTitle` rather than reading
+  identically to "tier 2 ran and found nothing" — tier 1 (session_key
+  match) doesn't need `capture_content` at all, so the UI needs to
+  distinguish three states, not two: parent found, parent-search ran and
+  found nothing, and parent-search (tier 2 specifically) unavailable
+  because content isn't captured. Not started; likely needs
+  `ParentSessionForTitle` (or a caller) to also report whether
+  `capture_content` was on, so the template can render the right one of
+  the three.
+- Board unchanged (`gh issue view 11` still OPEN — correctly, piece 3
+  remains).
+- **Still unverified against real traffic**: no `request_kind='title'` row
+  has landed with a header-carried `session_key` since `session_affinity`
+  was turned on (§17). Worth checking once one arrives — that's the first
+  live proof either tier actually nests a real title under a real parent
+  on the page, not just in the seeded-store tests.

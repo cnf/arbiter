@@ -21,7 +21,8 @@ open). New §17 added 2026-09-23 at `develop` = `fa41aa4` — #11's grouping
 half piece 1 (the `ParentSessionForTitle` query) shipped; pieces 2 (UI) and 3
 (degraded-mode signal) still open. New §18 added 2026-09-23 at `develop` =
 `28aa378` — piece 2 (nest a title line under its resolved parent in the UI)
-also shipped; only piece 3 remains. Run `git log --oneline -1` for the truth.
+also shipped; only piece 3 remains. New §19 added 2026-09-23 at `develop` =
+`ee71cb4` — piece 3 shipped; **#11 is fully closed**. Run `git log --oneline -1` for the truth.
 
 ---
 
@@ -198,7 +199,7 @@ user has said he doesn't use today (he does use the Anthropic **upstream**,
 i.e. routing to Claude models — that's a different, unaffected path; see §10).
 
 **Medium/low**, no change in status: #8 (see above — half done), #9,
-**#11 (routing half + grouping pieces 1/2 shipped; piece 3 open — see §18)**,
+**#11 (CLOSED — routing half + all three grouping pieces shipped, see §19)**,
 #14, #17, #18, #20, #21, #22, #23, #24, #26, #36, #38, #40, #41.
 
 **#17** — Phase D (`min_confidence`) is now *unblocked* (its blocker #6
@@ -1028,3 +1029,76 @@ investigated.
   was turned on (§17). Worth checking once one arrives — that's the first
   live proof either tier actually nests a real title under a real parent
   on the page, not just in the seeded-store tests.
+
+---
+
+## 19. Session 2026-09-23c — #11 grouping half, piece 3: capture-off is now visible — #11 CLOSED
+
+**One commit, on `develop` (unpushed): `ee71cb4`.** Ships piece 3, §18's
+remaining scope — the last piece of #11. **All three grouping pieces plus
+the routing half are now shipped; #11 is fully closed.**
+
+| commit | what |
+|---|---|
+| `ee71cb4` | **#11 grouping half, piece 3**: `attachTitleChildren` now takes a `captureContent bool` and, for any title line it cannot nest, records one of three `TitleParentState` values on `requestLineView` — `titleParentFound` (resolved to a real session, just not one with a line on this page — a paging fact), `titleParentNotFound` (both tiers ran, neither matched), or `titleParentNotFoundCaptureOff` (tier 1 found nothing and tier 2 could not run because `storage.capture_content` is off). `reqrow.html` renders a "no parent shown" tag with the reason in its `title` attribute whenever a title line's state is non-empty. `ui.Handler` gained `SetCaptureContent`/an `atomic.Bool` field mirroring `pipeline.Pipeline`'s existing setter of the same name — the two packages don't otherwise share this config value, so the UI needed its own copy. Wired at both call sites config flows through: `main.go`'s startup wiring and `reload.go`'s `reload()` (which now also takes `adminUI *ui.Handler`, threaded through `watchConfig` and the admin-reload closure). |
+
+**Why a three-way split, not two:** before this, an unnested title line
+looked the same whether tier 2 (content-hash join) genuinely searched and
+found nothing, or never ran at all because `capture_content` was off. Only
+tier 1 (session-affinity header) needs no capture. A reader with capture off
+seeing every title line unnested had no way to tell "the join tried and
+missed" from "the join was never possible" and could reasonably read the
+whole feature as broken. This is exactly the ticket's hard constraint from
+§15/§18: capture-off must **visibly degrade**, not silently look identical
+to "no match found".
+
+**`reload()`'s signature grew a parameter** (`adminUI *ui.Handler`) because
+`adminUI` is built once at startup and never rebuilt on reload (unlike the
+pipeline, which `buildPipeline` reconstructs from scratch every reload) — so
+its capture_content copy needed its own explicit update call on the same
+path. `nil` is accepted (guarded with an `if adminUI != nil` check) so tests
+that don't exercise the admin UI aren't forced to construct one.
+
+**Test discipline followed:** added
+`TestAttachTitleChildrenLeavesUnresolvedCaptureOff` alongside the existing
+`TestAttachTitleChildrenLeavesUnresolvedAtTopLevel`, asserting the two now
+produce different `TitleParentState` values from the same `resolveParent`
+result (`ok=false`) — one exercises `captureContent=true`, the other
+`captureContent=false`. Also asserted the nested-parent test's child line
+keeps `TitleParentState == titleParentNested` (the zero value), which is
+what caught golangci-lint's `unused` complaint on that constant before this
+was added. Full suite green: `go build`, `go vet`,
+`go test ./internal/ui/... -run "TestAttachTitleChildren|TestAttachTraceChildren|TestFoldRequests|TestNoUnsafeContentConversions"`
+(all pass), then the full `go test ./...` — same 5 pre-existing `internal/ui`
+failures flagged in §17/§18 (`TestOverviewPivotsAndRanks` and siblings),
+still unrelated, still not investigated. `golangci-lint run
+./internal/ui/... ./cmd/arbiter/...` clean. `gofmt -l` flags the same three
+pre-existing files §18 already flagged (`grouping_test.go`,
+`grouping_tail_test.go`, `internal/ui/requests.go`) — reconfirmed via
+`git stash` that they're dirty at baseline too, no new violations added.
+
+**State for the next session:**
+
+- `internal/classifier/match_test.go` still has the **unrelated, on-hold
+  debug session's uncommitted change** — set aside via `git stash`/`git
+  stash pop` around this session's commit too. Still uncommitted on
+  purpose.
+- `feedback.md` at repo root is **untracked, pre-existing** — untouched.
+- PICKUP.md itself is **modified in the working tree** (this §19 + the
+  header line + §6 update) — commit it as its own handoff.
+- **#11 is fully shipped in code.** The board (`gh issue view 11`) was still
+  OPEN as of this session's start — **close it** (`gh issue close 11`) once
+  this handoff is confirmed, the same convention #5/#34/#43 followed: don't
+  leave a ticket open once every piece is on `develop`.
+- **Still unverified against real traffic**: no `request_kind='title'` row
+  has landed with a header-carried `session_key` since `session_affinity`
+  was turned on (§17) — carried forward from §17/§18, still true. Worth
+  checking once one arrives; not a blocker for closing #11, since all three
+  pieces are covered by seeded-store unit tests.
+- **Deployed config still needs a manual step** the repo cannot take:
+  `/data/arbiter/arbiter.yaml` has no live `policy` router rule routing
+  `request_kind: "title"` to a cheap alias yet (§16's routing half shipped
+  the capability, not the config) — that's the user's config change to
+  make, same boundary noted in §16.
+
+---

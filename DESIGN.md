@@ -5,39 +5,46 @@ description: A dense, data-first admin dashboard for a single-user LLM proxy —
 colors:
   primary: "#FF6700"
   secondary: "#0098FF"
-  secondary-ink: "#0072CC"
-  ink: "#14161A"
-  ink-dark: "#E6E8EC"
-  bg: "#FBFBFC"
-  bg-dark: "#15171B"
-  surface: "#FFFFFF"
-  surface-dark: "#1B1E23"
-  line: "#D9DCE1"
-  line-dark: "#2B2F36"
-  muted: "#6B7280"
-  muted-dark: "#9AA1AC"
-  on-primary: "{colors.ink}"
-  on-secondary: "{colors.ink}"
-  ok: "#16794A"
-  ok-dark: "#5FC98D"
-  warn: "#A35A00"
-  warn-dark: "#E0A44A"
-  err: "#B3261E"
-  err-dark: "#FF8A80"
-  note: "#3F3F8F"
-  note-dark: "#A6A6F0"
-  kind-classifier: "#7C5CFC"
-  kind-classifier-dark: "#A996FF"
-  kind-title: "#0EA5A5"
-  kind-title-dark: "#5FD4D4"
-  kind-subagent: "#C2419C"
-  kind-subagent-dark: "#E58BCB"
-  tool: "#B8860B"
-  tool-dark: "#E0B34A"
+  secondary-ink: "#46B4FF"
+  secondary-ink-light: "#0072CC"
+  ink: "#E6E8EC"
+  ink-light: "#17181B"
+  bg: "#14161C"
+  bg-light: "#F5F4F1"
+  panel: "#1B1E26"
+  panel-light: "#FFFFFF"
+  panel-2: "#21242E"
+  panel-2-light: "#FAFAF8"
+  line: "#2A2E3A"
+  line-light: "#E5E3DD"
+  line-strong: "#3B4051"
+  line-strong-light: "#D2CFC6"
+  muted: "#9AA1AC"
+  muted-light: "#6E6A61"
+  faint: "#6B7280"
+  faint-light: "#A5A196"
+  on-primary: "#14161A"
+  on-secondary: "#14161A"
+  ok: "#5FC98D"
+  ok-light: "#16794A"
+  warn: "#E0A44A"
+  warn-light: "#A35A00"
+  err: "#FF8A80"
+  err-light: "#B3261E"
+  note: "#A6A6F0"
+  note-light: "#3F3F8F"
+  kind-classifier: "#A996FF"
+  kind-classifier-light: "#7C5CFC"
+  kind-title: "#5FD4D4"
+  kind-title-light: "#0EA5A5"
+  kind-subagent: "#E58BCB"
+  kind-subagent-light: "#C2419C"
+  tool: "#E0B34A"
+  tool-light: "#B8860B"
 typography:
   h1:
     fontFamily: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif
-    fontSize: 1.15rem
+    fontSize: 1.25rem
     fontWeight: 600
     lineHeight: 1.25
     letterSpacing: "-0.01em"
@@ -48,9 +55,9 @@ typography:
     lineHeight: 1.3
   label-caps:
     fontFamily: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif
-    fontSize: 0.6875rem
-    fontWeight: 600
-    letterSpacing: "0.04em"
+    fontSize: 0.65625rem
+    fontWeight: 700
+    letterSpacing: "0.06em"
   body-md:
     fontFamily: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif
     fontSize: 0.875rem
@@ -64,9 +71,9 @@ typography:
     fontSize: 0.78125rem
     lineHeight: 1.4
 rounded:
-  sm: 3px
+  sm: 4px
   md: 6px
-  lg: 10px
+  lg: 8px
   pill: 9999px
 spacing:
   xs: 4px
@@ -78,53 +85,57 @@ components:
   button-primary:
     backgroundColor: "{colors.primary}"
     textColor: "{colors.on-primary}"
-    rounded: "{rounded.sm}"
+    rounded: "{rounded.md}"
     padding: 8px
   button-primary-hover:
     backgroundColor: "{colors.primary}"
     textColor: "{colors.on-primary}"
   button-secondary:
-    backgroundColor: "{colors.surface}"
+    backgroundColor: "{colors.panel}"
     textColor: "{colors.secondary-ink}"
-    rounded: "{rounded.sm}"
+    rounded: "{rounded.md}"
     padding: 8px
   button-secondary-hover:
-    backgroundColor: "{colors.surface}"
+    backgroundColor: "{colors.panel}"
     textColor: "{colors.secondary-ink}"
   card:
-    backgroundColor: "{colors.surface}"
+    backgroundColor: "{colors.panel}"
     textColor: "{colors.ink}"
     rounded: "{rounded.md}"
     padding: 12px
   table-header:
-    backgroundColor: "{colors.surface}"
+    backgroundColor: "{colors.panel}"
     textColor: "{colors.muted}"
     typography: "{typography.label-caps}"
   badge-ok:
-    backgroundColor: "{colors.surface}"
+    backgroundColor: "{colors.panel}"
     textColor: "{colors.ok}"
     rounded: "{rounded.sm}"
   badge-warn:
-    backgroundColor: "{colors.surface}"
+    backgroundColor: "{colors.panel}"
     textColor: "{colors.warn}"
     rounded: "{rounded.sm}"
   badge-err:
-    backgroundColor: "{colors.surface}"
+    backgroundColor: "{colors.panel}"
     textColor: "{colors.err}"
     rounded: "{rounded.sm}"
   badge-note:
-    backgroundColor: "{colors.surface}"
+    backgroundColor: "{colors.panel}"
     textColor: "{colors.note}"
     rounded: "{rounded.sm}"
   tag:
-    backgroundColor: "{colors.surface}"
+    backgroundColor: "{colors.panel}"
     textColor: "{colors.muted}"
-    rounded: "{rounded.pill}"
+    rounded: "{rounded.sm}"
   input:
     backgroundColor: "{colors.bg}"
     textColor: "{colors.ink}"
-    rounded: "{rounded.sm}"
+    rounded: "{rounded.md}"
     padding: 4px
+  brand-mark:
+    backgroundColor: "{colors.primary}"
+    rounded: "{rounded.lg}"
+    size: 30px
 ---
 
 ## Overview
@@ -138,6 +149,11 @@ or *navigate*; everywhere else the page stays quiet so those two colors keep
 their signal. Status color (ok/warn/err/note) is a wholly separate channel
 from brand color — a row is never both "the accent" and "a warning" at once.
 
+**Dark is the default and primary-designed theme**, not an afterthought —
+the operator runs this at their desk for hours; a bright white admin panel
+is the thing being fixed, not the baseline to fall back to. Light mode is a
+fully-specified alternate, not a stub.
+
 ## Colors
 
 - **Primary (`{colors.primary}`, `#FF6700`):** The one high-emphasis action
@@ -146,17 +162,35 @@ from brand color — a row is never both "the accent" and "a warning" at once.
   view at the same weight.
 - **Secondary (`{colors.secondary}`, `#0098FF`):** Navigation and reference —
   links, the active nav item, "go look at this" affordances. Lower emphasis
-  than primary; it points, it doesn't commit. As flat text-on-white this hue
-  reads at 3.03:1, under WCAG AA — where it carries body text or a button
-  label, use `secondary-ink` (`#0072CC`, 4.91:1) instead. The bright value
-  stays valid for borders, fills, and anything not carrying small text.
-- **Ink / Bg / Surface / Line:** The actual page — text, page background,
-  card background, and hairline borders. These carry the UI, not the brand.
-  Each has a `-dark` pair; the format has no native scheme-variant token
-  yet, so light is canonical and `*-dark` is the `prefers-color-scheme: dark`
-  swap-in, both wired through `color-scheme: light dark` same as today.
-- **Muted:** Secondary text — metadata, timestamps, column headers, anything
-  read after the primary value in a cell, not instead of it.
+  than primary; it points, it doesn't commit. As flat text-on-surface this
+  hue fails WCAG AA in both themes — use `secondary-ink` (dark theme:
+  `#46B4FF`, light theme: `secondary-ink-light` `#0072CC`) wherever it
+  carries body text or a button label. The bright value stays valid for
+  borders, fills, and anything not carrying small text.
+- **Ink / Bg / Panel / Line:** The actual page — text, page background, card
+  background, and hairline borders. Each has a `-light` pair. Unlike the
+  previous generation of this spec, **dark values are canonical** (`ink`,
+  `bg`, `panel`, `line`, `line-strong`, `muted`, `faint` all resolve dark by
+  default) and `*-light` is the swap-in. The swap is **not**
+  `prefers-color-scheme` — it's an explicit `data-theme` attribute on
+  `<html>` toggled by an in-page control, because the operator's own
+  preference (dark, confirmed) should win over OS default, and the toggle
+  itself is discoverable UI, not a hidden system setting.
+- **Panel-2:** A second, slightly-lifted surface tone for internal
+  dividers/nested panels where `panel`-on-`panel` would have no contrast
+  (e.g. a stat block sitting inside a detail column that's already `panel`).
+- **Bg vs. Panel is not neutral gray.** Both themes lean warm rather than
+  clinical: dark is a desaturated **blue-slate** (`bg:#14161C`,
+  `panel:#1B1E26`) chosen because it gives `secondary` blue a native surface
+  to sit on and makes `primary` orange read harder via warm/cool contrast;
+  light is a warm off-white (`bg:#F5F4F1`), not cool near-white. Do not
+  default back to `#111`/`#fff`/pure gray — the warmth is deliberate,
+  chosen specifically to flatter the brand pair.
+- **Muted / Faint:** Two tiers of secondary text. `muted` is column headers,
+  metadata, timestamps — read after the primary value in a cell, not instead
+  of it. `faint` is one tier quieter still — placeholder text, disabled
+  states, decorative tick marks (e.g. the vertical stem connecting a
+  satellite node to its lane).
 - **Status (ok/warn/err/note):** Request-outcome semantics only. Reused
   nowhere else, so a glance down a status column is never ambiguous with a
   glance down an accent.
@@ -171,11 +205,11 @@ from brand color — a row is never both "the accent" and "a warning" at once.
   request's kind and its tool activity are different facts read together.
 
 Both `primary` and `secondary` pair with **ink text, not white** —
-`on-primary`/`on-secondary` resolve to `{colors.ink}`. At these lightnesses,
-white-on-orange and white-on-blue both land under the WCAG AA 4.5:1 text
-threshold (≈2.9:1 and ≈3.0:1); dark text clears it (~6:1) on both. This is
-also just the correct move stylistically — bright saturated fills read
-better with dark text (see YC's own orange).
+`on-primary`/`on-secondary` resolve to a fixed dark ink (`#14161A`)
+regardless of theme, because both accent fills stay bright enough in both
+themes that white text fails WCAG AA on them. Dark text clears it on both.
+This is also just the correct move stylistically — bright saturated fills
+read better with dark text (see YC's own orange).
 
 ## Typography
 
@@ -186,6 +220,9 @@ verbatim — hashes, session keys, model names, token counts, JSON. Hierarchy
 is carried by size and weight, not typeface switching: `h1`/`h2` step down
 from the page title into section headers, `label-caps` marks a column
 header or a status chip, `body-md`/`body-sm` are prose and cell text.
+`h1` grew slightly (1.15rem → 1.25rem) versus the previous generation of
+this spec — the new page chrome has more room to let a page title carry
+real weight.
 
 ## Layout
 
@@ -193,34 +230,43 @@ header or a status chip, `body-md`/`body-sm` are prose and cell text.
 control, `sm` for gaps inside a control cluster (a filter row, a button
 group), `md` for the padding inside a card/table cell cluster, `lg` between
 stacked components on a page, `xl` between page sections. Max content width
-stays wide (1600px) — this is a table-reading tool, columns want the room.
+is no longer a fixed page-wide cap — the merged Sessions page uses a fluid
+two-column layout (lane list + persistent detail rail) instead of a single
+centered table, so width is driven by the detail rail's fixed 380px plus
+whatever the lane list needs, not a `max-width` on `<main>`.
 
 ## Shapes
 
 Flat by design — no elevation/shadow system; a hairline `line` border is
-the only depth cue a bordered surface gets. `rounded.sm` (3px) is the
-default for anything interactive or data-dense (buttons, inputs, table
-container, badges) so corners don't compete with the content. `rounded.md`
-(6px) is reserved for the few real "cards" (panels, fact grids).
-`rounded.pill` is for tags only.
+the only depth cue a bordered surface gets, in both themes. The rounded
+scale shifted up slightly from the previous generation
+(`sm` 3px→4px, `md` 6px unchanged, `lg` 10px→8px) to match what the current
+chrome actually uses: `rounded.sm` for small chips/pills/tags,
+`rounded.md` for buttons, inputs, and the toolbar's bordered controls,
+`rounded.lg` for the one deliberately-bigger shape on the page — the brand
+mark in the header. `rounded.pill` remains reserved for tags only.
 
 ## Components
 
 - `button-primary` is the one committing action visible at a time — filled
   orange, ink text, no shadow.
-- `button-secondary` is a ghost button: `surface` background, blue text,
+- `button-secondary` is a ghost button: `panel` background, blue text,
   used for everything reversible or secondary (reset, cancel, a lower-
   priority nav action).
 - `card` is the default bordered surface for a fact grid, panel, or turn —
-  `surface` background, `line` border, `rounded.md`.
+  `panel` background, `line` border, `rounded.md`.
 - `table-header` renders as `label-caps` in `muted` — headers recede so the
   data is what's read.
 - `badge-*` are status chips: text-colored, not fill-colored, with a
   matching-tint border — enough signal to scan a column, not enough weight
   to outshine the row's actual value.
 - `tag` is the neutral pill for kind/axis labels that aren't a status.
-- `input` matches the page background (`bg`, not `surface`) so a focused
+- `input` matches the page background (`bg`, not `panel`) so a focused
   filter field visually recedes into the page until it's actively used.
+- `brand-mark` is new: a 30px `rounded.lg` square, `primary`→`secondary`
+  gradient fill, containing a simple line-art glyph. It anchors the header
+  and is always the leftmost element in a real `<a href>` back to the home
+  page — the logo is a navigation control, not decoration.
 
 ## Do's and Don'ts
 
@@ -231,53 +277,105 @@ container, badges) so corners don't compete with the content. `rounded.md`
   for anything that mutates state.
 - **Do** use token references (`{colors.primary}`) in components, never
   re-typed hex.
+- **Do** treat dark as the theme every new component is designed against
+  first; check the `-light` pairing second, not the other way around.
 - **Don't** put white text on `primary` or `secondary` fills — both fail
-  AA contrast at these lightnesses; pair with `ink` instead.
+  AA contrast; pair with the fixed `on-primary`/`on-secondary` ink instead.
 - **Don't** reach for a shadow. Depth is a border or it isn't there.
 - **Don't** let a status color (ok/warn/err/note) double as a brand accent,
   or a scan of the status column stops being trustworthy.
+- **Don't** default to neutral gray for `bg`/`panel`. Both themes carry a
+  deliberate warm undertone chosen to complement the orange/blue brand
+  pair — a plain `#111`/`#fff` regression loses that.
 
 ## Page Patterns
 
 Token values and component styles above answer "what a thing looks like."
 This section answers "how a page is built" — layout decisions specific
-to Arbiter's data, arrived at through iterative mockup review. A build
-session should treat these as structural requirements, not suggestions.
+to Arbiter's data. A build session should treat these as structural
+requirements, not suggestions, **except where a subsection is explicitly
+marked open** — those are known-undecided and should not be treated as
+final just because they're written down.
 
-### Request rows (requests page)
+### App chrome (all pages)
 
-- Grid: `3px status-bar | 84px time | 1fr chain | auto session | auto cost`.
-  Cost/latency is **always the last column**, dead-aligned across every
-  row regardless of nesting — achieved via CSS `order`, not by reordering
-  markup, so future columns can be added without touching row templates.
-- **Routing chain**, not a single model name: collapse to the fewest
-  segments that carry information —
-  `requested → routed → actual`, dropping a segment wherever consecutive
-  values are identical. Drop the word "alias"; a literal-model request
-  renders as one segment (`literal: anthropic claude-opus-4-6`), never a
-  redundant `X → X`. A real divergence renders all three:
-  `debug: openrouter preset/bugspray → google/gemma-4-26b-a4b-it:free`.
-- **`request_kind`** (classifier/title/subagent) renders as one chip style,
-  distinguished only by the `kind-*` color — never a different tag shape
-  per kind. Axis pills (domain/effort/cost_class) sit on their own line
-  below the model-name/status line, not beside the chain and not beside
-  cost.
-- **Threading:** a classifier/title/subagent request spawned by a client
-  request renders as a **child row directly above its parent**, newest
-  first (chronology reads bottom-to-top within a thread). Only the time
-  column gets a `↳` indent marker — never the whole row, and never the
-  cost/latency column, so cost stays scannable in a straight line down
-  the page regardless of nesting depth.
-- **Stream grouping:** repeated/streamed requests stay stacked with a
-  count badge (below the "x ago" text, not beside it) as long as nothing
-  else happens in between. A subagent request breaks the stack — finish
-  the current stack, render the subagent row, start a new stack after it.
-- **Status bar:** every row, parent or child, keeps the colored left-edge
-  status bar. No row is ever exempt.
-- Session id renders as a bordered chip with a dot-marker (not a plain
-  muted link) — it's a "conversation handle," not incidental metadata.
+Arrived at through blank-slate exploration after the shipped UI's original
+header ("a bar with words in it") was flagged as low-information. Applies
+to every page, not just Sessions.
+
+- **Header is a persistent 58px top bar**, not a route-aware component that
+  changes shape per page.
+- **Brand mark always links home.** A real `<a href>`, not a styled `<div>`
+  — clicking the logo/wordmark from any page returns to the primary
+  landing page (currently Sessions; see Overview note below).
+- **Each nav item carries a live stat, not just a label** — two-line
+  stack: an uppercase `label-caps` line, then a `data-mono` numeric/value
+  line directly beneath it (`OVERVIEW → $18/24h`, `SESSIONS → 3 active`,
+  `DISCOVERY → 2 gaps`). This was the single highest-value fix this round:
+  the header stopped being pure navigation chrome and became a glanceable
+  instrument in its own right. A nav item whose stat represents a problem
+  (e.g. Discovery's gap count) uses `err` for the stat value, not `warn` or
+  plain `ink`.
+- **Theme toggle lives in the header's right cluster**, a real button
+  (icon + text label reading the current theme name), not a silent
+  `prefers-color-scheme` hook — state changes via `data-theme` on `<html>`,
+  default `dark`.
+- **Live status indicator** (`● live · N req today`) sits in the same right
+  cluster, confirming this is a running system being watched, not a static
+  report.
+
+### Sessions (merged requests + sessions page)
+
+**Supersedes the previous generation's separate "Request rows (requests
+page)" and "Sessions index" sections below — those described two pages that
+no longer exist as separate surfaces.** The split never read right in
+practice; merging them turned out to also solve a layout problem (a single
+merged page has room to breathe that two cramped table pages didn't).
+
+- **A session is the primary unit — a swimlane, not a table row.** A fixed
+  260px label column (session-id chip, first-message preview, request/
+  satellite counts, running cost) sits to the left of a horizontal
+  timeline area for that session.
+- **Requests are large ringed nodes on the timeline**, positioned along a
+  horizontal lane line. Client-request nodes are colored by outcome
+  (`ok`/`warn`/`err` border).
+- **Classifier/title/subagent calls a request triggered are small satellite
+  nodes**, positioned above their parent node and connected to the lane by
+  a visible vertical stem (`line-strong`, partial opacity) — this is the
+  page's core visual metaphor: cause-and-effect between a client request
+  and the machinery it triggered is a spatial fact you see on the lane,
+  not a nesting rule you read in text. Satellite color follows the `kind-*`
+  channel (classifier/title/subagent), same hues as before.
+- **A persistent detail panel occupies a fixed 380px right column** —
+  never a modal, never a dock that covers the page. Default state shows
+  aggregate stats for whatever's currently in view (session/request/error
+  counts, total cost). Clicking any node — client or satellite — swaps the
+  panel to that node's full detail (route, status, rationale, token/cost/
+  latency facts, a link into the full transcript). Clicking elsewhere never
+  navigates the lane list away; only an explicit "view session →" action
+  in the detail panel does that.
+- **Toolbar above the lane list**: free-text search (session id, provider,
+  model, first message), filter chips (all / errors only / client only),
+  a time-window select, and a result count — same search-first posture as
+  the previous generation's Sessions index philosophy, now serving the
+  merged page instead of a separate one.
+
+**Open / not yet finalized (its own design round):** the exact visual
+treatment of the swimlane row itself — node sizing, spacing, exact
+proportions, and how the layout holds up against real dense session data
+(a session with 20+ requests, or heavy satellite fan-out) has not been
+stress-tested or agreed. Do not treat the current mockup's specific pixel
+values for node/stem sizing as locked — the page-level composition (lane =
+session, nodes = requests, persistent right panel) is agreed; the pixel-
+level row design is not. The session-id chip's dot-marker convention from
+the previous generation ("a bordered chip with a dot-marker, not a plain
+muted link") has been dropped in the current mockup and has not been
+explicitly re-decided either way — resolve this in the same round.
 
 ### Session transcript
+
+Unchanged from the previous generation of this spec — this page's design
+was not revisited this round and nothing here contradicts it.
 
 - **No chat bubbles.** Message bodies here run from a few words to 35k+
   characters (skill dumps, trace logs) — bubble containers assume
@@ -316,30 +414,11 @@ session should treat these as structural requirements, not suggestions.
   followed by an added line, which also covers pure insertion/injection
   and pure deletion without a separate mechanism for each.
 
-### Sessions index
-
-- Lower redesign priority than requests/transcript — it was already
-  "mostly good." Apply the requests-page visual language (session-id
-  chip, quiet numeric columns, mono for anything store-verbatim) rather
-  than inventing new conventions.
-- **Search-first, not sort-first.** A single text search box (matches
-  session key / provider / model / alias) is the primary way to find a
-  session; per-column sort on headers is a secondary affordance, not the
-  main interaction — this page is used occasionally and for lookup, not
-  continuous monitoring.
-- **First-user-message preview column**: a single-line, truncated preview
-  of the session's first user message, purely as a quick visual aid for
-  recognizing a session at a glance — not a feature to invest further
-  design weight in. Click opens the same full-screen popover as the
-  transcript page. This column is `1fr` (takes whatever space remains);
-  every other column (session/span/turns/tokens/cost/err) must use a
-  **fixed pixel width, not `auto`** — `auto`-sized trailing columns
-  shift position row-to-row because their width depends on that row's
-  own content length, breaking vertical column alignment. This was a
-  real bug (screenshot-caught), not a hypothetical: `auto` columns are
-  disallowed in any row-repeating grid on this page.
-
 ### Discovery
+
+Not visually redesigned this round — needs its own pass. The previous
+generation's structural/backend requirements still stand and are carried
+forward unchanged:
 
 - Needs backend/query changes alongside the visual pass, not visual-only:
   **dedupe by session, not raw request** (a repeated system prompt across
@@ -349,21 +428,26 @@ session should treat these as structural requirements, not suggestions.
   originating client, e.g. Claude Code vs. o‍pencode vs. Claude Desktop,
   as collapsible sections).
 - Block preview text reuses the same full-screen popover as the
-  transcript and sessions pages — one popover mechanism, three call
-  sites, not three implementations.
+  transcript and sessions pages — one popover mechanism, shared call
+  sites, not separate implementations.
+
+### Overview
+
+**Not designed yet.** The app-chrome header now surfaces a live `$/24h`
+stat for this nav item, which implies at minimum a cost-over-time view
+exists here, but no page layout, mockup, or structural requirement has
+been agreed. Flagged as probably-needed (confirmed used by real header
+navigation) but unconfirmed as actually-used-day-to-day by the operator.
 
 ### Cross-page conventions
 
-- A concept that works on one page (routing-chain chip, kind color,
-  popover, mono-for-verbatim-data) must be reused verbatim elsewhere
-  rather than re-invented — the four uses of the popover above are one
-  component, not four.
-- Every structural decision here was checked against **real Arbiter
-  session data** pulled from its own SQLite store, not synthetic
-  placeholder text — long messages, multi-block tool calls, and a real
-  guardrail-redacted preamble all came from actual dogfooded sessions.
-  A build session should keep doing this: fixture data that's "nice"
-  but shorter/cleaner than real traffic will hide the exact problems
-  this redesign exists to fix (35k-char messages, dense tool-call
-  sequences, streamed request bursts).
-</content>
+- A concept that works on one page (kind color, popover, mono-for-
+  verbatim-data, the app-chrome header) must be reused verbatim elsewhere
+  rather than re-invented.
+- Every structural decision here that comes from the previous generation's
+  work was checked against **real Arbiter session data** pulled from its
+  own SQLite store, not synthetic placeholder text. The current round's
+  merged-Sessions-page exploration used representative sample data but has
+  **not yet** been checked against real dense session data (20+ request
+  sessions, heavy satellite fan-out) — that check is part of the open
+  session-lane visual round, not yet done.

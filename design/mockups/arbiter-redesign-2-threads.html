@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arbiter — redesign concept: Threads</title>
+<style>
+:root {
+  color-scheme: light;
+  --primary: #FF6700;
+  --secondary: #0098FF;
+  --secondary-ink: #0072CC;
+  --bg: #F5F4F1;
+  --panel: #FFFFFF;
+  --line: #E2E0DA;
+  --ink: #17181B;
+  --muted: #6E6A61;
+  --faint: #A5A196;
+  --ok: #16794A;
+  --warn: #A35A00;
+  --err: #B3261E;
+  --note: #3F3F8F;
+  --classifier: #7C5CFC;
+  --title: #0EA5A5;
+  --subagent: #C2419C;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.5 var(--sans); overflow: hidden; }
+
+.app { display: flex; flex-direction: column; height: 100vh; }
+
+/* ===================== TOP: a single scrubbable density strip, no nav ===================== */
+.timebar {
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  padding: 10px 20px 0;
+}
+.timebar .row1 { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.timebar .name { font-weight: 800; letter-spacing: -0.02em; font-size: 14px; }
+.timebar .name span { color: var(--primary); }
+.timebar .sub { color: var(--faint); font-size: 11px; font-family: var(--mono); }
+.timebar .sub .live { color: var(--ok); }
+.timebar .sub .live::before { content: "●"; margin-right: 3px; }
+
+.density { position: relative; height: 46px; display: flex; align-items: flex-end; gap: 1px; cursor: crosshair; }
+.density .bar { flex: 1; background: var(--secondary); opacity: 0.28; border-radius: 1px 1px 0 0; min-width: 2px; }
+.density .bar.err { background: var(--err); opacity: 0.85; }
+.density .bar.warn { background: var(--warn); opacity: 0.7; }
+.density .bar:hover { opacity: 1; }
+.selection { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--primary) 12%, transparent); border-left: 2px solid var(--primary); border-right: 2px solid var(--primary); pointer-events: none; }
+.timebar .axis { display: flex; justify-content: space-between; color: var(--faint); font-size: 10px; font-family: var(--mono); padding: 3px 0 8px; }
+
+/* ===================== BODY: lanes = sessions, not rows = requests ===================== */
+.body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 18px 20px 60px; }
+
+.intro {
+  max-width: 760px; color: var(--muted); font-size: 12.5px; line-height: 1.6;
+  background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--secondary);
+  padding: 10px 14px; margin: 0 0 20px; border-radius: 4px;
+}
+.intro b { color: var(--ink); }
+
+.lane-group { margin-bottom: 26px; }
+.lane-head {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+  font-size: 11.5px;
+}
+.lane-head .sid { font-family: var(--mono); color: var(--secondary-ink); font-weight: 700; background: color-mix(in srgb, var(--secondary) 10%, transparent); padding: 2px 8px; border-radius: 4px; }
+.lane-head .meta { color: var(--faint); }
+.lane-head .meta b { color: var(--muted); font-weight: 600; }
+.lane-head .totalcost { margin-left: auto; font-family: var(--mono); color: var(--ink); font-weight: 700; }
+
+.lane {
+  position: relative; display: flex; align-items: center; height: 64px;
+  padding-left: 4px;
+}
+.lane::before {
+  content: ""; position: absolute; left: 4px; right: 4px; top: 50%; height: 2px;
+  background: var(--line); transform: translateY(-1px);
+}
+
+.node {
+  position: relative; flex: 0 0 auto; z-index: 2; cursor: pointer;
+}
+.node.client {
+  width: 15px; height: 15px; border-radius: 50%; background: var(--panel);
+  border: 3px solid var(--ok); margin-right: 46px;
+}
+.node.client.err-node { border-color: var(--err); }
+.node.client.warn-node { border-color: var(--warn); }
+.node.sat {
+  width: 9px; height: 9px; border-radius: 50%; margin-right: 30px; margin-top: -22px;
+  border: 2px solid var(--faint); background: var(--panel);
+}
+.node.sat::after {
+  content: ""; position: absolute; left: 2.5px; top: 8px; width: 2px; height: 17px; background: var(--line-strong, var(--faint));
+  opacity: 0.55;
+}
+.node.sat.classifier { border-color: var(--classifier); }
+.node.sat.title { border-color: var(--title); }
+.node.sat.subagent { border-color: var(--subagent); }
+
+.node .tip {
+  position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%);
+  white-space: nowrap; font-size: 10px; font-family: var(--mono); color: var(--faint);
+  opacity: 0; transition: opacity .1s; pointer-events: none;
+}
+.node:hover .tip { opacity: 1; }
+.node.client .tip { bottom: 22px; font-weight: 700; color: var(--muted); }
+
+.node.sel.client { background: var(--ok); }
+.node.sel.client.err-node { background: var(--err); }
+.node.sel.client.warn-node { background: var(--warn); }
+.node.sel.sat { background: currentColor; }
+
+/* ===================== INSPECTOR: a dock panel that SLIDES UP from the bottom, hugs the lane it came from ===================== */
+.dock {
+  position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel);
+  border-top: 1px solid var(--line); box-shadow: 0 -8px 24px rgba(0,0,0,0.08);
+  transform: translateY(100%); transition: transform .16s ease-out;
+  max-height: 46vh; display: flex; z-index: 10;
+}
+.dock.open { transform: translateY(0); }
+.dock .close { position: absolute; top: 10px; right: 14px; background: none; border: none; color: var(--faint); font-size: 18px; cursor: pointer; line-height: 1; }
+.dock .left { flex: 0 0 340px; padding: 18px 20px; border-right: 1px solid var(--line); overflow-y: auto; }
+.dock .left .route { font-size: 18px; font-weight: 800; margin-bottom: 2px; }
+.dock .left .prov { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+.dock .left .statuspill { display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px; margin-bottom: 10px; }
+.dock .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-top: 12px; }
+.dock .facts dt { font-size: 10px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.05em; }
+.dock .facts dd { margin: 2px 0 0; font-family: var(--mono); font-size: 12px; }
+.dock .right { flex: 1; padding: 18px 24px; overflow-y: auto; }
+.dock .right h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); margin: 0 0 8px; }
+.dock .rationale { color: var(--muted); font-size: 13px; line-height: 1.6; max-width: 68ch; }
+.dock .actions { display: flex; gap: 8px; margin-top: 16px; }
+.dock .actions button { all: unset; font: 700 11.5px var(--sans); padding: 7px 14px; border-radius: 5px; cursor: pointer; }
+.dock .actions .go { background: var(--primary); color: #14161A; }
+.dock .actions .raw { border: 1px solid var(--line); color: var(--muted); }
+
+.legend {
+  position: fixed; right: 20px; bottom: 16px; display: flex; gap: 14px; font-size: 10.5px; color: var(--faint);
+  background: var(--panel); border: 1px solid var(--line); padding: 6px 12px; border-radius: 20px;
+}
+.legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; border: 2px solid; margin-right: 3px; vertical-align: -1px; background: var(--panel); }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <div class="timebar">
+    <div class="row1">
+      <div class="name">arbiter<span>·</span></div>
+      <div class="sub"><span class="live">live</span> · 214 requests today · $4.82</div>
+    </div>
+    <div class="density" id="density"></div>
+    <div class="axis"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>now</span></div>
+  </div>
+
+  <div class="body">
+    <div class="intro"><b>Concept: Threads.</b> The primary unit isn't "a request row" —
+    it's a <b>session lane</b>. Time runs left→right along each lane; a client request
+    is a large ringed node, and classifier/title/subagent calls it triggered hang as
+    small satellites just above it, connected by a stem — so cause-and-effect
+    (<i>"why did two classifier calls fire for one request?"</i>) is a spatial fact you
+    see, not a nesting rule you have to read. The top strip is one scrubbable density
+    graph of the whole day (blue = volume, red = errors) — no separate overview page.
+    Clicking any node opens a dock from the bottom edge; the page underneath never moves.</div>
+
+    <div class="lane-group">
+      <div class="lane-head">
+        <span class="sid">a91f7c3e</span>
+        <span class="meta"><b>3</b> requests · <b>2</b> satellites · started 14m ago</span>
+        <span class="totalcost">$0.33</span>
+      </div>
+      <div class="lane">
+        <div class="node sat title" data-e="0" style="margin-left:6px"><div class="tip">title gen</div></div>
+        <div class="node sat classifier" data-e="1"><div class="tip">classifier</div></div>
+        <div class="node client" data-e="2"><div class="tip">claude-opus-4-6 · 920ms</div></div>
+      </div>
+    </div>
+
+    <div class="lane-group">
+      <div class="lane-head">
+        <span class="sid">7c3ea91f</span>
+        <span class="meta"><b>3</b> requests · <b>1</b> satellite · started 25m ago</span>
+        <span class="totalcost">$0.02</span>
+      </div>
+      <div class="lane">
+        <div class="node client" data-e="3" style="margin-left:6px"><div class="tip">bugspray · 590ms</div></div>
+        <div class="node sat subagent" data-e="4"><div class="tip">subagent · haiku-5</div></div>
+        <div class="node client warn-node" data-e="5"><div class="tip">bugspray · 429</div></div>
+      </div>
+    </div>
+
+    <div class="lane-group">
+      <div class="lane-head">
+        <span class="sid">0bd21af9</span>
+        <span class="meta"><b>1</b> request · no satellites · 44m ago</span>
+        <span class="totalcost">$0.00</span>
+      </div>
+      <div class="lane">
+        <div class="node client err-node" data-e="6" style="margin-left:6px"><div class="tip">deepseek-r2 · 500</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="dock" id="dock">
+    <button class="close" id="dockclose">✕</button>
+    <div class="left">
+      <div class="route" id="d-route"></div>
+      <div class="prov" id="d-prov"></div>
+      <span class="statuspill" id="d-status"></span>
+      <div class="facts" id="d-facts"></div>
+    </div>
+    <div class="right">
+      <h3>rationale</h3>
+      <p class="rationale" id="d-rationale"></p>
+      <div class="actions">
+        <button class="go">view full session →</button>
+        <button class="raw">raw request</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><span class="dot" style="border-color:var(--ok)"></span>client ok</span>
+    <span><span class="dot" style="border-color:var(--err)"></span>client err</span>
+    <span><span class="dot" style="border-color:var(--classifier)"></span>classifier</span>
+    <span><span class="dot" style="border-color:var(--title)"></span>title</span>
+    <span><span class="dot" style="border-color:var(--subagent)"></span>subagent</span>
+  </div>
+
+</div>
+
+<script>
+const events = {
+  0: {route:"gpt-5.2-mini", prov:"litellm · title", status:"200", g:"ok", cost:"0.01", lat:"410ms", tok:"2.0k → 340", trace:"tr_88ef",
+      rationale:"Title-generation call, matched to parent session a91f7c3e via ClientSystemPrompt signature."},
+  1: {route:"classifier-v3", prov:"arbiter · classifier", status:"trace", g:"note", cost:"0.00", lat:"88ms", tok:"1.1k → 60", trace:"tr_88f1",
+      rationale:"System One (Jev) decisions call — domain=code (0.94), effort=high (0.81) — resolved before routing the client request on this lane."},
+  2: {route:"claude-opus-4-6", prov:"anthropic · coding", status:"200", g:"ok", cost:"0.31", lat:"920ms", tok:"18.2k → 4.1k", trace:"tr_88f2",
+      rationale:"Routed on domain=code, effort=high; alias \"coding\" resolved to anthropic/claude-opus-4-6 per routing.yaml rule #3. 3× streamed on this route."},
+  3: {route:"preset/bugspray → gemma-4-26b", prov:"openrouter · debug", status:"200", g:"ok", cost:"0.00", lat:"590ms", tok:"3.1k → 890", trace:"tr_44a0",
+      rationale:"Preset alias substituted to a free-tier model per cost_class=cheap policy rule."},
+  4: {route:"claude-haiku-5", prov:"anthropic · subagent", status:"200", g:"note", cost:"0.02", lat:"1.1s", tok:"4.4k → 600", trace:"tr_3fe2",
+      rationale:"Detected subagent call mid-stream via system-prompt signature; recorded as its own request, kind=subagent."},
+  5: {route:"preset/bugspray", prov:"openrouter · debug", status:"429", g:"warn", cost:"0.00", lat:"140ms", tok:"9.4k → 0", trace:"tr_71ab",
+      rationale:"Upstream rate-limited after the subagent call above; cooldown counter incremented for this route, retried on secondary."},
+  6: {route:"deepseek-r2", prov:"litellm · reasoning", status:"500", g:"err", cost:"0.00", lat:"3.4s", tok:"6.7k → 0", trace:"tr_5c19",
+      rationale:"Upstream connection timed out after 3.4s waiting on first byte; no retry configured for this route."},
+};
+
+document.querySelectorAll('.node').forEach(n => {
+  n.addEventListener('click', () => {
+    document.querySelectorAll('.node.sel').forEach(x => x.classList.remove('sel'));
+    n.classList.add('sel');
+    const e = events[n.dataset.e];
+    document.getElementById('d-route').textContent = e.route;
+    document.getElementById('d-prov').textContent = e.prov;
+    const pill = document.getElementById('d-status');
+    pill.textContent = e.status;
+    const colorMap = {ok:'var(--ok)', warn:'var(--warn)', err:'var(--err)', note:'var(--note)'};
+    pill.style.color = colorMap[e.g];
+    pill.style.background = `color-mix(in srgb, ${colorMap[e.g]} 16%, transparent)`;
+    document.getElementById('d-facts').innerHTML = `
+      <div><dt>tokens</dt><dd>${e.tok}</dd></div>
+      <div><dt>latency</dt><dd>${e.lat}</dd></div>
+      <div><dt>cost</dt><dd>$${e.cost}</dd></div>
+      <div><dt>trace</dt><dd>${e.trace}</dd></div>
+    `;
+    document.getElementById('d-rationale').textContent = e.rationale;
+    document.getElementById('dock').classList.add('open');
+  });
+});
+document.getElementById('dockclose').addEventListener('click', () => {
+  document.getElementById('dock').classList.remove('open');
+  document.querySelectorAll('.node.sel').forEach(x => x.classList.remove('sel'));
+});
+
+// density strip: synthetic 96 buckets (15-min) across the day, a couple flagged as error-heavy
+const density = document.getElementById('density');
+const heights = Array.from({length: 96}, (_, i) => {
+  const base = 4 + Math.sin(i / 96 * Math.PI * 2 - 1) * 10 + Math.random() * 6;
+  return Math.max(2, base);
+});
+const errBuckets = new Set([51, 66]);
+const warnBuckets = new Set([55]);
+heights.forEach((h, i) => {
+  const bar = document.createElement('div');
+  bar.className = 'bar' + (errBuckets.has(i) ? ' err' : warnBuckets.has(i) ? ' warn' : '');
+  bar.style.height = h + 'px';
+  density.appendChild(bar);
+});
+</script>
+</body>
+</html>

@@ -66,7 +66,7 @@ func TestTailFirstPollReturnsTheNewestFirstAndACursor(t *testing.T) {
 		t.Error("the first poll reported no newest id")
 	}
 	rows := tailHTML(resp)
-	if got := strings.Count(rows, "<tr"); got != 3 {
+	if got := strings.Count(rows, `data-id="`); got != 3 {
 		t.Errorf("first poll rendered %d rows, want 3", got)
 	}
 	// It must be the row markup the list uses, not a second definition.
@@ -76,7 +76,7 @@ func TestTailFirstPollReturnsTheNewestFirstAndACursor(t *testing.T) {
 	// The rows are request metadata, not content: a request row shows provider,
 	// model and status, and the bodies live on the detail page. Asserting on the
 	// metadata is asserting on what the tail is actually meant to append.
-	if !strings.Contains(rows, ">p<") && !strings.Contains(rows, ">m<") {
+	if !strings.Contains(rows, "p m") {
 		t.Error("rendered rows do not carry the request's provider/model")
 	}
 	if !strings.Contains(rows, "200") {
@@ -109,8 +109,8 @@ func TestTailCursorIsOpaqueAndRoundTrips(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("cursor poll status = %d", code)
 	}
-	if strings.Count(tailHTML(resp), "<tr") != 0 {
-		t.Errorf("polling at the cursor returned %d rows, want 0", strings.Count(tailHTML(resp), "<tr"))
+	if strings.Count(tailHTML(resp), `data-id="`) != 0 {
+		t.Errorf("polling at the cursor returned %d rows, want 0", strings.Count(tailHTML(resp), `data-id="`))
 	}
 	// And nothing new means no new cursor, so the client keeps the one it has
 	// rather than overwriting it with an empty value.
@@ -167,7 +167,7 @@ func TestTailAppendsOnlyWhatArrived(t *testing.T) {
 		if code != 200 {
 			t.Fatalf("status = %d", code)
 		}
-		if strings.Count(tailHTML(second), "<tr") > 0 {
+		if strings.Count(tailHTML(second), `data-id="`) > 0 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -176,7 +176,7 @@ func TestTailAppendsOnlyWhatArrived(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	if got := strings.Count(tailHTML(second), "<tr"); got != 1 {
+	if got := strings.Count(tailHTML(second), `data-id="`); got != 1 {
 		t.Fatalf("the second poll rendered %d rows, want just the new one", got)
 	}
 	// The new row is identifiable by the id the first poll did not include.
@@ -216,7 +216,7 @@ func TestTailHonoursTheFilters(t *testing.T) {
 
 	// Rows carry provider and status, so the filters are observable on them.
 	resp, _ := tailBody(t, h, "/admin/ui/requests/tail?provider=alpha")
-	if got := strings.Count(tailHTML(resp), "<tr"); got != 1 {
+	if got := strings.Count(tailHTML(resp), `data-id="`); got != 1 {
 		t.Errorf("provider=alpha tail rendered %d rows, want 1", got)
 	}
 	if !strings.Contains(tailHTML(resp), "alpha") {
@@ -224,7 +224,7 @@ func TestTailHonoursTheFilters(t *testing.T) {
 	}
 
 	resp, _ = tailBody(t, h, "/admin/ui/requests/tail?errors=1")
-	if got := strings.Count(tailHTML(resp), "<tr"); got != 1 {
+	if got := strings.Count(tailHTML(resp), `data-id="`); got != 1 {
 		t.Errorf("errors-only tail rendered %d rows, want 1", got)
 	}
 	if !strings.Contains(tailHTML(resp), "500") {
@@ -253,7 +253,7 @@ func TestTailReportsTruncation(t *testing.T) {
 	if !resp.Truncated {
 		t.Error("a poll that hit the cap did not report truncation")
 	}
-	if n := strings.Count(tailHTML(resp), "<tr"); n != store.MaxTailLimit {
+	if n := strings.Count(tailHTML(resp), `data-id="`); n != store.MaxTailLimit {
 		t.Errorf("truncated poll rendered %d rows, want the cap %d", n, store.MaxTailLimit)
 	}
 }

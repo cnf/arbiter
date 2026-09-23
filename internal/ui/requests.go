@@ -96,6 +96,38 @@ type requestRowView struct {
 	ShortSession string
 }
 
+// RoutingChain collapses a request's routing facts into the fewest segments
+// that carry information, per DESIGN.md's "Request rows" spec:
+//
+//	literal: anthropic claude-opus-4-6                                (one segment, no divergence)
+//	debug: openrouter preset/bugspray → google/gemma-4-26b-a4b-it:free (two, upstream diverged)
+//
+// The qualifier is the alias name the client asked for (AliasUsed), or the
+// word "literal" when req.Model was used as-is — AliasUsed/Model are the two
+// fields the store actually records per request (see store.Event's own
+// comment: "alias_used TEXT, -- NULL if req.Model was literal"). A named
+// routing-rule/policy label is not a separate stored field today — the
+// closest per-request fact is RoutingRationale's free text — so this does
+// not attempt to reproduce DESIGN.md's "debug"-style rule-name qualifier;
+// "literal" / the alias name are what the two stored fields actually give.
+//
+// The second segment (ActualModel) appears only when the upstream reported a
+// model other than the one routed to — never a redundant "X → X".
+//
+// This lives on requestRowView (not a free function taking store.RequestRow)
+// so the template can call it as a zero-arg method: {{.Head.RoutingChain}}.
+func (r requestRowView) RoutingChain() []string {
+	qualifier := "literal"
+	if r.AliasUsed != "" {
+		qualifier = r.AliasUsed
+	}
+	first := strings.TrimSpace(qualifier + ": " + strings.TrimSpace(r.Provider+" "+r.Model))
+	if r.ActualModel == "" || r.ActualModel == r.Model {
+		return []string{first}
+	}
+	return []string{first, r.ActualModel}
+}
+
 // requestLineView is one displayed line: either a single request, or a run of
 // requests that are the *same event happening again* collapsed into one line
 // with a count.

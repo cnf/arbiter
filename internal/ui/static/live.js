@@ -93,7 +93,7 @@
     // skip rows we have, and re-scanning grows with the list.
     function buildSeen() {
       seen = {};
-      var rows = body.querySelectorAll("tr[data-id]");
+      var rows = body.querySelectorAll(".reqrow[data-id]");
       for (var i = 0; i < rows.length; i++) {
         seen[rows[i].getAttribute("data-id")] = true;
       }
@@ -192,23 +192,34 @@
         buildSeen();
       }
 
-      // The empty table case: the list rendered "no requests match" and no
-      // <tbody> at all, so the first appended row needs one to land in.
-      var tbody = body.querySelector("tbody");
-      if (!tbody) {
+      // The empty-list case: the list rendered "no requests match" with no
+      // .reqhead/.reqbody at all, so the first appended row needs a body (and
+      // the column header) to land in.
+      var reqbody = body.querySelector(".reqbody");
+      if (!reqbody) {
         var empty = body.querySelector(".empty");
         if (empty) {
           empty.remove();
         }
-        var table = document.createElement("table");
-        table.className = "grid";
-        tbody = document.createElement("tbody");
-        table.appendChild(tbody);
-        body.appendChild(table);
+        if (!body.querySelector(".reqhead")) {
+          var head = document.createElement("div");
+          head.className = "reqhead";
+          head.setAttribute("role", "row");
+          head.innerHTML =
+            '<span class="c-bar" aria-hidden="true"></span>' +
+            '<span class="c-time">time</span>' +
+            '<span class="c-chain">provider / model</span>' +
+            '<span class="c-session">session</span>' +
+            '<span class="c-cost">tokens / cost / latency</span>';
+          body.appendChild(head);
+        }
+        reqbody = document.createElement("div");
+        reqbody.className = "reqbody";
+        body.appendChild(reqbody);
       }
 
       var added = 0;
-      var anchor = tbody.firstChild;
+      var anchor = reqbody.firstChild;
       for (var i = 0; i < payload.rows.length; i++) {
         var id = payload.rows[i].id;
         if (id && seen[id]) {
@@ -224,14 +235,14 @@
         }
 
         var key = payload.rows[i].key || "";
-        if (grouped && key && bumpLine(tbody, key, row)) {
+        if (grouped && key && bumpLine(reqbody, key, row)) {
           added++;
           continue;
         }
 
         // The batch arrives newest-first, so inserting each before the current
         // first row keeps the batch's own order.
-        tbody.insertBefore(row, anchor);
+        reqbody.insertBefore(row, anchor);
         anchor = row.nextSibling;
         added++;
       }
@@ -239,14 +250,15 @@
       return added;
     }
 
-    // rowFromHTML turns one response row into a <tr>. It returns null rather than
-    // throwing on malformed markup, so one bad row cannot take out a poll: the
-    // alternative is an uncaught error that stops the tail.
+    // rowFromHTML turns one response row into a .reqrow element. It returns
+    // null rather than throwing on malformed markup, so one bad row cannot
+    // take out a poll: the alternative is an uncaught error that stops the
+    // tail.
     function rowFromHTML(html) {
       if (!html) {
         return null;
       }
-      var holder = document.createElement("tbody");
+      var holder = document.createElement("div");
       holder.innerHTML = html;
       return holder.firstElementChild;
     }
@@ -258,14 +270,14 @@
     // render the row as its own line. The count is re-read from the existing badge
     // rather than rebuilt from text, and the line is re-anchored: leaving it where
     // it was would put a request from a second ago below lines it is newer than,
-    // which is the ordering bug this table's live view already had once.
+    // which is the ordering bug this list's live view already had once.
     //
     // A line that was alone has no count badge yet — the page only renders one for
     // a run — so the first row that joins it has to create the badge. That is the
     // user's `A` then `A` case: without this the line stays count-less and the
     // second turn is invisible as a repeat, which is the thing being grouped.
-    function bumpLine(tbody, key, row) {
-      var line = tbody.querySelector('tr[data-key="' + key + '"]');
+    function bumpLine(reqbody, key, row) {
+      var line = reqbody.querySelector('.reqrow[data-key="' + key + '"]');
       if (!line) {
         return false;
       }
@@ -282,7 +294,7 @@
           badge.title = "this line stands for " + n + " streamed requests on the page loaded — open them as individual rows";
         }
       }
-      tbody.insertBefore(line, tbody.firstChild);
+      reqbody.insertBefore(line, reqbody.firstChild);
       return true;
     }
 
@@ -293,7 +305,7 @@
     // It starts at 1 and lets the caller increment it, so the count and the badge
     // are updated in exactly one place.
     function makeCountBadge(line) {
-      var cell = line.querySelector("td.when");
+      var cell = line.querySelector(".c-time");
       if (!cell) {
         return null;
       }

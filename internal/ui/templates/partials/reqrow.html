@@ -1,5 +1,13 @@
-{{/* reqrow.html is the request table: one fragment, used by the full page and by
-every htmx swap, so the two can never render a row differently. */}}
+{{/* reqrow.html is the request list: one fragment, used by the full page and by
+every htmx swap, so the two can never render a row differently.
+
+Greenfielded for #47 against DESIGN.md's "Request rows" spec — a CSS grid row
+(3px status-bar | 84px time | 1fr chain | auto session | auto cost), not a
+<table>. There is no inherited markup or class from the pre-#45 UI: this is
+built from the spec, not ported. The functional contracts other code depends
+on (data-id per row for the live tail's dedupe, #rows + data-tail-* for
+live.js's poll target, and the template names below, which requests.go and
+live.go call by string) are kept; everything about how a row looks is new. */}}
 {{define "req-rows"}}
 {{/* The tail's configuration rides on #rows itself: it is the element the rows
 are appended to, and the control below is inside it, so a single node carries
@@ -11,25 +19,23 @@ data-tail-grouped is the mode the client must place a polled row in: present in
 a grouped list (where a row either joins an existing line's count or becomes its
 own line), absent in Flat mode (where every row is prepended). It is read off
 the same view the table was rendered from, so the two cannot disagree. */}}
-<div id="rows"{{if .Tail.Enabled}} data-tail-src="{{.Tail.Src}}"
+<div id="rows" class="reqlist"{{if .Tail.Enabled}} data-tail-src="{{.Tail.Src}}"
      data-tail-cursor="{{.Tail.Cursor}}"{{if .Tail.FilterQuery}} data-tail-filter="{{.Tail.FilterQuery}}"{{end}}{{if not .Flat}} data-tail-grouped="1"{{end}}{{end}}>
 {{template "tail" .}}
 {{if .Flat}}{{template "grouping-off" .}}{{else}}{{template "grouping-on" .}}{{end}}
-{{/* The table exists whenever there is anything to show. Flat mode renders Rows,
-grouped mode renders Lines, and gating the <table> on Lines alone made Flat mode
-render a page with no table at all — an empty view that looks like a store with no
-traffic rather than like the list the reader asked for. */}}
+{{/* The list exists whenever there is anything to show. Flat mode renders Rows,
+grouped mode renders Lines, and gating the header row on Lines alone made Flat
+mode render a page with no header at all — an empty view that looks like a
+store with no traffic rather than like the list the reader asked for. */}}
 {{if or .Lines .Rows}}
-<table class="grid">
-  <thead>
-    <tr>
-      <th>time</th><th>status</th><th>provider / model</th><th>alias</th>
-      <th class="num">tokens</th><th class="num">cost</th><th class="num">latency</th>
-      <th>axes</th><th>session</th><th>rationale</th>
-    </tr>
-  </thead>
-  <tbody>{{if .Flat}}{{template "req-rows-body" .}}{{else}}{{template "req-lines-body" .}}{{end}}</tbody>
-</table>
+<div class="reqhead" role="row">
+  <span class="c-bar" aria-hidden="true"></span>
+  <span class="c-time">time</span>
+  <span class="c-chain">provider / model</span>
+  <span class="c-session">session</span>
+  <span class="c-cost">tokens / cost / latency</span>
+</div>
+<div class="reqbody">{{if .Flat}}{{template "req-rows-body" .}}{{else}}{{template "req-lines-body" .}}{{end}}</div>
 {{else}}
   <p class="empty">No requests match. {{if .F.Any}}Widen the filters, or {{end}}<a href="/admin/ui/requests">clear them</a>.</p>
 {{end}}
@@ -38,7 +44,7 @@ traffic rather than like the list the reader asked for. */}}
 {{end}}
 
 {{/* grouping-on states what was folded and offers the flat view. It is rendered
-above the table rather than beside the tail control so that "where did my rows
+above the list rather than beside the tail control so that "where did my rows
 go" is answered where the reader is looking: at the lines that replaced them.
 The count note is not decoration — a folded line's number counts the rows loaded
 on this page, and a reader who takes it for the conversation's total will read
@@ -62,7 +68,7 @@ they click a count, so it has to say why the list looks longer than it did. */}}
   <a href="{{.GroupedHref}}">group streamed runs</a>.</p>
 {{end}}
 
-{{/* req-lines-body is the table body: one <tr> per line. */}}
+{{/* req-lines-body is the list body: one row per line. */}}
 {{define "req-lines-body"}}
   {{range .Lines}}{{template "req-line" .}}{{end}}
 {{end}}
@@ -87,71 +93,93 @@ effect" (the parent renders before its classifier child, unconditionally, per
 the #8 decision) means the child's row comes first in the HTML and the parent's
 own row after, putting the parent visually on top. Recursive through this same
 template — a classifier call has no children of its own today, but nothing
-here assumes exactly one level of nesting. */}}
+here assumes exactly one level of nesting.
+
+Only the time cell (.c-time) gets the child/thread indent per DESIGN.md — never
+the whole row, and never the cost column, so cost stays scannable in a straight
+line down the page regardless of nesting depth. */}}
 {{define "req-line"}}
   {{range .Children}}{{template "req-line" .}}{{end}}
-  <tr data-id="{{.Head.ID}}"{{if .Attr}} data-key="{{.Attr}}"{{end}}{{if or .Run .IsChild}} class="{{if .Run}}run{{end}}{{if .IsChild}} trace-child{{end}}"{{end}}>
-    <td class="when"><a href="/admin/ui/requests/{{.Head.ID}}">{{clock .Head.Ts}}</a>
+  <div class="reqrow{{if .Run}} run{{end}}{{if .IsChild}} child{{end}}" role="row"
+       data-id="{{.Head.ID}}"{{if .Attr}} data-key="{{.Attr}}"{{end}}>
+    <span class="c-bar {{statusClass .Head.StatusCode}}" aria-hidden="true"></span>
+    <span class="c-time">
+      <a href="/admin/ui/requests/{{.Head.ID}}">{{clock .Head.Ts}}</a>
       {{if .Run}}<a class="count" href="{{.OpenHref}}" data-count="{{.Count}}"
          title="this line stands for {{.Count}} streamed requests on the page loaded — open them as individual rows">{{.Count}}×</a>
       {{else}}<span class="sub">{{ago .Head.Ts}}</span>{{end}}
-      {{if .Run}}<span class="sub">{{ago .Head.Ts}}</span>{{end}}</td>
-    <td><span class="status {{statusClass .Head.StatusCode}}"{{if .Head.Error}} title="{{.Head.Error}}"{{end}}>{{.Head.StatusCode}}</span>
-      {{if .Head.Stream}}<span class="tag">stream</span>{{end}}
-      {{if ne .Head.Kind "client"}}<span class="tag kind" title="not real client traffic — Arbiter's own {{.Head.Kind}} request">{{.Head.Kind}}</span>{{end}}</td>
-    <td><span class="prov">{{.Head.Provider}}</span><span class="sub">{{.Head.Model}}</span>
-      {{if .Head.ActualModel}}<span class="sub" title="upstream-reported model">→ {{.Head.ActualModel}}</span>{{end}}</td>
-    <td>{{if .Head.AliasUsed}}{{.Head.AliasUsed}}{{else}}<span class="muted">literal</span>{{end}}</td>
-    <td class="num">{{tokens .Head.InputTokens}} <span class="muted">→</span> {{tokens .Head.OutputTokens}}</td>
-    <td class="num">{{usd .Head.CostUSD}}</td>
-    <td class="num">{{dur .Head.LatencyMs}}</td>
-    <td class="axes">
-      {{if .Head.RequestKind}}<span class="tag reqkind" title="what this request is, not who sent it">{{.Head.RequestKind}}</span>{{end}}
-      {{if and (eq .Head.RequestKind "title") .TitleParentState.Note}}<span class="tag" title="{{.TitleParentState.Note}}">no parent shown</span>{{end}}
-      {{if .Head.Domain}}<span class="tag">{{.Head.Domain}}</span>{{end}}
-      {{if .Head.Effort}}<span class="tag">{{.Head.Effort}}</span>{{end}}
-      {{if .Head.CostClass}}<span class="tag">{{.Head.CostClass}}</span>{{end}}
-    </td>
-    <td>{{if .Head.SessionKey}}<a href="/admin/ui/session?key={{.Head.SessionKey}}" title="{{.Head.SessionKey}}">{{.Head.ShortSession}}</a>
-        {{else}}<span class="muted">none</span>{{end}}</td>
-    <td class="why">{{if .Run}}<span class="muted">{{.Count}}× this route</span>{{else}}{{.Head.RoutingRationale}}{{end}}</td>
-  </tr>
+      {{if .Run}}<span class="sub">{{ago .Head.Ts}}</span>{{end}}
+    </span>
+    <span class="c-chain">
+      <span class="reqmeta">
+        <span class="status {{statusClass .Head.StatusCode}}"{{if .Head.Error}} title="{{.Head.Error}}"{{end}}>{{.Head.StatusCode}}</span>
+        {{if .Head.Stream}}<span class="tag">stream</span>{{end}}
+        {{if ne .Head.Kind "client"}}<span class="tag kind-{{.Head.Kind}}" title="not real client traffic — Arbiter's own {{.Head.Kind}} request">{{.Head.Kind}}</span>{{end}}
+        {{if .Head.RequestKind}}<span class="tag kind-{{.Head.RequestKind}}" title="what this request is, not who sent it">{{.Head.RequestKind}}</span>{{end}}
+        {{if and (eq .Head.RequestKind "title") .TitleParentState.Note}}<span class="tag" title="{{.TitleParentState.Note}}">no parent shown</span>{{end}}
+      </span>
+      <span class="chain">
+        {{range $i, $seg := .Head.RoutingChain}}{{if $i}}<span class="arrow">→</span>{{end}}<span class="hop">{{$seg}}</span>{{end}}
+        {{if .Head.AliasUsed}}<span class="muted"> (alias)</span>{{end}}
+      </span>
+      <span class="axes">
+        {{if .Head.Domain}}<span class="tag">{{.Head.Domain}}</span>{{end}}
+        {{if .Head.Effort}}<span class="tag">{{.Head.Effort}}</span>{{end}}
+        {{if .Head.CostClass}}<span class="tag">{{.Head.CostClass}}</span>{{end}}
+        {{if .Run}}<span class="muted">{{.Count}}× this route</span>{{else}}<span class="why">{{.Head.RoutingRationale}}</span>{{end}}
+      </span>
+    </span>
+    <span class="c-session">
+      {{if .Head.SessionKey}}<a class="sesschip" href="/admin/ui/session?key={{.Head.SessionKey}}" title="{{.Head.SessionKey}}"><span class="dot"></span>{{.Head.ShortSession}}</a>
+      {{else}}<span class="muted">none</span>{{end}}
+    </span>
+    <span class="c-cost">
+      <span class="num">{{tokens .Head.InputTokens}} <span class="muted">→</span> {{tokens .Head.OutputTokens}}</span>
+      <span class="num cost">{{usd .Head.CostUSD}}</span>
+      <span class="num muted">{{dur .Head.LatencyMs}}</span>
+    </span>
+  </div>
 {{end}}
 
-{{/* req-rows-body is the bare <tr> sequence for one request per row, with no
-<table> or <tbody> around it. It is what Flat mode renders and what the live tail
-appends: a tail poll's payload is rows, so a tail can only be appended to a table
-whose rows are requests. data-id is what lets the client skip a row it already
-has. */}}
+{{/* req-rows-body is the bare row sequence for one request per row, with no
+wrapper around it — what Flat mode renders inside .reqbody. data-id is what
+lets the client skip a row it already has. */}}
 {{define "req-rows-body"}}
   {{range .Rows}}
-    <tr data-id="{{.ID}}">
-      <td class="when"><a href="/admin/ui/requests/{{.ID}}">{{clock .Ts}}</a>
-        <span class="sub">{{ago .Ts}}</span></td>
-      <td><span class="status {{statusClass .StatusCode}}"{{if .Error}} title="{{.Error}}"{{end}}>{{.StatusCode}}</span>
-        {{if .Stream}}<span class="tag">stream</span>{{end}}
-        {{if ne .Kind "client"}}<span class="tag kind" title="not real client traffic — Arbiter's own {{.Kind}} request">{{.Kind}}</span>{{end}}</td>
-      <td><span class="prov">{{.Provider}}</span><span class="sub">{{.Model}}</span>
-        {{if .ActualModel}}<span class="sub" title="upstream-reported model">→ {{.ActualModel}}</span>{{end}}</td>
-      <td>{{if .AliasUsed}}{{.AliasUsed}}{{else}}<span class="muted">literal</span>{{end}}</td>
-      <td class="num">{{tokens .InputTokens}} <span class="muted">→</span> {{tokens .OutputTokens}}</td>
-      <td class="num">{{usd .CostUSD}}</td>
-      <td class="num">{{dur .LatencyMs}}</td>
-      <td class="axes">
-        {{if .RequestKind}}<span class="tag reqkind" title="what this request is, not who sent it">{{.RequestKind}}</span>{{end}}
-        {{if .Domain}}<span class="tag">{{.Domain}}</span>{{end}}
-        {{if .Effort}}<span class="tag">{{.Effort}}</span>{{end}}
-        {{if .CostClass}}<span class="tag">{{.CostClass}}</span>{{end}}
-      </td>
-      <td>{{if .SessionKey}}<a href="/admin/ui/session?key={{.SessionKey}}" title="{{.SessionKey}}">{{.ShortSession}}</a>
-          {{else}}<span class="muted">none</span>{{end}}</td>
-      <td class="why">{{.RoutingRationale}}</td>
-    </tr>
+    <div class="reqrow" role="row" data-id="{{.ID}}">
+      <span class="c-bar {{statusClass .StatusCode}}" aria-hidden="true"></span>
+      <span class="c-time">
+        <a href="/admin/ui/requests/{{.ID}}">{{clock .Ts}}</a>
+        <span class="sub">{{ago .Ts}}</span>
+      </span>
+      <span class="c-chain">
+        <span class="reqmeta">
+          <span class="status {{statusClass .StatusCode}}"{{if .Error}} title="{{.Error}}"{{end}}>{{.StatusCode}}</span>
+          {{if .Stream}}<span class="tag">stream</span>{{end}}
+          {{if ne .Kind "client"}}<span class="tag kind-{{.Kind}}" title="not real client traffic — Arbiter's own {{.Kind}} request">{{.Kind}}</span>{{end}}
+          {{if .RequestKind}}<span class="tag kind-{{.RequestKind}}" title="what this request is, not who sent it">{{.RequestKind}}</span>{{end}}
+        </span>
+        <span class="chain">
+          {{range $i, $seg := .RoutingChain}}{{if $i}}<span class="arrow">→</span>{{end}}<span class="hop">{{$seg}}</span>{{end}}
+          {{if .AliasUsed}}<span class="muted"> (alias)</span>{{end}}
+        </span>
+        <span class="axes">
+          {{if .Domain}}<span class="tag">{{.Domain}}</span>{{end}}
+          {{if .Effort}}<span class="tag">{{.Effort}}</span>{{end}}
+          {{if .CostClass}}<span class="tag">{{.CostClass}}</span>{{end}}
+          <span class="why">{{.RoutingRationale}}</span>
+        </span>
+      </span>
+      <span class="c-session">
+        {{if .SessionKey}}<a class="sesschip" href="/admin/ui/session?key={{.SessionKey}}" title="{{.SessionKey}}"><span class="dot"></span>{{.ShortSession}}</a>
+        {{else}}<span class="muted">none</span>{{end}}
+      </span>
+      <span class="c-cost">
+        <span class="num">{{tokens .InputTokens}} <span class="muted">→</span> {{tokens .OutputTokens}}</span>
+        <span class="num cost">{{usd .CostUSD}}</span>
+        <span class="num muted">{{dur .LatencyMs}}</span>
+      </span>
+    </div>
   {{end}}
 {{end}}
 
-{{/* req-rows-tail is what the live tail appends: the same rows, nothing else. It
-is a separate name rather than reusing req-rows-body so the tail's response is
-self-describing in a log, and so the fragment the client asks for is the fragment
-the server documents. */}}
-{{define "req-rows-tail"}}{{template "req-rows-body" .}}{{end}}

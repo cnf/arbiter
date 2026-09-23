@@ -468,7 +468,7 @@ func TestRequestListDefaultsToClientKindAndTagsOthers(t *testing.T) {
 	if !strings.Contains(def, `data-id="2"`) {
 		t.Errorf("default view is missing the classifier row; body = %s", firstLine(def))
 	}
-	if !strings.Contains(def, `class="tag kind"`) {
+	if !strings.Contains(def, `class="tag kind-classifier"`) {
 		t.Errorf("classifier row has no kind tag in the default view; body = %s", firstLine(def))
 	}
 

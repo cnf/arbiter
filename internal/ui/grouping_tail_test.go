@@ -42,10 +42,10 @@ func TestTailRowsCarryTheirGroupWhenGrouped(t *testing.T) {
 	wantKey := first.Rows[0].Key
 
 	// The client finds a line through the row's *markup*, not through the JSON key
-	// field: it queries `tr[data-key="..."]` on the table. A row whose JSON carries
-	// a key but whose HTML does not is unplaceable, and the symptom is a duplicate
-	// line — so the attribute is asserted here rather than trusted.
-	if !strings.Contains(first.Rows[0].HTML, "<tr") {
+	// field: it queries `.reqrow[data-key="..."]` on the list. A row whose JSON
+	// carries a key but whose HTML does not is unplaceable, and the symptom is a
+	// duplicate line — so the attribute is asserted here rather than trusted.
+	if !strings.Contains(first.Rows[0].HTML, `class="reqrow`) {
 		t.Fatalf("the polled row rendered no markup at all: %q", first.Rows[0].HTML)
 	}
 	if !strings.Contains(first.Rows[0].HTML, `data-key="`+wantKey+`"`) {
@@ -91,7 +91,7 @@ func TestTailRowCarriesItsGroupEvenAlone(t *testing.T) {
 	// The row must actually render. An empty fragment would satisfy a "contains"
 	// check only by accident, and a tail sending blank rows would look like a
 	// quiet period rather than a broken view.
-	if !strings.Contains(resp.Rows[0].HTML, "<tr") {
+	if !strings.Contains(resp.Rows[0].HTML, `class="reqrow`) {
 		t.Fatalf("the row's HTML fragment is not a rendered row: %q", resp.Rows[0].HTML)
 	}
 	if !strings.Contains(resp.Rows[0].HTML, `data-key="`+resp.Rows[0].Key+`"`) {

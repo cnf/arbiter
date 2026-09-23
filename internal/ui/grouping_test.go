@@ -357,7 +357,7 @@ func TestFlatPageRendersEveryRow(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("status = %d", code)
 	}
-	if got := strings.Count(body, "<tr data-id="); got != 3 {
+	if got := strings.Count(body, `data-id="`); got != 3 {
 		t.Errorf("flat view rendered %d rows, want 3 (one per request)", got)
 	}
 	if strings.Contains(body, `data-key="`) {
@@ -405,10 +405,11 @@ func TestGroupedAndFlatProduceTheSameRequests(t *testing.T) {
 	}
 }
 
-// rowIDs reads the request ids out of a rendered table, one per <tr data-id="N">.
+// rowIDs reads the request ids out of a rendered list, one per
+// data-id="N" attribute on a .reqrow row.
 func rowIDs(body string) map[string]bool {
 	out := map[string]bool{}
-	for _, part := range strings.Split(body, `<tr data-id="`)[1:] {
+	for _, part := range strings.Split(body, `data-id="`)[1:] {
 		if i := strings.Index(part, `"`); i > 0 {
 			out[part[:i]] = true
 		}
@@ -424,7 +425,7 @@ func rowIDs(body string) map[string]bool {
 // silently reports one request per line.
 func accountedRequests(body string) int {
 	total := 0
-	for _, seg := range strings.Split(body, `<tr data-id="`)[1:] {
+	for _, seg := range strings.Split(body, `data-id="`)[1:] {
 		if i := strings.Index(seg, `data-count="`); i >= 0 {
 			rest := seg[i+len(`data-count="`):]
 			if j := strings.Index(rest, `"`); j > 0 {

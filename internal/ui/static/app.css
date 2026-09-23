@@ -238,75 +238,153 @@ change swaps it along with the rows it follows. */
 .tail .tailstatus.warn { color: var(--warn); }
 .tail .tailstatus.bad { color: var(--err); }
 
-/* ---------------------------------------------------------------- tables -- */
+/* ------------------------------------------------------------ req grid -- */
+/* The request list, per DESIGN.md's "Request rows" spec: a CSS grid, not a
+ * <table> — each row is its own grid with 3px status-bar | 84px time | 1fr
+ * chain | auto session | auto cost, cost/latency pinned last via `order`
+ * rather than markup position so a future column slots in without touching
+ * every row template.
+ */
 
-table.grid {
-  width: 100%;
-  border-collapse: collapse;
+.reqlist {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
-/* table-header component: label-caps in muted — headers recede so the data is
-   what's read. */
-table.grid th {
-  text-align: left;
+.reqhead, .reqrow {
+  display: grid;
+  grid-template-columns: 3px 84px 1fr auto auto;
+  align-items: start;
+  column-gap: var(--space-sm);
+}
+
+.reqhead {
+  padding: 5px 8px;
   font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: lowercase;
   color: var(--muted);
-  padding: 5px 8px;
   border-bottom: 1px solid var(--line);
-  white-space: nowrap;
 }
+.reqhead .c-bar { visibility: hidden; }
 
-table.grid td {
+.reqrow {
   padding: 4px 8px;
   border-bottom: 1px solid var(--line);
-  vertical-align: top;
+  font-size: 12px;
 }
+.reqrow:last-child { border-bottom: 0; }
+.reqrow:hover { background: color-mix(in srgb, var(--secondary) 5%, transparent); }
 
-table.grid tbody tr:hover { background: color-mix(in srgb, var(--secondary) 5%, transparent); }
-table.grid tr.here { background: color-mix(in srgb, var(--secondary) 10%, transparent); }
+/* The status bar is a full-height colored edge, not a dot — every row keeps
+   it, parent or child, per DESIGN.md: no row is ever exempt. align-self
+   stretches the 3px column to the row's own height regardless of how much
+   the chain/axes lines wrap it to. */
+.reqrow .c-bar, .reqhead .c-bar {
+  align-self: stretch;
+  border-radius: var(--radius-sm);
+  background: var(--line);
+}
+.reqrow .c-bar.s-ok   { background: var(--ok); }
+.reqrow .c-bar.s-note { background: var(--note); }
+.reqrow .c-bar.s-warn { background: var(--warn); }
+.reqrow .c-bar.s-err  { background: var(--err); }
 
-td.num, th.num { text-align: right; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
-td.when { white-space: nowrap; font-family: var(--mono); font-size: 12px; }
-td.when .sub, td .sub { display: block; color: var(--muted); font-size: 11px; font-family: var(--sans); }
-td.why { color: var(--muted); font-size: 12px; max-width: 34ch; }
-td.axes { white-space: nowrap; }
+.c-time {
+  font-family: var(--mono);
+  white-space: nowrap;
+  order: 2;
+}
+.c-time .sub { display: block; color: var(--muted); font-size: 11px; font-family: var(--sans); }
+
+/* A child row (a classifier/title/subagent call threaded above its parent,
+   see attachTraceChildren/attachTitleChildren, #8) gets its indent only on
+   the time column's `↳` marker — never the whole row, and never the cost
+   column, so cost stays in a straight scannable line regardless of nesting
+   depth. */
+.reqrow.child .c-time { padding-left: 1.1rem; position: relative; }
+.reqrow.child .c-time::before {
+  content: "↳";
+  position: absolute;
+  left: 0;
+  color: var(--muted);
+}
+.reqrow.child { background: color-mix(in srgb, var(--line) 25%, transparent); }
+
+.c-chain { order: 3; min-width: 0; }
+.reqmeta { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.chain { display: block; font-family: var(--mono); font-size: 12px; margin-top: 1px; overflow-wrap: anywhere; }
+.chain .arrow { color: var(--muted); margin: 0 2px; }
+/* Axis pills (domain/effort/cost_class) sit on their own line below the
+   model-name/status line, not beside the chain and not beside cost — see
+   DESIGN.md. */
+.axes { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 2px; font-size: 11px; }
+.axes .why { color: var(--muted); max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.c-session { order: 4; white-space: nowrap; }
+.c-cost {
+  order: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.c-cost .cost { color: var(--ink); }
+
+/* Session id renders as a bordered chip with a dot-marker — a "conversation
+   handle," not incidental metadata (DESIGN.md). */
+.sesschip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--secondary-ink);
+  text-decoration: none;
+}
+.sesschip:hover { background: color-mix(in srgb, var(--secondary) 10%, transparent); }
+.sesschip .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
 
 /* A collapsed run of streamed turns. It is deliberately *not* loud: the point of
    folding is that the eye reaches the distinct events, so the summary line
    recedes and its count is the one thing that stands forward. The count badge is
    also the link that opens the constituents (the flat, filtered view), which is
-   why it is styled as a control rather than as text. */
+   why it is styled as a control rather than as text. Per DESIGN.md the badge
+   sits below the "x ago" text, not beside it — the time column stacks them. */
 .grouping {
   margin: 0 0 0.5rem;
   color: var(--muted);
   font-size: 12px;
 }
-table.grid tr.run td { color: var(--muted); }
-table.grid tr.run .count {
+.reqrow.run .c-time, .reqrow.run .c-chain .muted { color: var(--muted); }
+.reqrow.run .count {
+  display: block;
+  width: fit-content;
   color: var(--secondary-ink);
   text-decoration: none;
   font-family: var(--sans);
   font-size: 11px;
   padding: 0 4px;
-  margin-left: 3px;
+  margin-top: 1px;
   border: 1px solid color-mix(in srgb, var(--secondary) 40%, transparent);
   border-radius: var(--radius-pill);
 }
-table.grid tr.run .count:hover { background: color-mix(in srgb, var(--secondary) 15%, transparent); }
+.reqrow.run .count:hover { background: color-mix(in srgb, var(--secondary) 15%, transparent); }
 
-/* A trace child (a classifier call today) rendered under the request that
-   spawned it — see attachTraceChildren, #8. Indented and quieter so the eye
-   still lands on the request first; the request-list layout itself is #47's
-   own phase. */
-table.grid tr.trace-child td.when { padding-left: 1.5rem; color: var(--muted); }
-table.grid tr.trace-child { background: color-mix(in srgb, var(--line) 25%, transparent); }
 
 .pager { display: flex; align-items: center; gap: 0.75rem; margin: 0.6rem 0 0; color: var(--muted); font-size: 12px; }
 
@@ -339,14 +417,18 @@ table.grid tr.trace-child { background: color-mix(in srgb, var(--line) 25%, tran
   border-radius: var(--radius-pill);
   color: var(--muted);
 }
-.tag.kind { color: var(--note); border-color: color-mix(in srgb, var(--note) 40%, transparent); }
-
-/* A request kind is not an axis. It sits in the same column because that is
-   where "what is this row" is read. This single generic color is what #47
-   replaces with the kind-* channel (one color per classifier/title/subagent
-   value) — left as one plain reference color here since that structural
-   change belongs to the requests-page phase, not this foundation phase. */
-.tag.reqkind { color: var(--secondary-ink); border-color: color-mix(in srgb, var(--secondary) 40%, transparent); }
+.tag.kind-classifier, .tag.kind-title, .tag.kind-subagent {
+  color: var(--kind-classifier);
+  border-color: color-mix(in srgb, var(--kind-classifier) 40%, transparent);
+}
+/* request_kind (classifier/title/subagent) renders as one chip style,
+   distinguished only by color — never a different tag shape per kind
+   (DESIGN.md). Kind above (who sent the request — Arbiter's own internal
+   traffic) shares the same visual language deliberately: both answer "what
+   kind of row is this", just on different axes, so the reader learns one
+   pattern. */
+.tag.kind-title { color: var(--kind-title); border-color: color-mix(in srgb, var(--kind-title) 40%, transparent); }
+.tag.kind-subagent { color: var(--kind-subagent); border-color: color-mix(in srgb, var(--kind-subagent) 40%, transparent); }
 
 .empty { padding: 1rem; border: 1px dashed var(--line); border-radius: var(--radius-sm); color: var(--muted); }
 .fail h1 { font-size: 2rem; margin: 2rem 1rem 0; }

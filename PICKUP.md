@@ -22,7 +22,11 @@ half piece 1 (the `ParentSessionForTitle` query) shipped; pieces 2 (UI) and 3
 (degraded-mode signal) still open. New §18 added 2026-09-23 at `develop` =
 `28aa378` — piece 2 (nest a title line under its resolved parent in the UI)
 also shipped; only piece 3 remains. New §19 added 2026-09-23 at `develop` =
-`ee71cb4` — piece 3 shipped; **#11 is fully closed**. Run `git log --oneline -1` for the truth.
+`ee71cb4` — piece 3 shipped; **#11 is fully closed**. New §20 added
+2026-09-23 at `develop` = `0fc2617` — #11 closed on the board; README.md and
+the sample `arbiter.yaml` caught up to piece 1-3's doc gap; a ticket-less
+startup version-logging feature shipped. Run `git log --oneline -1` for the
+truth.
 
 ---
 
@@ -180,10 +184,10 @@ a fresh title request rather than a code change.
 
 ## 6. Open work, in priority order
 
-Run `gh issue list --state open` for the live list. As of `f8a43d4`
-(2026-09-22c, §14), open: **#4, #8, #9, #11, #14, #17, #18, #20, #21, #22,
+Run `gh issue list --state open` for the live list. As of `0fc2617`
+(2026-09-23c, §20), open: **#4, #8, #9, #14, #17, #18, #20, #21, #22,
 #23, #24, #26, #36, #38, #40, #41**. Closed since §5/§10 were last written:
-**#27, #28, #31, #37, #39, #13, #43, #42, #5, #34** (see §11–§13).
+**#27, #28, #31, #37, #39, #13, #43, #42, #5, #34, #11** (see §11–§13, §20).
 
 **High priority, real gaps:**
 - **#4** — META umbrella for the visibility goal. **#5** and **#34** (its
@@ -199,7 +203,6 @@ user has said he doesn't use today (he does use the Anthropic **upstream**,
 i.e. routing to Claude models — that's a different, unaffected path; see §10).
 
 **Medium/low**, no change in status: #8 (see above — half done), #9,
-**#11 (CLOSED — routing half + all three grouping pieces shipped, see §19)**,
 #14, #17, #18, #20, #21, #22, #23, #24, #26, #36, #38, #40, #41.
 
 **#17** — Phase D (`min_confidence`) is now *unblocked* (its blocker #6
@@ -1100,5 +1103,90 @@ pre-existing files §18 already flagged (`grouping_test.go`,
   `request_kind: "title"` to a cheap alias yet (§16's routing half shipped
   the capability, not the config) — that's the user's config change to
   make, same boundary noted in §16.
+
+---
+
+## 20. Session 2026-09-23d — #11 closed on the board; doc gap fixed; ticket-less version-logging
+
+**Four commits, all on `develop` (unpushed):**
+
+| commit | what |
+|---|---|
+| `c0ef3c4` | PICKUP.md §19 (piece 3's handoff — this file lagged its own commit by one turn last session) |
+| `8671cfa` | **README.md**: new section next to the existing `request_kind` explanation, documenting the two-tier `ParentSessionForTitle` match, the UI nesting, and the three `TitleParentState` values — README had never been touched by any of #11's three grouping pieces |
+| `2bd3fdd` | **`arbiter.yaml`** (sample config): `capture_content`'s and `session_affinity`'s doc comments gained a paragraph each explaining their role in title-gen parent linking — same gap as the README commit, same fix |
+| `0fc2617` | **Ticket-less**: startup now logs `revision`/`modified`/`build_time` read from Go's auto-embedded VCS stamp (`runtime/debug.ReadBuildInfo()`), right after "Arbiter starting" |
+
+**Board:** `gh issue close 11` run this session (was still OPEN despite being
+fully shipped in code since `ee71cb4`) with a closing comment summarizing all
+four pieces. Verified via `gh issue view 11 --json state` → `CLOSED`.
+
+**Why the doc-gap commits exist:** the user asked "did you update the
+documentation for this?" after piece-3 shipped. Checking found PICKUP.md
+(session handoff, not user-facing) was the *only* place any of #11's three
+grouping pieces were documented — README.md and the sample `arbiter.yaml`
+both predate #11 entirely on this topic. Same gap existed for #8 part 3
+(classifier nesting) — confirmed via `git show <its-commit> --stat`, never
+fixed, not in this session's scope to fix retroactively.
+
+**Version-logging feature (no ticket — quick add, user's own words):**
+"when starting, show/log the version from vcs.revision and vcs.time, so i
+can see which version is running." Added `buildVersion()` in
+`cmd/arbiter/main.go`, called once at startup. Key facts, verified by
+actually building and running the binary (not just building):
+
+```
+Arbiter version revision=2bd3fdde0ccb modified=true build_time=2026-09-23T09:17:29.000Z
+```
+
+- Only a `go build` run from inside a git checkout carries `vcs.*` settings.
+  Confirmed by building `go version -m` against a real built binary (present)
+  vs. a `go test -c` binary (absent, no `vcs.*` keys at all). `go run` also
+  doesn't stamp it. `buildVersion()` fails soft — empty string / `false` /
+  zero `time.Time` — rather than assuming the stamp exists, since a `go test`
+  binary running `TestBuildVersionDoesNotPanic` is exactly that case.
+- Revision truncated to 12 chars (full 40-char SHA is unreadable in a log
+  line; this repo's own git usage already trains the eye on short hashes).
+- New test: `cmd/arbiter/version_test.go`, `TestBuildVersionDoesNotPanic` —
+  deliberately does not assert non-empty content (can't fake a VCS stamp
+  from inside `go test`), just that the function never panics and the
+  12-char cap holds.
+- Scope was kept to exactly what was asked: a startup log line. No admin/UI
+  version endpoint was added — not requested.
+
+**Test discipline:** `go build ./...`, `go vet ./...` clean. Full
+`go test ./...` (via `devenv shell -- env LITELLM_URL="http://localhost:4000"
+go test ./...`) — same 5 pre-existing `internal/ui` failures flagged since
+§17 (`TestOverviewPivotsAndRanks` and siblings), zero new failures.
+`golangci-lint run ./cmd/arbiter/...` clean. `gofmt -l cmd/arbiter/main.go`
+clean (no output). Pre-commit hooks (gitleaks, golangci-lint, ripsecrets,
+trufflehog) passed on the version-logging commit.
+
+**State for the next session:**
+
+- `internal/classifier/match_test.go` still has the **unrelated, on-hold
+  debug session's uncommitted change** — stashed/popped around each of this
+  session's commits that touched tracked files (the README/arbiter.yaml/
+  PICKUP.md-only commits didn't need it; the version-logging commit did).
+  Confirmed restored untouched via `git diff --stat` after each pop. Still
+  uncommitted on purpose — that debug session is still on hold.
+- `feedback.md` at repo root is **untracked, pre-existing** — untouched.
+- PICKUP.md itself is **modified in the working tree** (this §20 + the
+  header line + §6 update) — commit it as its own handoff, per this
+  session's convention.
+- **No open work generated this session.** #11 is closed. The version-log
+  feature has no ticket and needs none — it's done.
+- **Still unverified against real traffic**: no `request_kind='title'` row
+  has landed with a header-carried `session_key` since `session_affinity`
+  was turned on (§17) — carried forward, still true, still not a blocker
+  for anything (all three grouping pieces are covered by seeded-store unit
+  tests).
+- **Deployed config still needs the same manual step** noted in §16/§19:
+  `/data/arbiter/arbiter.yaml` has no live `policy` router rule routing
+  `request_kind: "title"` to a cheap alias — the user's config change to
+  make, not this repo's.
+- **Next deploy of the built binary will show its version at startup** —
+  no action needed, this is automatic once `develop` is deployed and built
+  with `go build` (not `go run`) from inside the git checkout.
 
 ---

@@ -17,7 +17,9 @@ new §14 updated 2026-09-22 at `develop` = `f8a43d4`; #8 part 3 landed (part
 1 still open). New §15 added 2026-09-22 at `develop` = `94ed761` — scoping
 only, no code landed; #11 is the next target. New §16 added 2026-09-22e at
 `develop` = `635644c` — #11's routing half shipped (grouping half still
-open). Run `git log --oneline -1` for the truth.
+open). New §17 added 2026-09-23 at `develop` = `fa41aa4` — #11's grouping
+half piece 1 (the `ParentSessionForTitle` query) shipped; pieces 2 (UI) and 3
+(degraded-mode signal) still open. Run `git log --oneline -1` for the truth.
 
 ---
 
@@ -194,7 +196,7 @@ user has said he doesn't use today (he does use the Anthropic **upstream**,
 i.e. routing to Claude models — that's a different, unaffected path; see §10).
 
 **Medium/low**, no change in status: #8 (see above — half done), #9,
-**#11 (routing half shipped, grouping half open — see §16)**,
+**#11 (routing half shipped; grouping half piece 1/3 shipped — see §17)**,
 #14, #17, #18, #20, #21, #22, #23, #24, #26, #36, #38, #40, #41.
 
 **#17** — Phase D (`min_confidence`) is now *unblocked* (its blocker #6
@@ -826,3 +828,118 @@ suite green: `go build`, `go vet`, `go test ./...`, `golangci-lint run
 **Not done, and deliberately not started:** #11's grouping half. Nothing
 pushed to origin — `develop` is 34 commits ahead of `origin/develop` as of
 `635644c`.
+
+---
+
+## 17. Session 2026-09-23 — #11 grouping half, piece 1: `ParentSessionForTitle`
+
+**One commit, on `develop` (unpushed): `fa41aa4`.** Ships piece 1 of the
+grouping half's three pieces (§16's scoping): the query that ties a
+`request_kind='title'` request back to the client session it titled.
+Pieces 2 (UI surfacing) and 3 (visible degrade when `capture_content` is
+off) are still unstarted.
+
+| commit | what |
+|---|---|
+| `fa41aa4` | **#11 grouping half, piece 1**: `Reader.ParentSessionForTitle` (`internal/store/discovery.go`), a two-tier match. Tier 1 — exact: if the title request's own `session_key` is shared by any real client row, that's the parent (indexed lookup, no fuzzy matching). Tier 2 — fallback, only tried when tier 1 finds nothing: joins on shared `role='user'` content-ref hashes against other requests, excludes other `request_kind='title'` rows (guards the title-vs-title self-collision case), groups by `session_key`, returns the top match by count. Returns `(ParentSession{}, false, nil)` — not an error — when neither tier matches. |
+
+**Design turn this session, before any code:** a live-store investigation
+(triggered by the user asking "does Arbiter capture a client's own session
+id at all?") found this repo's own assumption — "neither Hermes nor
+o‍pencode sends session metadata" (in this assistant's memory, and
+implicitly in §15's scoping) — **was stale, not evergreen**. Both clients
+*have* sent a session-affinity header historically:
+
+- o‍pencode: `X-Session-Id` / `X-Session-Affinity: ses_<b62>`, live
+  2026-09-16 → 2026-09-19, then stopped.
+- Hermes: `X-Session-Id: <hermes-format-id>`, live only 2026-09-21
+  07:10–07:37 (27 minutes), then stopped.
+- Confirmed live via `headers_json` on the actual stored rows, not
+  inferred from the `session_key` shape alone.
+
+Arbiter already supports this: `session_affinity.header` (default
+`X-Session-Id`) is read in `internal/http/handler.go`, and when the header
+is present its value **is** `session_key` directly — no hashing, no
+separate column. It's config-gated and was off in the live deployment
+until the user turned it on **during this session** (confirmed: this
+session's own requests, from `9260` onward, carry `X-Session-Id:
+<hermes-conversation-id>` and their `session_key` is that literal value).
+
+**Correction, worth propagating:** "Hermes sends `X-Session-Id`" — not
+`X-Hermes-Session-Id`. The header *name* is whatever
+`session_affinity.header` is configured to (default `X-Session-Id`);
+Hermes' own docs call the concept `session_affinity_header` but that's the
+*setting name* on Hermes' side, describing "the header that carries
+Hermes' conversation id on every request to that provider" (verbatim,
+covers `chat_completions`/`anthropic_messages`/`codex_responses` main
+turns plus auxiliary calls — compression and **titles** explicitly named).
+That's exactly the mechanism piece 1's tier 1 exists to exploit: for
+Hermes specifically, the title call and the real turns should carry the
+*same* session id by construction, not by coincidence — tier 1 isn't a
+cheap-path nicety for Hermes, it's the primary, designed-for match.
+
+**This changed the design from §15/§16's plan.** The originally-scoped
+query (pure content-hash join, now tier 2) is still needed as a fallback —
+for o‍pencode-style clients whose header only fires sometimes, for any
+client that never sends one, and for the case already found in the live
+data where the title call's stored text and the real call's stored text
+differ byte-for-byte (a wrapper Hermes adds client-side before the real
+send but not before the title-gen send) — but it is no longer the primary
+mechanism. Tier 1 is.
+
+**Live data note:** as of this session, **zero** `request_kind='title'`
+rows exist with a header-carried `session_key` yet — the header was only
+just turned on, and no title-gen call has landed since. Tier 1 is
+implemented and unit-tested against a seeded store (four new tests in
+`internal/store/discovery_test.go`, one per case: session-key match wins
+over a decoy content-hash match, content-hash fallback fires when
+session_key gives nothing, title-vs-title self-collision is excluded, and
+a genuine no-match returns `ok=false` not an error) but **not yet observed
+against a real title request** — worth confirming once one arrives,
+the same "verify against real traffic, not just a mock/fixture" distinction
+this repo's process already insists on elsewhere.
+
+**Test discipline followed:** reverted tier 1's `WHERE` clause to an
+always-false condition, confirmed
+`TestParentSessionForTitlePrefersSessionKeyMatch` fails for the right
+reason (falls through to tier 2, reports `content_hash` instead of
+`session_key` — proving the test actually distinguishes the two tiers,
+not just checking *a* match exists), restored, full suite green again.
+`golangci-lint run ./internal/store/...` clean, `gofmt -l` clean.
+
+**`internal/ui` test suite has 5 pre-existing failing tests**
+(`TestOverviewPivotsAndRanks`, `TestOverviewExplainsSingleValuedDimension`,
+`TestOverviewEpochShowsPerRequest`, `TestSeriesEndpointShape`,
+`TestSessionIndexAndTranscript`) — confirmed **unrelated to this session's
+change**: reproduced identically with this commit's files fully stashed
+out and the test cache cleared. Not investigated further this session;
+flagging here so the next session doesn't mistake them for a regression
+from `fa41aa4`. Worth a dedicated look — possibly connected to the
+"stream stacking" UI breakage §16/prior sessions already flagged, but not
+confirmed.
+
+**State for the next session:**
+
+- `internal/classifier/match_test.go` still has the **unrelated, on-hold
+  debug session's uncommitted change** — set aside via `git stash`/`git
+  stash pop` around this session's commit too, same as §16. Still
+  uncommitted in the working tree on purpose.
+- `feedback.md` at repo root is **untracked, pre-existing** — untouched.
+- PICKUP.md itself is **modified in the working tree** (this §17 + the
+  header line + §6 update) — commit it as its own handoff, same
+  convention as every prior session.
+- **Live config**: `session_affinity` is now genuinely on in
+  `/data/arbiter/arbiter.yaml` with header `X-Session-Id` — this was a
+  user-side config change made mid-session, not something this assistant
+  edited (the repo's hard boundary on touching `/data/arbiter/*` was not
+  crossed).
+- **#11's remaining scope**: piece 2 (surface the parent-session link in
+  the UI — likely reuses #8's `attachTraceChildren`/`Children` pattern in
+  `internal/ui/requests.go`, and may overlap with the "stream stacking"
+  breakage already flagged) and piece 3 (make `capture_content: false`
+  visibly degrade tier 2 rather than just returning "no match" — tier 1
+  doesn't need capture_content at all, so piece 3 is really "distinguish
+  tier-2-unavailable from tier-2-tried-and-found-nothing" in whatever the
+  UI shows). Neither started.
+- Board unchanged (`gh issue view 11` still OPEN — correctly, since UI/
+  degrade pieces remain).

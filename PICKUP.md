@@ -11,12 +11,13 @@ behaviour.
 Written 2026-09-20, at `develop` = `0327600`; §5 and §9 updated 2026-09-21 at
 `develop` = `6ef15bf`; §5, §6, and new §10 updated 2026-09-21 at `develop` =
 `3124670`; §6 and new §11 updated 2026-09-22 at `develop` = `f55d60d`; §6 and
-new §12 updated 2026-09-22 at `develop` = `e796405`; #43 landed. §6 and new
-§13 updated 2026-09-22 at `develop` = `84d917c`; #5 and #34 landed. §6 and
+new §12 updated 2026-09-22 at `develop` = `e796405`; #43 landed. §6 and
+new §13 updated 2026-09-22 at `develop` = `84d917c`; #5 and #34 landed. §6 and
 new §14 updated 2026-09-22 at `develop` = `f8a43d4`; #8 part 3 landed (part
 1 still open). New §15 added 2026-09-22 at `develop` = `94ed761` — scoping
-only, no code landed; #11 is the next target. Run `git log --oneline -1`
-for the truth.
+only, no code landed; #11 is the next target. New §16 added 2026-09-22e at
+`develop` = `635644c` — #11's routing half shipped (grouping half still
+open). Run `git log --oneline -1` for the truth.
 
 ---
 
@@ -192,7 +193,8 @@ the Anthropic-facing wire interface specifically (currently #22, #23, #36,
 user has said he doesn't use today (he does use the Anthropic **upstream**,
 i.e. routing to Claude models — that's a different, unaffected path; see §10).
 
-**Medium/low**, no change in status: #8 (see above — half done), #9, #11,
+**Medium/low**, no change in status: #8 (see above — half done), #9,
+**#11 (routing half shipped, grouping half open — see §16)**,
 #14, #17, #18, #20, #21, #22, #23, #24, #26, #36, #38, #40, #41.
 
 **#17** — Phase D (`min_confidence`) is now *unblocked* (its blocker #6
@@ -755,3 +757,72 @@ don't regress it while building either half of #11.
 
 **Not done, and deliberately not started:** all of #11 — nothing has
 landed on it yet, this session was scoping only. Nothing pushed to origin.
+
+---
+
+## 16. Session 2026-09-22e — #11 routing half shipped, grouping half still open
+
+**One commit, on `develop` (unpushed): `635644c`.** Ships exactly the
+smaller half §15 scoped — nothing else.
+
+| commit | what |
+|---|---|
+| `635644c` | **#11 routing half**: `PolicyCondition` (`internal/router/policy.go`) gains a `RequestKind` field, matched by exact string equality like every other condition (empty = wildcard). `policyRules` (`cmd/arbiter/main.go`) parses a new `request_kind` key in a rule's `when:` clause. `arbiter.yaml`'s commented policy-router example and doc comment, plus README's Routing section, both gain a `when: { request_kind: "title" }` → `cheap-claude` example. |
+
+**Deliberately scoped to `title` only, per the user's explicit instruction
+this session** — `RequestKind` is a plain freeform `string` (no enum, no
+constant list anywhere in `types`/`classifier`/`store`/`router`), so there
+was no "add `subagent` as an option" step to take: the field and the new
+`PolicyCondition.RequestKind`/`policyRules` parsing are value-agnostic
+already. Only `title` has a classifier that ever sets it; `subagent`
+detection is unbuilt (that's #17 Phase F, a separate ticket) and nothing
+about this change needs revisiting when it lands.
+
+**Not shipped, still `arbiter.yaml`'s commented-out example only** — the
+routing capability itself is not turned on in the deployed config, because
+there's no live `policy` router block at all yet (only the commented
+template). Turning it on for real (uncommenting a `policy` router, adding
+the `request_kind: "title"` rule for real, verifying against live traffic)
+is a config change for the user to make, not a code change — deliberately
+left as such rather than editing the live `/data/arbiter/arbiter.yaml`,
+which this repo's hard boundary forbids touching.
+
+**Test discipline followed:** reverted `policy.go` + `main.go`, confirmed
+`TestPolicyConditionMatchesRequestKind`,
+`TestPolicyConditionSkipsRuleOnRequestKindMismatch`, and
+`TestPolicyRulesParsesRequestKind` fail to **compile** (missing struct
+field) rather than just fail — the right kind of RED, since a compile
+failure proves the test actually exercises the new field. Restored, full
+suite green: `go build`, `go vet`, `go test ./...`, `golangci-lint run
+./...` all clean.
+
+**State for the next session:**
+
+- `internal/classifier/match_test.go` has an **unrelated, on-hold debug
+  session's uncommitted change** (a `TestKindOnlyMatcherFillsRequestKindNot-
+  Domain` regression test + a comment cleanup) — user's explicit instruction
+  this session was to set it aside and restore it at the end, which was
+  done via `git stash`/`git stash pop` around the #11 commit. It is
+  **still uncommitted in the working tree**, on purpose — that debug
+  session resumes after this one. Don't commit it as part of any future
+  #11 work without checking with the user first.
+- `feedback.md` at repo root is **untracked, pre-existing** — untouched
+  this session; leave it alone.
+- PICKUP.md itself is **modified in the working tree** (this §16 + the
+  header line + §6 update) — commit it as its own handoff, same
+  convention as every prior session here.
+- **#11's grouping half is entirely unstarted** — reuse
+  `RequestsForContent`'s `content_refs` hash-join pattern
+  (`internal/store/discovery.go:36`) to tie a title request to its parent
+  session, surface it in the UI, and make `capture_content: false`
+  **visibly degraded** rather than silently "no subagents" (the ticket's
+  hard constraint, restated in §15). This is the larger of #11's two
+  halves — UI + query work, not just a config change — and is the natural
+  next session on #11 if the user wants to keep going on it.
+- Board unchanged this session (`gh issue view 11` still shows OPEN — the
+  ticket covers both routing and grouping, so it should stay open until
+  the grouping half also lands; not closed this session).
+
+**Not done, and deliberately not started:** #11's grouping half. Nothing
+pushed to origin — `develop` is 34 commits ahead of `origin/develop` as of
+`635644c`.

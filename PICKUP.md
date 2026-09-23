@@ -28,7 +28,8 @@ the sample `arbiter.yaml` caught up to piece 1-3's doc gap; a ticket-less
 startup version-logging feature shipped. New §21 added 2026-09-23e at
 `develop` = `b8907e8` — #45 (admin UI rebuild) scoped and split into 5 native
 GitHub sub-issues (#46-#50); #46 (phase 1: tokens/layout/popover) shipped and
-closed. Run `git log --oneline -1` for the truth.
+closed. New §22 added 2026-09-23f at `develop` = `76fb7ea` — #47 (phase 2:
+requests page — routing chain, kind chips, threading) shipped and closed. Run `git log --oneline -1` for the truth.
 
 ---
 
@@ -1284,5 +1285,97 @@ summarizing what shipped and how it was verified.
   `DESIGN.md`'s requests-page pattern section before scoping #47's diff).
 - No other open work generated this session — #45's shape is now fully on
   the board as #46-#50, exactly mirroring §6's summary above.
+
+---
+
+## 22. Session 2026-09-23f — #47 (phase 2: requests page) shipped and closed
+
+`develop` = `76fb7ea` at write time.
+
+Second phase of #45's admin UI rebuild. Per the greenfield decision settled on
+#45 ("act as if the old ui just does not exist... if what you do here makes any
+of the old ui stop working, that is fine"), this is a from-scratch rewrite of
+`internal/ui/templates/partials/reqrow.html` against `DESIGN.md`'s "Request
+rows" spec — not a port of the old `<table class="grid">` markup. Old
+markup/class assertions in the test suite were rewritten to match the new
+markup, not preserved.
+
+**#47 scope, what actually changed:**
+- `internal/ui/templates/partials/reqrow.html` — rewritten from scratch: `.reqrow`
+  CSS grid rows (`3px status-bar | 84px time | 1fr chain | auto session | auto
+  cost`, cost/latency pinned last via CSS `order`, not markup position).
+  Chain rendering, threading (`Children`/`IsChild`), grouping/count badge, and
+  the flat-mode row body all live in this one file, sharing the row shape
+  between `req-line` (grouped) and `req-rows-body` (flat/tail).
+- `internal/ui/requests.go` — one new helper, `requestRowView.RoutingChain()`
+  (line ~119): collapses `AliasUsed`/`Model`/`ActualModel` into `"literal: X"`
+  / `"alias: X → Y"` chain segments, dropping a redundant `X → X`. No
+  schema/query changes — reuses fields `pipeline.go` already populates at
+  record time.
+- `internal/ui/static/app.css` — `table.grid` rules replaced with
+  `.reqlist`/`.reqrow`/`.reqhead` grid rules; wired the `--kind-classifier`/
+  `--kind-title`/`--kind-subagent` tokens #46 staged (comment said "wired up
+  by #47") into a single `.tag.kind-*` chip shape shared by both `Kind`
+  (Arbiter-internal client/classifier/title/subagent) and `RequestKind`
+  (classifier/title/subagent axis) — one chip shape, color-only distinction,
+  per spec. Added `.sesschip` (bordered chip + dot-marker for session id, per
+  spec) and `.c-cost`/`.axes`/`.chain` column rules.
+- `internal/ui/static/live.js` — `buildSeen`/`append`/`bumpLine`/
+  `makeCountBadge` updated from `tr[data-id]`/`tbody` to
+  `.reqrow[data-id]`/`.reqbody`. Same placement logic (grouped vs. flat,
+  dedupe by id, bump-and-reorder on group key match) against the new DOM
+  shape. Integration contracts kept as-is, unchanged: `data-id` per row,
+  `#rows` + `data-tail-*` attrs for the poll, template names (`req-line`,
+  `req-rows`, `req-rows-body`) called by string from `requests.go`/`live.go`.
+- Test assertions on old markup rewritten (not preserved) in
+  `grouping_test.go`, `grouping_tail_test.go`, `live_test.go`, `ui_test.go` —
+  `<tr`/`<tr data-id="` counting replaced with `data-id="` counting;
+  `class="tag kind"` replaced with `class="tag kind-classifier"` (the actual
+  new class); the tail-markup sanity checks (`<tr` presence) replaced with
+  `class="reqrow` presence.
+
+**Verified, not just claimed:**
+- `go build ./...`, `go vet ./...` clean.
+- `go test ./...` clean except the same 5 pre-existing `internal/ui` failures
+  flagged since §17/§20/§21 (`TestOverviewPivotsAndRanks`,
+  `TestOverviewExplainsSingleValuedDimension`, `TestOverviewEpochShowsPerRequest`,
+  `TestSeriesEndpointShape`, `TestSessionIndexAndTranscript`) — confirmed
+  pre-existing at `b8907e8^` (before #46 landed) earlier this session via
+  stash+checkout+restore. Zero new failures; every #47-affected test
+  (`TestFlatPageRendersEveryRow`, `TestGroupedAndFlatProduceTheSameRequests`,
+  `TestTailRowsCarryTheirGroupWhenGrouped`, `TestTailRowCarriesItsGroupEvenAlone`,
+  `TestTailFirstPollReturnsTheNewestFirstAndACursor`,
+  `TestTailAppendsOnlyWhatArrived`, `TestTailHonoursTheFilters`,
+  `TestTailReportsTruncation`, `TestRequestListDefaultsToClientKindAndTagsOthers`)
+  passes against the new markup.
+- Manually rendered the requests page against a seeded fixture (scratch
+  `_test.go`, deleted after) and read the actual HTML output — confirmed:
+  single-segment chain for a literal model, two-segment chain for a
+  divergent `ActualModel`, `kind-classifier` chip on an Arbiter-internal row,
+  `s-err` status bar on a 500, session-less row rendering "none", `data-key`
+  present on a streamed/grouped row.
+- Pre-commit hooks (gitleaks, golangci-lint, ripsecrets, trufflehog) passed
+  on the `76fb7ea` commit (run inside `devenv shell`, since `go` is not on
+  PATH outside it and golangci-lint needs it).
+
+**Board:** `gh issue comment 47` + `gh issue close 47` run this session with a
+closing comment summarizing what shipped and how it was verified.
+
+**State for the next session:**
+
+- `internal/classifier/match_test.go` still has the **unrelated, on-hold
+  debug session's uncommitted change** — untouched again this session
+  (stashed earlier this session via `git stash push -- internal/classifier/match_test.go`,
+  not popped back — check `git stash list` before assuming the tree is clean
+  of it).
+- `feedback.md` at repo root is **untracked, pre-existing** — untouched.
+- **#48 is next** (per #45's phase order — check `gh issue list` for its
+  exact scope; not yet read this session). The requests page's row/chip/chain
+  patterns (`.reqrow`, `.tag.kind-*`, `.sesschip`, `.axes`) are now the
+  reference implementation for "reuse verbatim elsewhere" per DESIGN.md's
+  cross-page-conventions section — whichever phase touches the session
+  transcript or sessions index should read `reqrow.html`/`app.css`'s new
+  rules before inventing new conventions.
+- No other open work generated this session.
 
 ---

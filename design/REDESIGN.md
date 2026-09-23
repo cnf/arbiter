@@ -25,7 +25,7 @@ Run from the repo root (`Arbiter/`), not from `design/`:
 
 ```bash
 git log --oneline -8                  # confirm develop hasn't moved past 2f3a740
-ls design/mockups/                    # the three live mockups this thread produced
+ls design/mockups/                    # file 5 is current; files 1-2 are idea-bank reference; file 3 is superseded but kept for history
 ```
 
 ## 2. What happened, in order (so the reasoning isn't lost)
@@ -93,8 +93,9 @@ ls design/mockups/                    # the three live mockups this thread produ
 ## 3. Current state — what's decided vs. still open
 
 **Decided (general design direction):**
-- `design/mockups/arbiter-redesign-3-sessions-merged.html` is the reference
-  file. Multi-page app (confirmed, not single-stream).
+- `design/mockups/arbiter-redesign-5-lanes-realdata.html` is the reference
+  file (supersedes files 3 and the deleted file 4 — see below). Multi-page
+  app (confirmed, not single-stream).
 - Pages: **Overview**, **Sessions** (merges old Requests+Sessions pages —
   this is the one built), **Discovery**, all top-level; **session
   transcript** reached from a session row on the Sessions page, not its own
@@ -107,31 +108,63 @@ ls design/mockups/                    # the three live mockups this thread produ
   (commit/action only), secondary `#0098FF` blue (nav/reference only) — this
   constraint was fixed by the user before any exploration started and never
   revisited.
-- Merged-page structure: session = swimlane (fixed label column: session id
-  chip, first-message preview, request/satellite counts, running cost),
-  requests + their triggered classifier/title/subagent calls are nodes along
-  a horizontal timeline within the lane, satellite nodes connect to their
-  parent via a visible stem. Right side: persistent detail panel (not a
-  modal/dock) — default view is aggregate stats for what's in view, swaps to
-  full rationale/facts on node click, never navigates the lane list away.
+- Merged-page structure: session = full-width swimlane, two stacked lines —
+  a **header line** (session-id chip + request/satellite counts + "started
+  …" left-aligned; first-message preview + running cost right-justified on
+  the same line) and a **full-width timeline line** below it holding every
+  node for that session (client requests + the classifier/title/subagent
+  calls they triggered, satellites connected to their parent via a visible
+  stem). High-volume sessions collapse repeated same-route requests into a
+  single pill-shaped **stack node** (e.g. "337×") rather than spawning more
+  lanes or nodes — verified against a real 342-request session. Right side:
+  persistent detail panel (not a modal/dock) — default view is aggregate
+  stats for what's in view, swaps to full rationale/facts on node click
+  (including stack-node clicks, which show aggregate stack detail), never
+  navigates the lane list away.
+- Row/node visual design (§ below) has moved from "wide open" to "agreed at
+  the composition level, open on live-data tuning" — see next bullet block.
 
-**Explicitly NOT decided — its own future design round:**
-- The **visual design of the session-lane row itself** (node sizing/shape,
-  spacing, exact swimlane visual treatment, how it holds up with real dense
-  session data). User was explicit: *"i'm not going to comment on the design
-  of the session lanes, because that is a separate design round."* Don't
-  treat file 3's current row visuals as agreed — only the page-level
-  composition (swimlane-per-session, merged page, persistent detail panel)
-  is agreed.
+**Decided this round, real-data-grounded (2026-09-23, file 5):**
+- Session-lane rows and the right detail panel were rebuilt and verified
+  against real rows pulled from `/data/arbiter/arbiter.db` (read-only mount)
+  instead of synthetic placeholder text — a clean 4-request session
+  (`ccd913`), a real broken 8-request/4-error run (`e3113e`), and a real
+  342-request session (`a257df`, this very redesign conversation as
+  recorded by Arbiter itself).
+- A regression happened and was caught mid-round: an earlier pass (file 4,
+  now deleted) collapsed the one-lane-per-session model into one `<div
+  class="lane">` per *request*, so a 4-request session rendered as 4 stacked
+  lanes, and dropped the persistent right panel while focused on row CSS.
+  User caught both immediately ("you removed the right bar... i dont
+  understand the new lanes"). Fixed by rebuilding on file 3's actual
+  lane-row skeleton rather than patching file 4 further — **always verify a
+  round's structure against the last-approved file's actual DOM shape when
+  rebuilding with new data, not just visually.**
+- User then asked for header-line justification: id/counts left, preview
+  text + cost right, on one line, full-width timeline below. Built and
+  vision-verified (zoomed crop confirming no truncation/crowding).
+- User's explicit sign-off: *"yeah, much better... i think this is a nice
+  overview"* and *"i think that is good for now on the sessions. it'll
+  probably need tweaking when i use it live, but that is a problem for
+  then."* — composition + row/node treatment are settled for now; expect
+  revision once used against live traffic, and that's expected, not a gap
+  to chase preemptively.
+- File 4 (`arbiter-redesign-4-lane-row-realdata.html`) was deleted — it
+  represented the regressed structure and would only confuse a future
+  reader if left alongside file 5.
+
+**Explicitly NOT decided — deferred until live use:**
+- Exact node sizing/spacing/proportions may need adjustment once this page
+  is used against real live traffic day to day. This is an accepted,
+  expected follow-up, not an open design question to resolve now.
 - Overview and Discovery pages: not designed in this thread at all. User has
   confirmed Discovery is needed (already known to be its own page) and
   guesses Overview is needed but hasn't used it yet — no mockup exists for
   either.
-- `DESIGN.md` **was reconciled** 2026-09-23 on the `newui` branch (see §6) —
-  it now matches this thread's decided direction (§3's "Decided" list) and
-  explicitly calls out the still-open items (session-lane row visuals,
-  Overview) as open rather than settled. It is current, not stale — the
-  old "needs a deliberate reconciliation pass" note below is resolved.
+- `DESIGN.md` **was reconciled** 2026-09-23 on the `newui` branch (see §6),
+  then updated again the same day to match file 5's finalized lane-row
+  design (header-line justification, stack-node pattern, restored right
+  panel). It is current, not stale.
 
 ## 4. How mockups were verified this session (repeat this, don't re-derive it)
 
@@ -254,3 +287,34 @@ whatever scratch dir accumulated) before assuming the command itself is
 broken — and unset any `HOME`/`FONTCONFIG_FILE` override from an earlier
 verification step before running an unrelated devenv command in the same
 terminal session.
+
+**Root cause, found and fixed in the file-5 round**: the actual culprit was
+`fonts.conf` pointing `<dir>` at all of `/nix/store` — `fc-cache -f` (which
+Chromium triggers on first launch) walks that whole tree and built a 433MB+
+cache from it every time, refilling `/tmp` even after cleanup. Fix: point
+`fonts.conf`'s `<dir>` at just the specific font package path (e.g.
+`/nix/store/<hash>-dejavu-fonts-2.37/share/fonts`), not `/nix/store` itself.
+With a scoped `fonts.conf`, the cache stays under ~5MB. Use this from the
+start instead of the clean-up-after-the-fact workaround above:
+
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <dir>/nix/store/<hash>-dejavu-fonts-2.37/share/fonts</dir>
+  <cachedir>/tmp/chromehome/.cache/fontconfig</cachedir>
+</fontconfig>
+```
+
+(Find the exact hash with `find /nix/store -maxdepth 1 -iname "*dejavu-fonts-*"`.)
+
+**Chromium headless can hang, not just crash, under tmpfs pressure**: when
+`/tmp` was near-full (86%) this round, `chromium --headless --screenshot`
+hung indefinitely instead of erroring — the foreground `terminal` call hit
+its timeout while Chromium was still alive in the background. Symptom: the
+tool reports a timeout, but the screenshot file may or may not have
+actually been written (check `ls -la` on the output path before assuming
+total failure — it landed successfully once despite the reported timeout).
+If it truly hung, `pkill -9 -f "chromium.*<distinguishing-arg>"` before
+retrying; retrying without killing the stuck process wastes another full
+timeout window.

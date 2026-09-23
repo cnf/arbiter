@@ -332,13 +332,17 @@ no longer exist as separate surfaces.** The split never read right in
 practice; merging them turned out to also solve a layout problem (a single
 merged page has room to breathe that two cramped table pages didn't).
 
-- **A session is the primary unit — a swimlane, not a table row.** A fixed
-  260px label column (session-id chip, first-message preview, request/
-  satellite counts, running cost) sits to the left of a horizontal
-  timeline area for that session.
+- **A session is the primary unit — a full-width swimlane, not a table
+  row.** Each lane is two stacked lines, not a label-column-plus-timeline
+  grid: a **header line** (session-id chip + request/satellite counts +
+  "started …" on the left; the first-message preview + running cost
+  right-justified on the same line) followed by a **full-width timeline
+  line** below it holding every node for that session. Justifying the
+  preview/cost to the right, opposite the id/counts, was a deliberate call
+  — it reads as one coherent line instead of a left-heavy label block.
 - **Requests are large ringed nodes on the timeline**, positioned along a
-  horizontal lane line. Client-request nodes are colored by outcome
-  (`ok`/`warn`/`err` border).
+  horizontal lane line spanning the row's full width. Client-request nodes
+  are colored by outcome (`ok`/`warn`/`err` border).
 - **Classifier/title/subagent calls a request triggered are small satellite
   nodes**, positioned above their parent node and connected to the lane by
   a visible vertical stem (`line-strong`, partial opacity) — this is the
@@ -346,31 +350,39 @@ merged page has room to breathe that two cramped table pages didn't).
   and the machinery it triggered is a spatial fact you see on the lane,
   not a nesting rule you read in text. Satellite color follows the `kind-*`
   channel (classifier/title/subagent), same hues as before.
+- **High-volume sessions collapse repeated same-route requests into a
+  single stack node** — a pill shape (not a circle, to read as distinct
+  from a single request), labeled with a count (e.g. "337×"). Verified
+  against a real 342-request session: expanding every turn inline would
+  make the lane unreadable, so the stack node is the answer to "how does a
+  lane hold hundreds of nodes," not more lanes and not a scroll-heavy
+  single lane. Clicking it shows stack-level aggregate detail (count, total
+  cost) in the right panel, distinct from a single node's detail.
 - **A persistent detail panel occupies a fixed 380px right column** —
   never a modal, never a dock that covers the page. Default state shows
   aggregate stats for whatever's currently in view (session/request/error
-  counts, total cost). Clicking any node — client or satellite — swaps the
-  panel to that node's full detail (route, status, rationale, token/cost/
-  latency facts, a link into the full transcript). Clicking elsewhere never
-  navigates the lane list away; only an explicit "view session →" action
-  in the detail panel does that.
+  counts, total cost). Clicking any node — client, satellite, or a
+  collapsed stack — swaps the panel to that node's full detail (route,
+  status, rationale, token/cost/latency facts, a link into the full
+  transcript). Clicking elsewhere never navigates the lane list away; only
+  an explicit "view session →" action in the detail panel does that.
 - **Toolbar above the lane list**: free-text search (session id, provider,
   model, first message), filter chips (all / errors only / client only),
   a time-window select, and a result count — same search-first posture as
   the previous generation's Sessions index philosophy, now serving the
   merged page instead of a separate one.
 
-**Open / not yet finalized (its own design round):** the exact visual
-treatment of the swimlane row itself — node sizing, spacing, exact
-proportions, and how the layout holds up against real dense session data
-(a session with 20+ requests, or heavy satellite fan-out) has not been
-stress-tested or agreed. Do not treat the current mockup's specific pixel
-values for node/stem sizing as locked — the page-level composition (lane =
-session, nodes = requests, persistent right panel) is agreed; the pixel-
-level row design is not. The session-id chip's dot-marker convention from
-the previous generation ("a bordered chip with a dot-marker, not a plain
-muted link") has been dropped in the current mockup and has not been
-explicitly re-decided either way — resolve this in the same round.
+**Open / not yet finalized:** row/node visual design has been agreed at the
+composition level (full-width header line, full-width timeline below,
+stack node for high-volume sessions) and stress-tested against real data
+pulled from `/data/arbiter/arbiter.db` (a clean 4-request session, a real
+8-request/4-error broken run, and a real 342-request session) — not
+synthetic placeholder rows. The remaining open item is real-usage tuning:
+node sizing/spacing/proportions may need adjustment once this is live and
+used day to day, per explicit agreement that this is expected and fine to
+defer. The session-id chip's dot-marker convention from the previous
+generation ("a bordered chip with a dot-marker, not a plain muted link")
+remains dropped and not explicitly re-decided either way.
 
 ### Session transcript
 

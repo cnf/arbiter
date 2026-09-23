@@ -25,8 +25,10 @@ also shipped; only piece 3 remains. New §19 added 2026-09-23 at `develop` =
 `ee71cb4` — piece 3 shipped; **#11 is fully closed**. New §20 added
 2026-09-23 at `develop` = `0fc2617` — #11 closed on the board; README.md and
 the sample `arbiter.yaml` caught up to piece 1-3's doc gap; a ticket-less
-startup version-logging feature shipped. Run `git log --oneline -1` for the
-truth.
+startup version-logging feature shipped. New §21 added 2026-09-23e at
+`develop` = `b8907e8` — #45 (admin UI rebuild) scoped and split into 5 native
+GitHub sub-issues (#46-#50); #46 (phase 1: tokens/layout/popover) shipped and
+closed. Run `git log --oneline -1` for the truth.
 
 ---
 
@@ -184,10 +186,20 @@ a fresh title request rather than a code change.
 
 ## 6. Open work, in priority order
 
-Run `gh issue list --state open` for the live list. As of `0fc2617`
-(2026-09-23c, §20), open: **#4, #8, #9, #14, #17, #18, #20, #21, #22,
-#23, #24, #26, #36, #38, #40, #41**. Closed since §5/§10 were last written:
-**#27, #28, #31, #37, #39, #13, #43, #42, #5, #34, #11** (see §11–§13, §20).
+Run `gh issue list --state open` for the live list. As of `b8907e8`
+(2026-09-23e, §21), open: **#4, #8, #9, #14, #17, #18, #20, #21, #22,
+#23, #24, #26, #36, #38, #40, #41, #44, #45, #47, #48, #49, #50**. Closed
+since §5/§10 were last written: **#27, #28, #31, #37, #39, #13, #43, #42,
+#5, #34, #11, #46** (see §11–§13, §20, §21).
+
+**Admin UI rebuild (#45), in flight — see §21 for full detail:**
+5 native GitHub sub-issues of #45, fixed build order (foundation must land
+before anything that reuses its tokens/popover):
+1. **#46 — foundation** (tokens, layout chrome, popover component) — **shipped, closed**, `b8907e8`.
+2. **#47 — requests page** (routing chain, kind chips, parent/child threading) — next up, not started.
+3. **#48 — session transcript** (rail layout, tool rendering, guardrail diff) — not started.
+4. **#49 — sessions index** (search-first, fixed-width columns) — not started, lowest priority of the five.
+5. **#50 — discovery** (dedupe by session, filter chips, UA clustering + visual pass) — not started, bundles backend work so it's deliberately last.
 
 **High priority, real gaps:**
 - **#4** — META umbrella for the visibility goal. **#5** and **#34** (its
@@ -203,7 +215,7 @@ user has said he doesn't use today (he does use the Anthropic **upstream**,
 i.e. routing to Claude models — that's a different, unaffected path; see §10).
 
 **Medium/low**, no change in status: #8 (see above — half done), #9,
-#14, #17, #18, #20, #21, #22, #23, #24, #26, #36, #38, #40, #41.
+#14, #17, #18, #20, #21, #22, #23, #24, #26, #36, #38, #40, #41, #44.
 
 **#17** — Phase D (`min_confidence`) is now *unblocked* (its blocker #6
 closed, see §10) but still **unbuilt** — don't confuse unblocked with done.
@@ -1188,5 +1200,89 @@ trufflehog) passed on the version-logging commit.
 - **Next deploy of the built binary will show its version at startup** —
   no action needed, this is automatic once `develop` is deployed and built
   with `go build` (not `go run`) from inside the git checkout.
+
+---
+
+## 21. Session 2026-09-23e — #45 scoped and split; #46 (foundation) shipped and closed
+
+**Two commits, both on `develop` (unpushed):**
+
+| commit | what |
+|---|---|
+| `930e217` | `DESIGN.md` — token spec (color/typography/spacing/radii) + page-pattern prose for the from-scratch admin UI rebuild (already on disk at session start, see prior session) |
+| `b8907e8` | **#46**: `app.css` rebuilt against `DESIGN.md`'s tokens (renamed/re-derived custom properties — `--fg`→`--ink`, `--card`→`--surface`, `--accent`→`--secondary`, plus new `--primary` and `--kind-*` channels for #47), `layout.html` chrome updated, and the full-screen popover component (`popover.js` + CSS) built once for reuse by #48/#49/#50 |
+
+**#45 scoped into 5 native GitHub sub-issues**, not one bundled ticket (user's
+explicit preference — "sub phases sounds fine"). Filed with `gh issue create
+--parent 45`, linkage verified via `gh api graphql`'s `subIssues` query, not
+just body-text mention:
+
+1. **#46 — foundation** (tokens, layout chrome, popover) — **shipped, closed**, `b8907e8`.
+2. **#47 — requests page** (routing chain requested→routed→actual, unified `kind-*` chips, parent/child threading — child row above parent, indent only the time column, cost column pinned via CSS `order`, stream-stack grouping breaking on subagent interruption).
+3. **#48 — session transcript** (rail-layout metadata, full-screen popover with background-scroll lock — now built in #46 — content-first tool-call rendering, inline line-level guardrail diff). Heaviest of the five.
+4. **#49 — sessions index** (search-first box, first-message preview column, fixed-width trailing columns — auto-width was a real caught bug, hard requirement). Smallest; ranked 4th not 5th because it only reapplies #46-#48's conventions.
+5. **#50 — discovery** (dedupe by session not raw request, role/block-type filter chips, User-Agent clustering, plus visual pass). Deliberately last: only phase bundling backend/query changes with the visual rebuild.
+
+Fixed build order: **1 → 2 → 3 → 4 → 5**. Foundation first because 2-5 all
+depend on it (popover built once in #46, reused three times). Discovery last
+because it is the only phase with non-UI dependencies that shouldn't block
+the visual rebuild of the rest.
+
+**#46 scope, what actually changed:**
+- `internal/ui/static/app.css` — every custom property renamed/expanded per
+  `DESIGN.md`. No page-specific selector shape changed; confirmed via grep
+  that no template or JS reads a CSS custom property directly (`grep -rn
+  -- "--fg\|--bg\|..." internal/ui/templates internal/ui/static/*.js` — zero
+  hits), so the rename is fully contained to `app.css` and the one test
+  asserting its literal content.
+- `internal/ui/static/popover.js` — new file. Full-screen popover: locks
+  background scroll while open, closes on Escape/backdrop-click/close
+  button, restores focus to the trigger on close. Two trigger modes:
+  `data-popover-text` (static, inserted via `textContent` only — same
+  never-mark-stored-content-safe rule every existing template already
+  follows) and `data-popover-src` (htmx-fetched).
+- `internal/ui/templates/layout.html` — one new `<script defer>` line
+  wiring in `popover.js` alongside htmx/uplot/chart.js/live.js.
+- `internal/ui/ui_test.go` — `TestStaticAssetsAreServedAndVersioned`'s
+  content check updated from `--fg` to `--ink` (the renamed token); the
+  only test coupled to `app.css`'s literal variable names.
+
+**Verified, not just claimed:**
+- `go build ./...`, `go vet ./...` clean.
+- `golangci-lint run ./internal/ui/...` — 0 issues.
+- `gofmt -l internal/ui/ui_test.go` — clean (no output after `-w`).
+- `go test ./internal/ui/...` — same 5 pre-existing failures flagged since
+  §17/§20 (`TestOverviewPivotsAndRanks` and siblings). Confirmed identical
+  with and without this session's changes via `git stash` compare (stash
+  didn't actually move anything since `popover.js` is untracked, so this
+  was really a rerun against the pre-change tree at `930e217` — same 5
+  failures either way). Zero new failures. Every test that reads
+  `app.css`/`layout.html`/`popover.js` content
+  (`TestStaticAssetsAreServedAndVersioned`, `TestPageReferencesVersionedAssets`,
+  `TestEveryPageRendersWithZeroData`, `TestNoUnsafeContentConversions`) passes.
+- Manually rendered the requests page against a seeded store (scratch test,
+  deleted after) and read the actual HTML output — confirmed the popover
+  script tag and new page structure render correctly.
+- Pre-commit hooks (gitleaks, golangci-lint, ripsecrets, trufflehog) passed
+  on the `b8907e8` commit.
+
+**Board:** `gh issue close 46` run this session with a closing comment
+summarizing what shipped and how it was verified.
+
+**State for the next session:**
+
+- `internal/classifier/match_test.go` still has the **unrelated, on-hold
+  debug session's uncommitted change** — untouched this session, confirmed
+  via `git --no-pager diff --no-ext-diff` showing only that session's own
+  content. Still on hold, still not this repo's active work.
+- `feedback.md` at repo root is **untracked, pre-existing** — untouched.
+- **#47 is next.** User asked whether to start it in this session or a
+  fresh one — open question, not yet decided as of this handoff. Whichever
+  session picks it up: the requests page needs the `kind-*` CSS channel
+  (already shipped in #46) and `internal/ui/templates/partials/reqrow.html`
+  / `pages/requests.html` (not yet read this session — read those plus
+  `DESIGN.md`'s requests-page pattern section before scoping #47's diff).
+- No other open work generated this session — #45's shape is now fully on
+  the board as #46-#50, exactly mirroring §6's summary above.
 
 ---

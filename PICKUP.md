@@ -14,7 +14,9 @@ Written 2026-09-20, at `develop` = `0327600`; §5 and §9 updated 2026-09-21 at
 new §12 updated 2026-09-22 at `develop` = `e796405`; #43 landed. §6 and new
 §13 updated 2026-09-22 at `develop` = `84d917c`; #5 and #34 landed. §6 and
 new §14 updated 2026-09-22 at `develop` = `f8a43d4`; #8 part 3 landed (part
-1 still open). Run `git log --oneline -1` for the truth.
+1 still open). New §15 added 2026-09-22 at `develop` = `94ed761` — scoping
+only, no code landed; #11 is the next target. Run `git log --oneline -1`
+for the truth.
 
 ---
 
@@ -677,3 +679,79 @@ completion, not a close. Priority ordering otherwise unchanged from §13.
 **Not done, and deliberately not started:** part 1 of #8 (above). Nothing
 pushed to origin — `develop` is 31 commits ahead of `origin/develop` as of
 `f8a43d4`.
+
+---
+
+## 15. Session 2026-09-22d — #11 scoped, next target; nothing built this session
+
+**No code changed this session.** It was pure scoping/recovery: catch up
+(§14 was read, not re-derived), then the user asked what's left on #11.
+`develop` is at `94ed761`, same as §14 left it, 32 ahead of
+`origin/develop`. This §15 + the header line is the only diff, same
+handoff-commit convention as every prior session.
+
+**#11's real status, verified against code + the live store, not just the
+ticket's own prose:**
+
+- **Detection is genuinely built and working.** `arbiter.yaml`'s `title`
+  classifier (~line 191, a decisive `match:` signature on the client's
+  system prompt — opencode's *"You are a title generator"*, Claude Code's
+  *"Generate a concise, sentence-case title"*) writes
+  `request_kind = "title"`. Confirmed live:
+  `sqlite3 "file:/data/arbiter/arbiter.db?mode=ro" "SELECT id, ts, request_kind FROM requests WHERE request_kind='title';"`
+  → 3 real rows, correctly tagged. `reqrow.html:109/140` renders the tag.
+- **Routing to cheap/fast models is NOT built.** `PolicyCondition`
+  (`internal/router/policy.go:16-33`) has `Domain`, `Effort`, `Capabilities`,
+  `CostClass`, `RequiresInputModalities` — **no `RequestKind` field**, so no
+  routing rule can target title requests today. Confirmed live: the 3 real
+  title rows routed to 3 *different* models
+  (`auto/best-free`, `claude/claude-sonnet-5`, `openrouter/free` —
+  `SELECT id, provider, model, alias_used FROM requests WHERE request_kind='title'`)
+  — whatever the client happened to ask for, no override applied anywhere.
+- **Grouping with the parent session is NOT built.** The ticket claims this
+  is derivable read-side via `content_refs` hash matching with no schema
+  change — architecturally right, and the pattern already exists:
+  `RequestsForContent` (`internal/store/discovery.go:36`) already joins
+  `content_refs` by hash to find every request containing one block, built
+  for the discovery/boilerplate feature. Nothing wires that pattern into
+  title-gen grouping specifically — no code path ties a title request to
+  its parent session today.
+- **The two design docs the ticket cites are unreachable from this
+  container:** `~/.claude/plans/title-gen-labeling-and-stream-stacking.md`
+  and a "DEFERRED: subagent / title-generation grouping" section in a
+  `project_arbiter_status.md` both live on the host, not in this repo or
+  this sandbox — `find / -maxdepth 4 -iname project_arbiter_status.md`
+  found nothing, `~/.claude/plans/` doesn't exist here. **Don't assume
+  either is readable next session either** unless the environment changes;
+  treat the ticket body + the code-verified findings above as the
+  authoritative scope instead of chasing those paths again.
+- **#30's already-closed decision is the reason detection is cheap and
+  reliable** — worth not re-deriving: a title request's session key hashes
+  conversation text that changes every call, so it never pins, so it's
+  always a "first request" and always gets classified under #30's rule.
+  That's *why* the 3 live rows all classified correctly with no extra work.
+
+**Concretely, what #11 needs (this is the scope handed to the user, and
+what the next session should build):**
+
+1. **Routing** — add a `RequestKind` field to `PolicyCondition`
+   (`internal/router/policy.go`), wire it into `Matches`, then add an
+   `arbiter.yaml` rule routing `request_kind: "title"` to a cheap/fast
+   alias (`cheap-claude` already exists as a candidate target,
+   `arbiter.yaml:305`). Smaller of the two — one struct field, one matcher
+   branch, one config rule.
+2. **Grouping** — reuse the `content_refs` hash-join pattern from
+   `RequestsForContent` to link a title request to the session it named,
+   surface the tie in the UI, and make the "capture_content off" case
+   **visibly degraded** rather than a silent "no subagents" (the ticket's
+   hard constraint). Larger of the two — UI + query work, not just a
+   config change.
+
+**Hard constraint restated from the ticket, worth keeping visible:** *"a
+title request is a request, it should be shown. NO request is ever
+hidden."* Exclusion may only ever filter the *view*, never drop the record
+— same principle #5 (closed) already implemented for rejected requests;
+don't regress it while building either half of #11.
+
+**Not done, and deliberately not started:** all of #11 — nothing has
+landed on it yet, this session was scoping only. Nothing pushed to origin.

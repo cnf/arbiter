@@ -663,7 +663,7 @@ func TestStaticAssetsAreServedAndVersioned(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("app.css = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "--fg") {
+	if !strings.Contains(rec.Body.String(), "--ink") {
 		t.Error("app.css body does not look like our stylesheet")
 	}
 

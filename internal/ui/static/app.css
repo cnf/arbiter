@@ -1,44 +1,91 @@
 /* Arbiter admin UI.
  *
- * Dense and discovery-oriented: the page exists to be read and scanned, not to
- * be admired. Monospace for anything the store produced, because identifiers,
- * model names, hashes and rationales are read character by character; a
- * proportional face makes them harder to compare down a column.
+ * Token values and component rules come from DESIGN.md (repo root) — that
+ * file is the source of truth for anything that isn't a page-specific layout
+ * decision (routing chain, threading, transcript rail, etc. — those land as
+ * the per-page rebuilds in #47-#50). This file is #46: the shared design
+ * system every other phase builds on.
+ *
+ * Dense and discovery-oriented: the page exists to be read and scanned, not
+ * to be admired. Monospace for anything the store produced, because
+ * identifiers, model names, hashes and rationales are read character by
+ * character; a proportional face makes them harder to compare down a column.
  *
  * Everything is UTC (that is what is stored); the header says so once rather
- * than half-converting. Light and dark are both honoured via color-scheme —
- * a single dark theme would be a choice made for the operator rather than by
- * them.
+ * than half-converting. Light and dark are both honoured via
+ * prefers-color-scheme — a single dark theme would be a choice made for the
+ * operator rather than by them. DESIGN.md's token spec gives -dark pairs for
+ * every color except primary/secondary/secondary-ink, which hold their value
+ * across both schemes (bright brand accents don't need a dark variant to stay
+ * legible on either background).
  */
 
 :root {
   color-scheme: light dark;
-  --fg: #14161a;
+
+  /* Brand accents. primary = the one committing action per view; secondary =
+     navigation/reference. Neither doubles as a status signal. See
+     DESIGN.md's Colors section and Do's/Don'ts for the full rule. */
+  --primary: #ff6700;
+  --secondary: #0098ff;
+  --secondary-ink: #0072cc; /* AA-safe text/button-label variant of secondary */
+  --on-primary: var(--ink);
+  --on-secondary: var(--ink);
+
+  /* Page chrome. */
+  --ink: #14161a;
   --bg: #fbfbfc;
-  --muted: #6b7280;
+  --surface: #ffffff;
   --line: #d9dce1;
-  --card: #ffffff;
-  --accent: #1f4fd8;
+  --muted: #6b7280;
+
+  /* Status channel — request-outcome semantics only, reused nowhere else. */
   --ok: #16794a;
   --warn: #a35a00;
   --err: #b3261e;
   --note: #3f3f8f;
+
+  /* Kind channel — request_kind only (classifier/title/subagent). Wired up
+     by #47; defined here so every later phase reads the same three values. */
+  --kind-classifier: #7c5cfc;
+  --kind-title: #0ea5a5;
+  --kind-subagent: #c2419c;
+
+  /* Tool-call/tool-result content in a transcript. Distinct from warn (a tool
+     call is neutral, not a problem) and from kind (a request's kind and its
+     tool activity are different facts). */
+  --tool: #b8860b;
+
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-pill: 9999px;
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 20px;
+  --space-xl: 32px;
+
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --fg: #e6e8ec;
+    --ink: #e6e8ec;
     --bg: #15171b;
-    --muted: #9aa1ac;
+    --surface: #1b1e23;
     --line: #2b2f36;
-    --card: #1b1e23;
-    --accent: #7aa2ff;
+    --muted: #9aa1ac;
     --ok: #5fc98d;
     --warn: #e0a44a;
     --err: #ff8a80;
     --note: #a6a6f0;
+    --kind-classifier: #a996ff;
+    --kind-title: #5fd4d4;
+    --kind-subagent: #e58bcb;
+    --tool: #e0b34a;
   }
 }
 
@@ -47,15 +94,17 @@
 body {
   margin: 0;
   background: var(--bg);
-  color: var(--fg);
-  font: 14px/1.45 var(--sans);
+  color: var(--ink);
+  font: 0.875rem/1.45 var(--sans); /* body-md */
 }
 
-a { color: var(--accent); text-decoration: none; }
+/* Secondary is the navigation/reference color; secondary-ink is its AA-safe
+   text form (flat secondary-on-surface text is ~3:1, under WCAG AA). */
+a { color: var(--secondary-ink); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 .muted { color: var(--muted); }
-.mono, pre, code { font-family: var(--mono); font-size: 12.5px; }
+.mono, pre, code { font-family: var(--mono); font-size: 0.78125rem; line-height: 1.4; } /* data-mono */
 
 /* ---------------------------------------------------------------- chrome -- */
 
@@ -65,7 +114,7 @@ header.top {
   gap: 1.25rem;
   padding: 0.5rem 1rem;
   border-bottom: 1px solid var(--line);
-  background: var(--card);
+  background: var(--surface);
   position: sticky;
   top: 0;
   z-index: 5;
@@ -75,19 +124,22 @@ header.top {
 header.top .brand {
   font-weight: 600;
   letter-spacing: -0.01em;
-  color: var(--fg);
+  color: var(--ink);
 }
 
 header.top nav { display: flex; gap: 0.75rem; }
+/* An inactive nav item recedes to muted; the active one is marked in
+   secondary — "the active nav item" is explicitly one of DESIGN.md's named
+   uses for the secondary channel. */
 header.top nav a { color: var(--muted); }
-header.top nav a.on { color: var(--fg); font-weight: 600; }
+header.top nav a.on { color: var(--secondary-ink); font-weight: 600; }
 
 header.top .reload { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
 header.top .clock { color: var(--muted); font-family: var(--mono); font-size: 12px; }
 
 main { padding: 1rem; max-width: 1600px; }
-h1 { font-size: 1.15rem; margin: 0.25rem 0 0.25rem; }
-h2 { font-size: 0.95rem; margin: 0 0 0.5rem; display: flex; align-items: center; gap: 0.75rem; }
+h1 { font-size: 1.15rem; font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; margin: 0.25rem 0 0.25rem; }
+h2 { font-size: 0.95rem; font-weight: 600; line-height: 1.3; margin: 0 0 0.5rem; display: flex; align-items: center; gap: 0.75rem; }
 .lede { margin: 0 0 0.75rem; color: var(--muted); }
 
 .banner {
@@ -116,8 +168,8 @@ footer {
   padding: 0.6rem 0.75rem;
   margin-bottom: 0.75rem;
   border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--card);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
 }
 
 .filters label {
@@ -129,27 +181,34 @@ footer {
   text-transform: lowercase;
 }
 
+/* input component: background matches the page (bg, not surface), so a
+   focused field visually recedes into the page until it's actively used. */
 .filters input[type="text"] {
   font: 12.5px var(--mono);
   padding: 3px 5px;
   border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: var(--bg);
-  color: var(--fg);
+  color: var(--ink);
 }
 
 .filters label.check { flex-direction: row; align-items: center; gap: 4px; }
 
+/* button-secondary is the default for every plain button on the page today:
+   ghost, ink text on surface, everything reversible or non-committing. Which
+   controls (if any) get promoted to button-primary is a page-layout decision
+   owned by the phase that rebuilds each page (#47-#50), not this foundation
+   phase. */
 button, .filters button, .load, .more {
   font: 12px var(--sans);
   padding: 4px 9px;
   border: 1px solid var(--line);
-  border-radius: 3px;
-  background: var(--bg);
-  color: var(--fg);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--secondary-ink);
   cursor: pointer;
 }
-button:hover { border-color: var(--accent); color: var(--accent); }
+button:hover { border-color: var(--secondary); }
 .filters a.reset { font-size: 12px; color: var(--muted); }
 
 .htmx-indicator { opacity: 0; transition: opacity 120ms; }
@@ -164,8 +223,8 @@ change swaps it along with the rows it follows. */
 }
 .tail button {
   font-family: inherit; font-size: 12px; cursor: pointer;
-  padding: 3px 10px; border-radius: 4px;
-  border: 1px solid var(--line); background: var(--card); color: var(--fg);
+  padding: 3px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line); background: var(--surface); color: var(--secondary-ink);
 }
 .tail button[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--ok) 55%, var(--line));
@@ -184,16 +243,19 @@ change swaps it along with the rows it follows. */
 table.grid {
   width: 100%;
   border-collapse: collapse;
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
+/* table-header component: label-caps in muted — headers recede so the data is
+   what's read. */
 table.grid th {
   text-align: left;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
+  letter-spacing: 0.04em;
   text-transform: lowercase;
   color: var(--muted);
   padding: 5px 8px;
@@ -207,8 +269,8 @@ table.grid td {
   vertical-align: top;
 }
 
-table.grid tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
-table.grid tr.here { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+table.grid tbody tr:hover { background: color-mix(in srgb, var(--secondary) 5%, transparent); }
+table.grid tr.here { background: color-mix(in srgb, var(--secondary) 10%, transparent); }
 
 td.num, th.num { text-align: right; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
 td.when { white-space: nowrap; font-family: var(--mono); font-size: 12px; }
@@ -228,26 +290,28 @@ td.axes { white-space: nowrap; }
 }
 table.grid tr.run td { color: var(--muted); }
 table.grid tr.run .count {
-  color: var(--accent);
+  color: var(--secondary-ink);
   text-decoration: none;
   font-family: var(--sans);
   font-size: 11px;
   padding: 0 4px;
   margin-left: 3px;
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
-  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--secondary) 40%, transparent);
+  border-radius: var(--radius-pill);
 }
-table.grid tr.run .count:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+table.grid tr.run .count:hover { background: color-mix(in srgb, var(--secondary) 15%, transparent); }
 
 /* A trace child (a classifier call today) rendered under the request that
    spawned it — see attachTraceChildren, #8. Indented and quieter so the eye
-   still lands on the request first; nothing fancier, the table itself is
-   getting a broader redesign soon. */
+   still lands on the request first; the request-list layout itself is #47's
+   own phase. */
 table.grid tr.trace-child td.when { padding-left: 1.5rem; color: var(--muted); }
 table.grid tr.trace-child { background: color-mix(in srgb, var(--line) 25%, transparent); }
 
 .pager { display: flex; align-items: center; gap: 0.75rem; margin: 0.6rem 0 0; color: var(--muted); font-size: 12px; }
 
+/* Status is its own channel, independent of brand/kind — a glance down this
+   column is never ambiguous with a glance down an accent or a kind chip. */
 .status {
   display: inline-block;
   min-width: 3ch;
@@ -255,7 +319,7 @@ table.grid tr.trace-child { background: color-mix(in srgb, var(--line) 25%, tran
   font-family: var(--mono);
   font-size: 12px;
   padding: 0 4px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   border: 1px solid transparent;
 }
 .s-ok   { color: var(--ok);   border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
@@ -265,23 +329,26 @@ table.grid tr.trace-child { background: color-mix(in srgb, var(--line) 25%, tran
 .s-none { color: var(--muted); }
 .status[title] { cursor: help; }
 
+/* tag component: the neutral pill for kind/axis labels that aren't a status. */
 .tag {
   display: inline-block;
   font-size: 11px;
   padding: 0 5px;
   margin-right: 3px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-pill);
   color: var(--muted);
 }
 .tag.kind { color: var(--note); border-color: color-mix(in srgb, var(--note) 40%, transparent); }
 
 /* A request kind is not an axis. It sits in the same column because that is
-   where "what is this row" is read, but it is coloured as its own thing so a
-   `title` is never mistaken for a domain the router matched on. */
-.tag.reqkind { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+   where "what is this row" is read. This single generic color is what #47
+   replaces with the kind-* channel (one color per classifier/title/subagent
+   value) — left as one plain reference color here since that structural
+   change belongs to the requests-page phase, not this foundation phase. */
+.tag.reqkind { color: var(--secondary-ink); border-color: color-mix(in srgb, var(--secondary) 40%, transparent); }
 
-.empty { padding: 1rem; border: 1px dashed var(--line); border-radius: 4px; color: var(--muted); }
+.empty { padding: 1rem; border: 1px dashed var(--line); border-radius: var(--radius-sm); color: var(--muted); }
 .fail h1 { font-size: 2rem; margin: 2rem 1rem 0; }
 .fail p.error { margin: 0.5rem 1rem; font-family: var(--mono); }
 
@@ -301,17 +368,18 @@ table.grid tr.trace-child { background: color-mix(in srgb, var(--line) 25%, tran
   margin: 0 0 1rem;
   background: var(--line);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
-.facts > div { background: var(--card); padding: 5px 8px; }
+.facts > div { background: var(--surface); padding: 5px 8px; }
 .facts dt { font-size: 11px; color: var(--muted); }
 .facts dd { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 
+/* card component: the default bordered surface for a panel or a turn. */
 .panel {
   border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--card);
+  border-radius: var(--radius-md);
+  background: var(--surface);
   padding: 0.6rem 0.75rem;
   margin-bottom: 0.75rem;
 }
@@ -321,7 +389,7 @@ table.grid tr.trace-child { background: color-mix(in srgb, var(--line) 25%, tran
 .content .block { border-top: 1px solid var(--line); padding-top: 0.5rem; margin-top: 0.5rem; }
 .content .block:first-child { border-top: 0; margin-top: 0; }
 .blockmeta { display: flex; align-items: center; gap: 0.5rem; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
-.blockmeta .role { font-weight: 600; color: var(--fg); }
+.blockmeta .role { font-weight: 600; color: var(--ink); }
 .block pre {
   margin: 0;
   max-height: 22rem;
@@ -330,7 +398,7 @@ table.grid tr.trace-child { background: color-mix(in srgb, var(--line) 25%, tran
   overflow-wrap: anywhere;
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   padding: 6px 8px;
 }
 .block .binary { color: var(--muted); font-size: 12px; margin: 0; }
@@ -346,8 +414,8 @@ td.key { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
 
 .turn {
   border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--card);
+  border-radius: var(--radius-md);
+  background: var(--surface);
   margin-bottom: 0.6rem;
   padding: 0.5rem 0.75rem 0.6rem;
 }
@@ -387,7 +455,7 @@ td.key { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
   letter-spacing: 0.04em;
   color: var(--muted);
   border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   padding: 0 4px;
 }
 
@@ -396,7 +464,7 @@ td.key { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
    single thing in a turn. Closed by default — it is context, not the message. */
 details.preamble {
   border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: var(--bg);
   margin-bottom: 0.4rem;
   padding: 0.3rem 0.5rem;
@@ -451,3 +519,63 @@ details.preamble[open] > summary { margin-bottom: 0.4rem; }
 .uplot { font-family: var(--mono); font-size: 11px; }
 .u-legend { font-size: 11px; }
 .u-legend .u-marker { border-width: 1px; }
+
+/* ------------------------------------------------------------ popover -- */
+
+/* The full-screen popover, per DESIGN.md's "one component, not four" rule:
+   built once here in the foundation phase, wired up by the session transcript
+   (#48, its first heavy user), the sessions index (#49) and discovery (#50).
+   popover.js owns the DOM node and open/close behavior; these are its only
+   styles. */
+.popover-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--ink) 45%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: var(--space-lg);
+}
+.popover-overlay[hidden] { display: none; }
+
+.popover {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  width: 100%;
+  max-width: min(900px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.popover-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--line);
+}
+.popover-header .popover-meta {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+.popover-close {
+  padding: 2px 8px;
+}
+
+.popover-body {
+  padding: var(--space-md);
+  overflow: auto;
+}
+.popover-body pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 0.78125rem;
+}

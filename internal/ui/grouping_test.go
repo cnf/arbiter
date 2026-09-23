@@ -531,3 +531,136 @@ func TestAttachTraceChildrenMatchesAnyTurnOfAFoldedRun(t *testing.T) {
 		t.Fatalf("the run's children = %+v, want the classifier tied to its older turn", lines[0].Children)
 	}
 }
+// titleRow builds a row for the title-nesting tests — a title-gen request:
+// still Kind="client" (a real HTTP call the client made), tagged
+// RequestKind="title", with its own session_key distinct from the session it
+// is titling (the common case: a title call rarely shares session_key with
+// its parent unless the client sent a session-affinity header on both).
+func titleRow(id int64, ownSession string, mutate func(*store.RequestRow)) requestRowView {
+	r := store.RequestRow{
+		ID:          id,
+		Ts:          "2026-09-20 12:00:00.000000000 +0000 UTC",
+		TsRaw:       "2026-09-20 12:00:00.000000000 +0000 UTC",
+		SessionKey:  ownSession,
+		Provider:    "openrouter",
+		Model:       "cheap-claude",
+		StatusCode:  200,
+		Kind:        "client",
+		RequestKind: "title",
+	}
+	if mutate != nil {
+		mutate(&r)
+	}
+	return requestRowView{RequestRow: r, ShortSession: r.SessionKey}
+}
+
+// resolverFor builds an attachTitleChildren resolver from a plain map, for
+// tests that don't need a real store.Reader.
+func resolverFor(byRequestID map[int64]string) func(int64) (string, bool) {
+	return func(id int64) (string, bool) {
+		sk, ok := byRequestID[id]
+		return sk, ok
+	}
+}
+
+// TestAttachTitleChildrenNestsUnderResolvedParent is the feature: a title
+// line nests under the client line for the session ParentSessionForTitle
+// resolved to, the same visual pattern attachTraceChildren uses for a
+// classifier call — but keyed on the resolver's session_key, not trace_id,
+// since a title request shares no trace with the session it titles.
+func TestAttachTitleChildrenNestsUnderResolvedParent(t *testing.T) {
+	parent := lineRow(2, func(r *store.RequestRow) { r.SessionKey = "real-session" })
+	title := titleRow(1, "title-own-session", nil)
+
+	lines := foldRequestLines([]requestRowView{title, parent})
+	lines = attachTitleChildren(lines, resolverFor(map[int64]string{1: "real-session"}))
+
+	if len(lines) != 1 {
+		t.Fatalf("got %d top-level lines, want 1 (the title must nest, not stand alone)", len(lines))
+	}
+	if lines[0].Head.ID != parent.ID {
+		t.Fatalf("top-level line is %d, want the parent (%d)", lines[0].Head.ID, parent.ID)
+	}
+	if len(lines[0].Children) != 1 || lines[0].Children[0].Head.ID != title.ID {
+		t.Fatalf("parent's children = %+v, want exactly the title row (%d)", lines[0].Children, title.ID)
+	}
+	if !lines[0].Children[0].IsChild {
+		t.Error("the nested title line is not marked IsChild")
+	}
+}
+
+// TestAttachTitleChildrenLeavesUnresolvedAtTopLevel covers ok=false from the
+// resolver — no session_key match, no content-hash match either (neither
+// tier of ParentSessionForTitle found anything). The title still renders,
+// same as an orphaned classifier call: folding is a summary of the list, not
+// a filter on it.
+func TestAttachTitleChildrenLeavesUnresolvedAtTopLevel(t *testing.T) {
+	title := titleRow(1, "lonely-session", nil)
+	lines := foldRequestLines([]requestRowView{title})
+	lines = attachTitleChildren(lines, resolverFor(nil))
+
+	if len(lines) != 1 {
+		t.Fatalf("got %d lines, want 1 (the unresolved title row, unnested)", len(lines))
+	}
+	if lines[0].Head.ID != title.ID || lines[0].IsChild {
+		t.Errorf("unresolved title rendered as %+v, want the title row itself, not marked as a child", lines[0])
+	}
+}
+
+// TestAttachTitleChildrenLeavesUnplaceableAtTopLevel covers a resolved
+// parent session_key with no line on this page (the parent session's
+// requests aren't in the current window/filter) — the title must stay
+// top-level rather than being silently dropped.
+func TestAttachTitleChildrenLeavesUnplaceableAtTopLevel(t *testing.T) {
+	title := titleRow(1, "title-own-session", nil)
+	lines := foldRequestLines([]requestRowView{title})
+	lines = attachTitleChildren(lines, resolverFor(map[int64]string{1: "session-not-on-page"}))
+
+	if len(lines) != 1 {
+		t.Fatalf("got %d lines, want 1 (the unplaceable title row, unnested)", len(lines))
+	}
+	if lines[0].Head.ID != title.ID || lines[0].IsChild {
+		t.Errorf("unplaceable title rendered as %+v, want the title row itself, not marked as a child", lines[0])
+	}
+}
+
+// TestAttachTitleChildrenDoesNotNestUnderAnotherTitle guards the self-
+// collision case at the rendering layer too: bySession is only built from
+// non-title client lines, so a title line can never become another title
+// line's parent even if they happen to share a session_key.
+func TestAttachTitleChildrenDoesNotNestUnderAnotherTitle(t *testing.T) {
+	title1 := titleRow(1, "shared-key", nil)
+	title2 := titleRow(2, "shared-key", nil)
+
+	lines := foldRequestLines([]requestRowView{title2, title1})
+	lines = attachTitleChildren(lines, resolverFor(map[int64]string{2: "shared-key"}))
+
+	if len(lines) != 2 {
+		t.Fatalf("got %d top-level lines, want 2 (titles must not nest under each other)", len(lines))
+	}
+	for _, l := range lines {
+		if l.IsChild {
+			t.Errorf("line %d marked IsChild, want no title nested under another title", l.Head.ID)
+		}
+	}
+}
+
+// TestAttachTitleChildrenComposesWithTraceChildren checks the two nesting
+// passes stack rather than clobber each other: a run-of-the-mill client
+// request can have both a classifier child (trace_id) and a title child
+// (resolved session) on the same page, and both must end up under it.
+func TestAttachTitleChildrenComposesWithTraceChildren(t *testing.T) {
+	parent := lineRow(3, func(r *store.RequestRow) { r.SessionKey = "real-session"; r.TraceID = "t1" })
+	classifier := classifierRow(2, "t1", nil)
+	title := titleRow(1, "title-own-session", nil)
+
+	lines := foldRequestLines([]requestRowView{title, classifier, parent})
+	lines = attachTitleChildren(lines, resolverFor(map[int64]string{1: "real-session"}))
+
+	if len(lines) != 1 {
+		t.Fatalf("got %d top-level lines, want 1", len(lines))
+	}
+	if len(lines[0].Children) != 2 {
+		t.Fatalf("parent's children = %+v, want both the classifier and the title", lines[0].Children)
+	}
+}

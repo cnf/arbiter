@@ -385,6 +385,66 @@ func attachTraceChildren(lines []requestLineView) []requestLineView {
 	return out
 }
 
+// attachTitleChildren nests a request_kind="title" line under a line sharing
+// its resolved parent session, the same rendering pattern attachTraceChildren
+// uses for a classifier call (#8) — but it cannot reuse that function's
+// trace_id match: a title-gen request is its own top-level HTTP call with no
+// trace_id in common with the session it titles. The link instead comes from
+// resolveParent (store.Reader.ParentSessionForTitle), called once per title
+// line on the page.
+//
+// Only titles the page can actually place are nested: a resolved parent
+// session_key with no line on this page keeps the title line top-level,
+// exactly like attachTraceChildren's orphaned-classifier case — folding is a
+// summary of the list, not a filter on it, so an unplaceable title still
+// renders, just unnested.
+//
+// This shares the classifier nesting's known display quirk with streamed
+// runs (grouping/stream-collapsing) — tracked separately, not addressed
+// here; see PICKUP.md.
+func attachTitleChildren(lines []requestLineView, resolveParent func(requestID int64) (sessionKey string, ok bool)) []requestLineView {
+	bySession := make(map[string]int, len(lines)) // session_key -> line's own index in `lines`, non-title client lines only
+	for i, line := range lines {
+		if line.Head.Kind != "client" || line.Head.RequestKind == "title" {
+			continue
+		}
+		if line.Head.SessionKey == "" {
+			continue
+		}
+		if _, ok := bySession[line.Head.SessionKey]; !ok {
+			bySession[line.Head.SessionKey] = i
+		}
+	}
+
+	children := make(map[int][]requestLineView, len(lines))
+	origToOut := make(map[int]int, len(lines))
+	out := make([]requestLineView, 0, len(lines))
+	for i, line := range lines {
+		if line.Head.Kind != "client" || line.Head.RequestKind != "title" {
+			origToOut[i] = len(out)
+			out = append(out, line)
+			continue
+		}
+		sk, ok := resolveParent(line.Head.ID)
+		if ok && sk != "" {
+			if parent, ok := bySession[sk]; ok {
+				line.IsChild = true
+				children[parent] = append(children[parent], line)
+				continue
+			}
+		}
+		// No resolvable parent, or its session has no line on this page: keep
+		// it where it was.
+		origToOut[i] = len(out)
+		out = append(out, line)
+	}
+
+	for parent, kids := range children {
+		out[origToOut[parent]].Children = append(out[origToOut[parent]].Children, kids...)
+	}
+	return out
+}
+
 // allStreamed reports whether every row of a group is a streamed request, which
 // is what makes the group a candidate for collapsing.
 func allStreamed(rows []requestRowView) bool {
@@ -651,6 +711,16 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 	view.Flat = fv.Flat
 	if !fv.Flat {
 		view.Lines = foldRequestLines(view.Rows)
+		if h.reader != nil {
+			ctx := r.Context()
+			view.Lines = attachTitleChildren(view.Lines, func(id int64) (string, bool) {
+				p, ok, err := h.reader.ParentSessionForTitle(ctx, id)
+				if err != nil || !ok {
+					return "", false
+				}
+				return p.SessionKey, true
+			})
+		}
 		for _, line := range view.Lines {
 			if line.Run {
 				view.RunsOnPage++

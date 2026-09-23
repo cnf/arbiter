@@ -1402,6 +1402,39 @@ request. Declared first and `decisive: true`, a `kind:` signature also skips
 every model-backed classifier behind it, so an identified request pays for no
 classification call at all.
 
+**A title request is tied back to the session it named**, both in the store
+and in the admin UI (`/admin/ui/requests`), because on its own a title-gen row
+is an orphan — its own session key is derived from the conversation text and
+matches nothing else, so nothing links it to the conversation it titled without
+help. `Reader.ParentSessionForTitle` (`internal/store/discovery.go`) resolves
+the link in two tiers, tried in order:
+
+1. **Session-affinity header.** When `session_affinity.header` is configured
+   (see below) and the client sends it on both the title call and the real
+   turns — Hermes does this by design, calling it `session_affinity_header` on
+   its own side, and sends it on title-generation calls specifically — the
+   title request's own `session_key` *is* the parent's, an exact indexed
+   lookup.
+2. **Content-hash fallback**, tried only when the header match finds nothing:
+   joins on shared `role="user"` content-ref hashes against other requests,
+   excluding other title requests (so two title-gen retries of the same
+   opener never link to each other), and returns the best match by row count.
+   This tier needs `storage.capture_content: true` — there is nothing to hash
+   without it.
+
+The request list nests a resolved title line under its parent as a `Children`
+entry, the same rendering `attachTraceChildren` already uses to nest a
+classifier call under the request that spawned it (immediately above the
+parent row, since the page is newest-first and a title call is chronologically
+later than what it names). A title line that cannot be placed still renders —
+no request is ever hidden — with a tag explaining why: resolved but the parent
+session has no row on the current page, resolved-search genuinely found
+nothing, or (distinctly) the content-hash tier could not run at all because
+`capture_content` is off. The three read differently on purpose: with capture
+off, every title line would otherwise look identically "unmatched", which
+reads as the feature being broken rather than as an expected consequence of a
+storage setting.
+
 Every request's inbound headers are captured and shown on its detail page —
 `User-Agent` is what tells two otherwise-identical requests apart by client.
 Anything credential-shaped (`Authorization`, `Cookie`, any header with `token`,

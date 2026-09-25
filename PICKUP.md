@@ -74,6 +74,27 @@ work and all three feedback rounds **committed in one commit**; ticket
 #50/#52/#53/#54 before testing and closing. Branch has no upstream
 configured yet (`git push -u origin newui` needed on first push). Run
 `git log --oneline -1` and `gh issue list --state open` for the truth.
+New §32 added 2026-09-25e, branch `newui`, **now at `9faebe6`** — #53
+(session transcript) implemented and committed: server-rendered
+turn-by-turn page, 5 live bugs found and fixed via a headless-Chrome/
+CDP verification pass against the real prod DB (not just tests) — see
+§32 for the full bug list, including the CSS-comment-swallows-a-rule
+landmine. New §33 added 2026-09-25f — handoff refresh only, nothing
+new built, HEAD unchanged at `99bac9a`. New §34 added 2026-09-25g,
+branch `newui` — #50 (Discovery) implemented end-to-end
+(cross-session repeated-block ledger, seen/ignored state, drill-down),
+**nothing committed that session**. New §35 added 2026-09-26, branch
+`newui`, **now at `5c3b8c7`** — §34's Discovery work plus three
+same-thread follow-ups (in-memory TTL cache cutting the ledger query
+from ~14s to 5ms on reload; workspace mode now shows the full stored
+body untruncated, not the old 8KB-capped/200-char-preview version;
+`hide_ignored=1` toolbar toggle) **committed** as `c836c9b`, handoff as
+`5c3b8c7`. Progress comment posted on #50; **ticket still intentionally
+left open** — #50/#52 (shipped)/#53 (shipped)/#54/#55 close together
+after the user's own full-UI pass. #54 (Overview) is the only page in
+the batch left unported. Branch `newui` still has no upstream
+configured. Run `git log --oneline -1` and `gh issue list --state
+open` for the truth.
 
 ---
 
@@ -231,20 +252,38 @@ a fresh title request rather than a code change.
 
 ## 6. Open work, in priority order
 
-Run `gh issue list --state open` for the live list. As of `b8907e8`
-(2026-09-23e, §21), open: **#4, #8, #9, #14, #17, #18, #20, #21, #22,
+Run `gh issue list --state open` for the live list — this section is
+stale (last reconciled `b8907e8`, 2026-09-23e, §21, before #50-#55
+existed) and kept only for historical framing of the older items below.
+For the `newui` admin-UI-rebuild batch, trust §35 (and `git log`), not
+this table.
+
+**Admin UI rebuild batch (#45's successor issues #50/#52-#55), as of
+`5c3b8c7` (§35, 2026-09-26) — do not trust the table below for this
+batch, it predates all of it:**
+1. **#46 — foundation** (tokens, layout chrome, popover) — shipped, closed.
+2. **#47 — requests page** — shipped, closed.
+3. **#48 — session transcript (old markup)** — shipped, closed, later
+   superseded by #53's redesign.
+4. **#52 — Sessions page (lanes + detail panel)** — shipped (`77c37b5`),
+   **ticket open**, batched.
+5. **#53 — session transcript (redesign)** — shipped (`9faebe6`),
+   **ticket open**, batched.
+6. **#50 — Discovery (cross-session repeated blocks)** — shipped
+   (`c836c9b`), **ticket open**, batched.
+7. **#54 — Overview page** — design settled
+   (`design/overview-mockups/f3-overview-styled.html`), **not ported**
+   — the only remaining page in the batch.
+8. **#55 — CSS token reconciliation** — shipped, **ticket open**, batched.
+
+All of #50/#52/#53/#55 (shipped, not yet closed) wait on #54 landing
+before the user does one full-UI pass and closes the batch together —
+see §35. #46/#47/#48 already shipped and closed earlier in the batch.
+
+As of `b8907e8` (2026-09-23e, §21), open: **#4, #8, #9, #14, #17, #18, #20, #21, #22,
 #23, #24, #26, #36, #38, #40, #41, #44, #45, #47, #48, #49, #50**. Closed
 since §5/§10 were last written: **#27, #28, #31, #37, #39, #13, #43, #42,
 #5, #34, #11, #46** (see §11–§13, §20, §21).
-
-**Admin UI rebuild (#45), in flight — see §21 for full detail:**
-5 native GitHub sub-issues of #45, fixed build order (foundation must land
-before anything that reuses its tokens/popover):
-1. **#46 — foundation** (tokens, layout chrome, popover component) — **shipped, closed**, `b8907e8`.
-2. **#47 — requests page** (routing chain, kind chips, parent/child threading) — next up, not started.
-3. **#48 — session transcript** (rail layout, tool rendering, guardrail diff) — not started.
-4. **#49 — sessions index** (search-first, fixed-width columns) — not started, lowest priority of the five.
-5. **#50 — discovery** (dedupe by session, filter chips, UA clustering + visual pass) — not started, bundles backend work so it's deliberately last.
 
 **High priority, real gaps:**
 - **#4** — META umbrella for the visibility goal. **#5** and **#34** (its

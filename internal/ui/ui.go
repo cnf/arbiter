@@ -131,7 +131,17 @@ func versionOf(fsys fs.FS) string {
 }
 
 // pageFiles are the page templates, each rendered only inside its own set.
-var pageFiles = []string{"requests", "request", "sessions", "session", "overview", "discovery", "block", "error"}
+//
+// Greenfielded incrementally as of #55: every old page template was deleted
+// in the newui rebuild (design/REDESIGN.md, DESIGN.md) — the old admin UI's
+// HTML/CSS/JS was ripped out and is being rebuilt page by page, not ported
+// incrementally. "sessions" landed first (#52); "requests", "request",
+// "overview", "discovery", and "block" (RequestsHandler, RequestHandler,
+// OverviewHandler, DiscoveryHandler, BlockRequestsHandler) still hit h.exec's
+// "no template set named …" 500 until their own ticket (#50/#53/#54) adds a
+// replacement page here. This is expected — PICKUP.md carries the pointer so
+// the next session isn't surprised by it.
+var pageFiles = []string{"sessions"}
 
 // parseTemplates builds one template set per page, each from the layout, every
 // partial, and that one page. Go's html/template cannot redefine a block name
@@ -293,19 +303,31 @@ type viewBase struct {
 }
 
 // navItem is one entry in the header navigation.
+//
+// Stat/Unit is the "live" glanceable value shown beneath the label
+// (`OVERVIEW → $18/24h`, `SESSIONS → 3 active`, `DISCOVERY → 2 gaps`) — the
+// shell's settled design per DESIGN.md's "App chrome" section. It is the same
+// placeholder-but-intentional value the accepted mockups carry, not a live
+// query: see design/REDESIGN.md §8 item 5.
 type navItem struct {
-	Name string
-	Href string
+	Name   string
+	Href   string
+	Stat   string
+	Unit   string
+	ErrVal bool
 }
 
 // base builds the common view state for a page.
+//
+// Three nav items — Overview, Sessions, Discovery — matching the accepted
+// shell mockups (transcript-D-merged.html, f3-overview-styled.html). Sessions
+// already covers what used to be a separate Requests page (#52).
 func (h *Handler) base(active string) viewBase {
 	return viewBase{
 		Nav: []navItem{
-			{Name: "Overview", Href: "/admin/ui/overview"},
-			{Name: "Sessions", Href: "/admin/ui/sessions"},
-			{Name: "Requests", Href: "/admin/ui/requests"},
-			{Name: "Discovery", Href: "/admin/ui/content/repeated"},
+			{Name: "Overview", Href: "/admin/ui/overview", Stat: "$18", Unit: "/24h"},
+			{Name: "Sessions", Href: "/admin/ui/sessions", Stat: "3", Unit: "active"},
+			{Name: "Discovery", Href: "/admin/ui/content/repeated", Stat: "2", Unit: "gaps", ErrVal: true},
 		},
 		Active:        active,
 		AssetVersion:  h.assetVersion,

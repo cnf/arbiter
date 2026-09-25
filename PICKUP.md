@@ -2577,3 +2577,69 @@ user's to commit or discard when those tickets land.
    node-click interaction design fork (client-side panel vs.
    navigate-to-detail).
 4. Branch `newui` is unpushed; ask before pushing.
+
+
+---
+
+## 33. Session 2026-09-25f — handoff refresh only, nothing new built (branch `newui`, HEAD `99bac9a`)
+
+**Orient (run these, don't trust the numbers below):**
+```bash
+git status -sb          # newui, no upstream; untracked-only (design/#50/#54 exploration + throwaway cmd/ tools)
+git log --oneline -5    # 99bac9a is HEAD
+gh issue list --state open --limit 10   # needs devenv
+```
+
+**What happened:** no code changed this session — §32's #53 work was
+already committed (`9faebe6`, then PICKUP.md's own §32 addendum in
+`99bac9a`) before this session started. This entry exists to correct one
+thing §32 could mislead on and to re-verify state with live commands,
+per this skill's own rule against trusting an earlier turn's numbers.
+
+**Correction:** §27 and earlier turns treated #55 as closed. It is not —
+`gh issue view 55` shows `"state":"OPEN"`. Same batching rule as
+#50/#52/#53/#54: don't close it. (The `572443e` commit message uses
+"#55" in its subject line, which is why this drifted — a commit
+referencing a ticket is not the same as the ticket being closed.)
+
+**Verified, live, this session:**
+```
+$ devenv shell --no-tui -- go build ./...   # clean
+$ devenv shell --no-tui -- go vet ./...     # clean
+$ devenv shell --no-tui -- go test ./...    # 3 pre-existing failures, nothing new:
+    internal/config: TestShippedArbiterYAMLLoads, TestShippedTitlePatternsAreTheIntendedRegexes
+      (both "provider litellm: missing endpoint" — arbiter.yaml's shipped
+      sample config, unrelated to any UI work)
+    internal/ui: TestSeriesEndpointShape ("no x values" — Overview/#54's
+      series chart, not yet implemented; unrelated to #53)
+```
+All three were already documented as pre-existing in §31/§32 — re-run here
+to confirm #53's commits introduced nothing new, not to re-diagnose them.
+
+**Open work — do not trust the table in §6, it predates #55/#52/#53 all
+landing (dated `b8907e8`).** Run `gh issue list --state open` instead.
+As of this session: **#50, #51, #52, #53, #54, #55** are the design/newui
+threads still open (all batched except #51, which is an unrelated feature
+request); **#38, #40, #41, #44** are older unrelated bugs, still open.
+#50 and #54 have settled designs in `design/REDESIGN.md` (§9 and an
+earlier overview section respectively) but **nothing ported into
+`internal/ui/` for either yet** — confirmed via `git log`, not assumed.
+
+**Nothing new is in flight.** No uncommitted code, no partial work. The
+untracked files (`cmd/bigpreview/`, `cmd/realpreview/`, `cmd/previewserver/`,
+and the `design/mockups/`, `design/overview-mockups/`, `design/build_data.py`
+etc. exploration artifacts) are unchanged from §32 — same disposition:
+first two are throwaway dev tooling kept on disk by explicit user request,
+not committed; `cmd/previewserver/` is pre-existing/unrelated; the design
+artifacts are #50/#54's own working files, the user's to commit when those
+land.
+
+**Next steps, in order:**
+1. Do not close #50/#52/#53/#54/#55 — still batched, pending the user's
+   own full-UI test pass.
+2. #50 (Discovery) or #54 (Overview) are the two remaining unported pages
+   in the batch. Read `design/REDESIGN.md` §9 (Discovery, explicitly
+   parked — *"i don't know how much further we'll get with this without
+   actually using it"*, don't resume with more speculative polish) before
+   picking either up.
+3. Branch `newui` still has no upstream configured — ask before pushing.

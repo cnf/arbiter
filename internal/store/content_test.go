@@ -226,12 +226,12 @@ func TestClassifierRowsDoNotInflateRepeatedContent(t *testing.T) {
 	}
 
 	// The drill-down must not list the classifier row either.
-	rows, err := r.RequestsForContent(ctx, ContentHashHex(preamble.Hash()), 50)
+	rows, err := r.SessionsForContent(ctx, ContentHashHex(preamble.Hash()), 50)
 	if err != nil {
-		t.Fatalf("RequestsForContent: %v", err)
+		t.Fatalf("SessionsForContent: %v", err)
 	}
 	if len(rows) != 1 || rows[0].Kind != "client" {
-		t.Errorf("RequestsForContent = %+v, want exactly the one client row", rows)
+		t.Errorf("SessionsForContent = %+v, want exactly the one client row", rows)
 	}
 }
 

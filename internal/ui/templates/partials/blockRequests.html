@@ -1,0 +1,69 @@
+{{/* blockRequests.html — the Discovery drill-down's fragment ("block-requests"):
+every session that first sent one block, one row per session (not one row per
+raw request — see SessionsForContent's doc comment on why). Split out from
+block.html's own "content" block because a fragment response (an htmx
+navigation from the ledger) must render from the partials-only template set,
+which has no layout/page wrapper — see ui.go's parsePartials doc comment.
+block.html's "content" simply includes this same definition, so the two
+response shapes (full page, htmx fragment) never drift apart. */}}
+{{define "block-requests"}}
+<div class="lanes-col" style="padding: 1rem 1.6rem; overflow-y: auto;">
+  <div class="toolbar" style="padding: 0 0 0.8rem; border: none;">
+    <h1>Block {{.ShortHash}}</h1>
+    <div class="spacer"></div>
+    <span class="block-stats"><b>{{.Total}}</b> session{{if ne .Total 1}}s{{end}}</span>
+    <a class="open-link" href="/admin/ui/content/repeated">&larr; back to discovery</a>
+  </div>
+
+  {{if .Captured}}
+  <div class="block-body">
+    <div class="section-label">block text</div>
+    <div class="body-text">{{trunc .Block.Body}}{{if wasCut .Block.Body}}<span class="capped"> — truncated at {{blockPreviewBytes}} bytes</span>{{end}}</div>
+  </div>
+  {{else}}
+  <p class="empty">This hash is known but no body was captured for it — capture_content may
+    have been off when it was last seen.</p>
+  {{end}}
+
+  {{if .Sessionle}}<p class="capped">some requests in this window carry no session key.</p>{{end}}
+
+  {{if .Rows}}
+  <div class="table-wrap" id="discoveryTableWrap">
+    <table>
+      <thead>
+        <tr>
+          <th>session</th>
+          <th>route</th>
+          <th style="text-align:right">status</th>
+          <th style="text-align:right">latency</th>
+          <th style="text-align:right">when</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Rows}}
+        <tr>
+          <td><a href="/admin/ui/session?key={{.SessionKey}}">{{.ShortSession}}</a></td>
+          <td>{{index .RoutingChain 0}}</td>
+          <td class="num-cell" style="text-align:right"><span class="tag {{statusClass .StatusCode}}">{{.StatusCode}}</span></td>
+          <td class="num-cell" style="text-align:right">{{dur .LatencyMs}}</td>
+          <td class="time-cell" style="text-align:right">{{ago .Ts}}</td>
+          <td>
+            {{if .HasDiffLink}}
+            <button type="button" class="diff-link jump-link" hx-get="{{.GuardrailDiffURL}}"
+                    hx-target="next .diff-fragment" hx-swap="innerHTML"
+                    hx-on::after-request="this.nextElementSibling.hidden=false; this.hidden=true">view diff</button>
+            <div class="diff-fragment" hidden></div>
+            {{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <p class="empty">No sessions found for this block in the current window.</p>
+  {{end}}
+  {{if .Capped}}<p class="capped">showing the first {{.Limit}} sessions.</p>{{end}}
+</div>
+{{end}}

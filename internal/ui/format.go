@@ -45,6 +45,9 @@ var funcs = stdhtml.FuncMap{
 	// requests containing it. A func rather than an inline expression because a
 	// template must not be assembling a query string by hand.
 	"requestsForBlock": requestsForBlockURL,
+	// discoveryState builds the state-cycle POST url for one block — see
+	// discoveryStateURL's own comment for why it takes two explicit args.
+	"discoveryState": discoveryStateURL,
 	// blockPreviewBytes is the truncation cap as a number, so the block page can
 	// say what it cut at instead of naming a constant in prose that could drift.
 	"blockPreviewBytes": func() int { return blockPreviewBytes },

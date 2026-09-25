@@ -282,6 +282,16 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	// would need its own escaping rules for a value that is already opaque.
 	r.HandleFunc("/admin/ui/content/repeated", arbiterhttp.Gate(forwardAuthHeader, adminUI.DiscoveryHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/content/block", arbiterhttp.Gate(forwardAuthHeader, adminUI.BlockRequestsHandler)).Methods("GET")
+	// The workspace pane's on-demand full-body fetch (#50 follow-up):
+	// fragment-only, no full-page form, since the row's own htmx entry into
+	// workspace mode is its only caller.
+	r.HandleFunc("/admin/ui/content/block/body", arbiterhttp.Gate(forwardAuthHeader, adminUI.DiscoveryBlockBodyHandler)).Methods("GET")
+	// The state-cycle endpoint: the first POST under /admin/ui/ — every other
+	// route here is a read. Registered with its own Methods("POST") the same
+	// way /admin/reload is, so a fronting proxy's forward_auth gate can allow
+	// every GET under /admin/ui/ while still denying this one specifically, if
+	// it chooses to draw that line.
+	r.HandleFunc("/admin/ui/content/repeated/state", arbiterhttp.Gate(forwardAuthHeader, adminUI.DiscoverySetStateHandler)).Methods("POST")
 	// PathPrefix, not HandleFunc: gorilla/mux's HandleFunc matches the exact
 	// path, so a static route registered that way serves only "/static/" and
 	// 404s every asset under it — which is exactly what a first version did.

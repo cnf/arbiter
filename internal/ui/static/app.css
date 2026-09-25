@@ -896,3 +896,105 @@ footer.appfoot .spacer {
 .jump-hint b { color: var(--primary); font-family: var(--mono); }
 .jump-status { padding: 0 14px 10px; font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); }
 .jump-status.err { color: var(--err); }
+
+/* ---- Discovery page (#50): the ledger table, its state dot, and the
+ * workspace-mode detail pane. Structurally ported from
+ * design/mockups/discovery-B-ledger.html's .table-wrap/.detail-pane split,
+ * but reusing .toolbar/.lanes-col/.detail-col/.empty/.capped/.default-panel
+ * from the rest of the shell rather than the mockup's own duplicate
+ * definitions of the same ideas (see discovery.html's own comment). */
+#repeated-list { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.toolbar h1 { font-size: 13px; font-weight: 600; margin: 0; color: var(--text); white-space: nowrap; }
+#repeated-list .toolbar .stats { margin-left: auto; display: flex; gap: 14px; font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
+#repeated-list .toolbar .stats b { color: var(--text); font-weight: 600; }
+.block-stats { margin-left: auto; font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
+.block-stats b { color: var(--text); font-weight: 600; }
+
+#discoveryTableWrap { flex: 1; min-height: 0; overflow-y: auto; }
+#discoveryTableWrap table { width: 100%; border-collapse: collapse; }
+#discoveryTableWrap thead th {
+  position: sticky; top: 0; background: var(--panel); z-index: 1;
+  text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-faint); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--border);
+}
+.repeated-row { border-bottom: 1px solid var(--border-soft); cursor: pointer; }
+.repeated-row:hover { background: var(--panel-2); }
+.repeated-row.selected { background: var(--accent-dim); }
+.repeated-row td { padding: 7px 10px; font-size: 12px; vertical-align: middle; }
+.repeated-row .preview-cell {
+  font-family: var(--mono); font-size: 11px; color: var(--text-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 1px;
+}
+.repeated-row .num-cell { font-family: var(--mono); text-align: right; color: var(--text-dim); }
+.repeated-row .time-cell { font-family: var(--mono); font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+
+.row-inner { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.lbl-wrap { min-width: 0; line-height: 1.3; }
+.lbl-top { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 172px; }
+.lbl-sub { font-size: 10.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 172px; }
+
+/* state-dot mirrors the mockup's own three states exactly: unseen is the
+ * loud one (a pattern nobody has looked at yet), seen and ignored both fade
+ * — ignored more, since it is a permanent dismissal rather than a to-do
+ * crossed off. A row's own fade for ignored/seen keys off the dot's class
+ * via :has(), since the fragment response only ever replaces the button
+ * (see discoveryRow.html's own comment). */
+.state-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; cursor: pointer; border: none; padding: 0; }
+.state-dot.st-unseen { background: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent); }
+.state-dot.st-seen { background: var(--text-faint); opacity: 0.5; }
+.state-dot.st-ignored { background: var(--text-faint); opacity: 0.22; }
+.repeated-row:has(.state-dot.st-ignored) { opacity: 0.55; }
+
+/* ---- detail pane: default/selected/workspace states, ported from the
+ * mockup's .detail-pane but reusing .detail-col for the panel chrome
+ * itself. */
+#discoveryDetail .meta-row { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--text-faint); font-family: var(--mono); margin-bottom: 14px; }
+#discoveryDetail .meta-row b { color: var(--text-dim); font-weight: 600; }
+#discoveryDetail .section-label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint);
+  font-weight: 700; margin: 16px 0 6px; display: flex; align-items: center; gap: 10px;
+}
+#discoveryDetail .body-text {
+  font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); white-space: pre-wrap;
+  line-height: 1.55; background: var(--panel-3); border-radius: var(--radius-md); padding: 10px 12px;
+  max-height: 220px; overflow-y: auto;
+}
+/* .ws-full is workspace mode's full-body fragment (#50 follow-up): the
+ * inline pane's .body-text stays clamped to 220px (it is a preview beside a
+ * table row), but workspace mode exists precisely to give the text the rest
+ * of the screen, so this drops the clamp and lets #discoveryDetail.workspace
+ * .ws-scroll (flex:1, its own overflow-y:auto below) be the one scroller —
+ * mirrors the mockup's own .workspace-mode .body-text.ws-full rule. */
+#discoveryDetail .body-text.ws-full { max-height: none; font-size: 12.5px; line-height: 1.7; }
+#discoveryDetail .ws-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+#discoveryDetail .ws-toolbar .spacer { flex: 1 1 auto; }
+#discoveryDetail .ws-back {
+  all: unset; cursor: pointer; display: flex; align-items: center; gap: 5px;
+  font: 600 11px var(--sans); color: var(--text-faint); padding: 5px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+}
+#discoveryDetail .ws-back:hover { color: var(--text); border-color: var(--accent-strong); }
+#discoveryDetail .open-link { display: inline-block; margin-top: 10px; font-size: 12px; font-weight: 600; }
+
+/* workspace mode: the ledger narrows to a rail, the detail pane takes over
+ * the rest of .main — the mockup's grid-template-columns swap, reproduced
+ * as a class on .main itself so it works with the shared .detail-col
+ * markup instead of a mockup-only .body element. Only .lbl-wrap survives in
+ * the rail; the extra columns (preview/sess/reqs/last seen) hide, same as
+ * the mockup's .table-wrap.rail .col-extra rule. */
+.main.workspace-mode { display: grid; grid-template-columns: 240px 1fr; }
+.main.workspace-mode .lanes-col { min-width: 0; }
+#discoveryTableWrap.rail .col-extra { display: none; }
+#discoveryTableWrap.rail .lbl-top, #discoveryTableWrap.rail .lbl-sub { max-width: 168px; }
+#discoveryDetail.workspace { display: flex; flex-direction: column; min-height: 0; }
+#discoveryDetail.workspace .ws-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* ---- block drill-down page (/admin/ui/content/block): a plain request
+ * list plus an on-demand diff fragment per row, styled like requests.html's
+ * own table (no bespoke table rules needed there — reusing #discoveryTableWrap's
+ * generic table look keeps this page from inventing a fourth table style). */
+.block-body { margin-bottom: 18px; }
+.diff-link { font-size: 11px; font-weight: 600; }
+.diff-fragment { margin-top: 6px; }
+.diff-fragment .body-text { max-height: 260px; }
+.diff-fragment .diff-view { max-height: 260px; overflow-y: auto; font-family: var(--mono); font-size: 12px; border: 1px solid var(--border-soft); border-radius: 6px; padding: 6px 0; background: var(--panel); }

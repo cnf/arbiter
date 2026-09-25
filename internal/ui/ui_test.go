@@ -68,7 +68,9 @@ func serve(t *testing.T, h *Handler, method, target string, hx bool) *httptest.R
 	r.HandleFunc("/admin/ui/overview", h.OverviewHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/overview/series.json", h.SeriesHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/content/repeated", h.DiscoveryHandler).Methods("GET")
+	r.HandleFunc("/admin/ui/content/repeated/state", h.DiscoverySetStateHandler).Methods("POST")
 	r.HandleFunc("/admin/ui/content/block", h.BlockRequestsHandler).Methods("GET")
+	r.HandleFunc("/admin/ui/content/block/body", h.DiscoveryBlockBodyHandler).Methods("GET")
 	r.PathPrefix("/admin/ui/static/").HandlerFunc(h.StaticHandler).Methods("GET")
 
 	req := httptest.NewRequest(method, target, nil)

@@ -1,0 +1,33 @@
+{{/* discovery.html — the Discovery page (#50): which content blocks recur
+across different SESSIONS, most widespread first, so an operator can spot
+"this client always injects X" without reading requests one at a time.
+Ported in spirit (not markup) from design/mockups/discovery-B-ledger.html's
+ledger/detail-pane split — that mockup renders from a one-off Python
+clustering pass baked into inline JSON; this page renders the same layout
+server-side, per-row, from RepeatedContent's raw content-hash grouping (see
+DiscoveryHandler's own comment on why family/UA clustering is out of scope
+for v1).
+
+Two-column layout, same convention as sessions.html: the re-fetchable half
+("repeated-rows" — toolbar + table) on the left, a persistent detail pane on
+the right that starts empty and is filled by clicking a row (client-side,
+no second query — the row already carries everything the pane needs as
+data-* attributes, same pattern as laneDetail.js). Selecting a row does not
+navigate; opening "show all sessions" does, to /admin/ui/content/block. */}}
+{{define "content"}}
+<div class="main">
+  <div class="lanes-col">
+    {{template "repeated-rows" .}}
+  </div>
+  <div class="detail-col" id="discoveryDetail">
+    <div class="default-panel">
+      <h2>Discovery</h2>
+      <div class="hint">Click a pattern to inspect its sample text here. Click
+      the dot to cycle unseen → seen → ignored. Double-click, or press Enter
+      on a selected row, to open it full-screen. Escape returns to the list.
+      Seen patterns re-flag as unseen if they reappear after the mark; ignored
+      ones don't.</div>
+    </div>
+  </div>
+</div>
+{{end}}

@@ -8,17 +8,19 @@ import (
 	"time"
 )
 
-// TestRequestsForContentReturnsEachRequestOnce is the duplicate-row trap: a
+// TestSessionsForContentReturnsEachRequestOnce is the duplicate-row trap: a
 // client re-sends its conversation every turn, so one conversation holds many
 // *references* to the same hash. A join against content_refs would report that
 // conversation once per reference; the drill-down would then show a request
 // three times and a count that matched nothing on the block list.
-func TestRequestsForContentReturnsEachRequestOnce(t *testing.T) {
+func TestSessionsForContentReturnsEachRequestOnce(t *testing.T) {
 	w, r := captureFixture(t)
 	ctx := context.Background()
 
-	// One block, referenced twice inside the same request (two messages), plus
-	// a second request that also carries it.
+	// One block, referenced twice inside the same request (two messages) in
+	// session s1, plus a second request in a *different* session (s2) that
+	// also carries it — two distinct sessions, so both must survive the
+	// per-session dedupe.
 	const shared = "a block that appears in more than one message and request"
 	w.Record(Event{
 		TraceID: "t", SessionKey: "s1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
@@ -28,7 +30,7 @@ func TestRequestsForContentReturnsEachRequestOnce(t *testing.T) {
 		}},
 	})
 	w.Record(Event{
-		TraceID: "t", SessionKey: "s1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		TraceID: "t", SessionKey: "s2", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
 		Content: &CapturedContent{Request: []Block{
 			textBlock("system", 0, 0, shared),
 			textBlock("user", 1, 0, "a different question, long enough to matter"),
@@ -49,19 +51,67 @@ func TestRequestsForContentReturnsEachRequestOnce(t *testing.T) {
 		t.Fatalf("RepeatedContent reports %d requests, want 2", repeated[0].Requests)
 	}
 
-	rows, err := r.RequestsForContent(ctx, repeated[0].Hash, 50)
+	rows, err := r.SessionsForContent(ctx, repeated[0].Hash, 50)
 	if err != nil {
-		t.Fatalf("RequestsForContent: %v", err)
+		t.Fatalf("SessionsForContent: %v", err)
 	}
-	// Two requests, and the first one contains two references to the same hash.
-	// Anything other than 2 means the drill-down is counting references.
+	// Two sessions, and the first one contains two references to the same
+	// hash within its own request. Anything other than 2 means the drill-down
+	// is counting references instead of distinct sessions.
 	if len(rows) != 2 {
-		t.Errorf("drill-down returned %d rows, want 2 (one per request, not per reference)", len(rows))
+		t.Errorf("drill-down returned %d rows, want 2 (one per session, not per reference)", len(rows))
 	}
 	// And it must agree with the count the block list showed, since the page
-	// presents them as the same number.
+	// presents them as the same number here (one session == one request each).
 	if int64(len(rows)) != repeated[0].Requests {
-		t.Errorf("drill-down has %d requests but the block list says %d", len(rows), repeated[0].Requests)
+		t.Errorf("drill-down has %d rows but the block list says %d requests", len(rows), repeated[0].Requests)
+	}
+}
+
+// TestSessionsForContentCollapsesRepeatsWithinOneSession is the payoff this
+// method exists for: a client resends its whole history every turn, so a
+// widely-used system preamble can appear in dozens of requests within a
+// single conversation. The drill-down must show that conversation once — as
+// its first request — not once per turn, or "5 sessions" on the ledger would
+// expand into fifty near-identical rows on the drill-down.
+func TestSessionsForContentCollapsesRepeatsWithinOneSession(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	const shared = "a system preamble resent on every turn of this conversation"
+	for i := 0; i < 5; i++ {
+		w.Record(Event{
+			TraceID: "t", SessionKey: "s1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+			Content: &CapturedContent{Request: []Block{
+				textBlock("system", 0, 0, shared),
+				textBlock("user", 1, 0, "turn-specific question number "+string(rune('a'+i))+", long enough to matter here"),
+			}},
+		})
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	repeated, err := r.RepeatedContent(ctx, WindowFrom(time.Hour), 2, 0, 50)
+	if err != nil {
+		t.Fatalf("RepeatedContent: %v", err)
+	}
+	if len(repeated) != 1 {
+		t.Fatalf("repeated = %+v, want the one shared block", repeated)
+	}
+	if repeated[0].Requests != 5 {
+		t.Fatalf("RepeatedContent reports %d requests, want 5", repeated[0].Requests)
+	}
+	if repeated[0].Sessions != 1 {
+		t.Fatalf("RepeatedContent reports %d sessions, want 1", repeated[0].Sessions)
+	}
+
+	rows, err := r.SessionsForContent(ctx, repeated[0].Hash, 50)
+	if err != nil {
+		t.Fatalf("SessionsForContent: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("drill-down returned %d rows, want 1 (one session, collapsed)", len(rows))
 	}
 }
 
@@ -80,15 +130,15 @@ func TestRepeatedContentRejectsHashesThatAreNotHex(t *testing.T) {
 		strings.Repeat("ab", 33), // one byte long
 		strings.ToUpper(strings.Repeat("ab", 32))[:3], // truncated
 	} {
-		if _, err := r.RequestsForContent(ctx, bad, 10); err == nil {
-			t.Errorf("RequestsForContent(%q) succeeded; a malformed hash must be refused, not silently match nothing", bad)
+		if _, err := r.SessionsForContent(ctx, bad, 10); err == nil {
+			t.Errorf("SessionsForContent(%q) succeeded; a malformed hash must be refused, not silently match nothing", bad)
 		}
 	}
 
 	// The valid form must work, so the guard is not simply refusing everything.
 	valid := strings.Repeat("ab", 32)
-	if _, err := r.RequestsForContent(ctx, valid, 10); err != nil {
-		t.Errorf("RequestsForContent with a well-formed hash: %v", err)
+	if _, err := r.SessionsForContent(ctx, valid, 10); err != nil {
+		t.Errorf("SessionsForContent with a well-formed hash: %v", err)
 	}
 }
 
@@ -236,14 +286,14 @@ func TestContentByHashReturnsTheStoredBodyAndDistinguishesNotFound(t *testing.T)
 	}
 }
 
-// TestRequestsForContentExcludesRejections is now moot: no live write path
+// TestSessionsForContentExcludesRejections is now moot: no live write path
 // ever produces owner_kind='rejected' rows (#5 — see schema.sql's comment on
 // content_refs). Removed along with RecordRejected/rejectionID.
 
 // idFor finds the id of the single request matching a trace_id, for tests
 // that need to name a specific row to query against — ListRequests doesn't
 // expose a trace_id filter, so this reads the id back the same way
-// RequestsForContent tests already do (rows[N].ID), keyed on TraceID to make
+// SessionsForContent tests already do (rows[N].ID), keyed on TraceID to make
 // each test's intent readable instead of relying on insertion order.
 func idFor(t *testing.T, r *Reader, traceID string) int64 {
 	t.Helper()
@@ -406,5 +456,227 @@ func TestParentSessionForTitleNoMatchIsNotAnError(t *testing.T) {
 	}
 	if ok {
 		t.Fatalf("ok = true (%+v), want no match", got)
+	}
+}
+
+// TestRepeatedContentExcludesGuardrailedAndResponseDirections is the direction
+// filter's reason to exist: a guardrail rewrite of a block, or a model's own
+// reply, must not count as a repeated *client-sent* block. Without the filter
+// a block a rule already strips (request_guardrailed) or an assistant reply
+// (response) would inflate — or worse, masquerade as — a pattern still worth
+// discovering.
+func TestRepeatedContentExcludesGuardrailedAndResponseDirections(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	preamble := textBlock("system", 0, 0, "a preamble only ever seen post-guardrail, never as sent")
+	reply := textBlock("assistant", 2, 0, "an assistant reply repeated verbatim across sessions somehow")
+
+	for i, session := range []string{"session-a", "session-b", "session-c"} {
+		w.Record(Event{
+			TraceID: "t", SessionKey: session, Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+			Content: &CapturedContent{
+				Request:            []Block{textBlock("user", 1, 0, "distinct user text "+string(rune('a'+i))+" with enough characters")},
+				RequestGuardrailed: []Block{preamble},
+				Response:           []Block{reply},
+			},
+		})
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	repeated, err := r.RepeatedContent(ctx, WindowFrom(time.Hour), 2, 0, 50)
+	if err != nil {
+		t.Fatalf("RepeatedContent: %v", err)
+	}
+	if len(repeated) != 0 {
+		t.Errorf("repeated = %+v, want none — only request_guardrailed/response blocks were repeated, no client 'request' direction block was", repeated)
+	}
+}
+
+// TestRepeatedContentSortsBySessionsNotRequests pins the settled sort: a block
+// resent many times in one long conversation must rank below one seen fewer
+// times but in more distinct sessions — session count is the finding, request
+// count only measures conversation length.
+func TestRepeatedContentSortsBySessionsNotRequests(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	longConvoBlock := textBlock("system", 0, 0, "resent many times within one very long single conversation")
+	widespreadBlock := textBlock("system", 0, 0, "seen only twice per session but across three separate sessions right")
+
+	// One long session: five requests, all resending longConvoBlock (never
+	// widespreadBlock) — high request count, session count of 1.
+	for i := 0; i < 5; i++ {
+		w.Record(Event{
+			TraceID: "t", SessionKey: "long-session", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+			Content: &CapturedContent{Request: []Block{
+				longConvoBlock,
+				textBlock("user", 1, i, "turn "+string(rune('a'+i))+" of the long conversation here"),
+			}},
+		})
+	}
+	// Three separate sessions, each sending widespreadBlock twice — lower
+	// request count (6) than longConvoBlock (5)... actually let's make it
+	// unambiguous: fewer total requests than longConvoBlock, more sessions.
+	for i, session := range []string{"s1", "s2", "s3"} {
+		w.Record(Event{
+			TraceID: "t", SessionKey: session, Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+			Content: &CapturedContent{Request: []Block{
+				widespreadBlock,
+				textBlock("user", 1, 0, "opening question "+string(rune('a'+i))+" with enough text"),
+			}},
+		})
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	repeated, err := r.RepeatedContent(ctx, WindowFrom(time.Hour), 2, 0, 50)
+	if err != nil {
+		t.Fatalf("RepeatedContent: %v", err)
+	}
+	if len(repeated) != 2 {
+		t.Fatalf("got %d blocks, want 2: %+v", len(repeated), repeated)
+	}
+	// longConvoBlock: 5 requests / 1 session. widespreadBlock: 3 requests / 3
+	// sessions. Sessions-first order must put widespreadBlock first despite
+	// its lower request count.
+	if repeated[0].Sessions < repeated[1].Sessions {
+		t.Errorf("order = %+v, want the higher-session block first regardless of request count", repeated)
+	}
+	if repeated[0].Requests > repeated[1].Requests && repeated[0].Sessions < repeated[1].Sessions {
+		t.Errorf("sort appears to favor requests over sessions: %+v", repeated)
+	}
+}
+
+// TestDiscoveryStateRoundTripsAndDefaultsToAbsent is the seen/ignored
+// contract: no row means unseen, a set mark round-trips through
+// DiscoveryStates, and clearing removes it again.
+func TestDiscoveryStateRoundTripsAndDefaultsToAbsent(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	block := textBlock("system", 0, 0, "a block worth marking seen or ignored in the ledger")
+	for _, s := range []string{"s1", "s2"} {
+		w.Record(Event{
+			TraceID: "t", SessionKey: s, Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+			Content: &CapturedContent{Request: []Block{block}},
+		})
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	repeated, err := r.RepeatedContent(ctx, WindowFrom(time.Hour), 2, 0, 50)
+	if err != nil || len(repeated) != 1 {
+		t.Fatalf("RepeatedContent: %v (%d blocks)", err, len(repeated))
+	}
+	hash := repeated[0].Hash
+
+	// Unmarked: absent from the map.
+	states, err := r.DiscoveryStates(ctx, []string{hash})
+	if err != nil {
+		t.Fatalf("DiscoveryStates: %v", err)
+	}
+	if _, ok := states[hash]; ok {
+		t.Errorf("unmarked hash present in states map: %+v", states)
+	}
+
+	// Mark seen.
+	if err := r.SetDiscoveryState(ctx, hash, DiscoverySeen, repeated[0].LastSeen); err != nil {
+		t.Fatalf("SetDiscoveryState: %v", err)
+	}
+	states, err = r.DiscoveryStates(ctx, []string{hash})
+	if err != nil {
+		t.Fatalf("DiscoveryStates after mark: %v", err)
+	}
+	if got := states[hash]; got.State != DiscoverySeen || got.MarkedAtLastSeen != repeated[0].LastSeen {
+		t.Errorf("state after mark = %+v, want seen at %q", got, repeated[0].LastSeen)
+	}
+
+	// Re-mark ignored (upsert, not a second row).
+	if err := r.SetDiscoveryState(ctx, hash, DiscoveryIgnored, repeated[0].LastSeen); err != nil {
+		t.Fatalf("SetDiscoveryState (ignored): %v", err)
+	}
+	states, err = r.DiscoveryStates(ctx, []string{hash})
+	if err != nil {
+		t.Fatalf("DiscoveryStates after re-mark: %v", err)
+	}
+	if got := states[hash]; got.State != DiscoveryIgnored {
+		t.Errorf("state after re-mark = %+v, want ignored", got)
+	}
+
+	// Clear: back to absent.
+	if err := r.ClearDiscoveryState(ctx, hash); err != nil {
+		t.Fatalf("ClearDiscoveryState: %v", err)
+	}
+	states, err = r.DiscoveryStates(ctx, []string{hash})
+	if err != nil {
+		t.Fatalf("DiscoveryStates after clear: %v", err)
+	}
+	if _, ok := states[hash]; ok {
+		t.Errorf("hash still present after clear: %+v", states)
+	}
+
+	// A bad state value is refused.
+	if err := r.SetDiscoveryState(ctx, hash, "unseen", ""); !errors.Is(err, ErrBadDiscoveryState) {
+		t.Errorf("SetDiscoveryState with state=unseen: err = %v, want ErrBadDiscoveryState", err)
+	}
+}
+
+// TestPositionsForContentLinksEachRequestToItsBlockCoordinates is the block
+// drill-down's diff-link contract: for a hash and a set of request ids, each
+// id must resolve to the (msg_index, position) where that request actually
+// carries the block, so a per-row "view diff" link can call GuardrailDiff
+// with coordinates that exist in that specific request.
+func TestPositionsForContentLinksEachRequestToItsBlockCoordinates(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	block := textBlock("system", 0, 0, "a preamble block placed at message 0 position 0 always")
+	// Same hash, different (msg_index,position) in a second request — proves
+	// the mapping is per-request, not a single shared guess.
+	w.Record(Event{
+		TraceID: "t1", SessionKey: "s1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: []Block{block}},
+	})
+	w.Record(Event{
+		TraceID: "t2", SessionKey: "s2", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: []Block{
+			textBlock("user", 0, 0, "an unrelated leading block pushing position"),
+			{Kind: "text", Body: block.Body, Role: "system", MsgIndex: 1, Position: 0},
+		}},
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	repeated, err := r.RepeatedContent(ctx, WindowFrom(time.Hour), 2, 0, 50)
+	if err != nil || len(repeated) != 1 {
+		t.Fatalf("RepeatedContent: %v (%d blocks)", err, len(repeated))
+	}
+	hash := repeated[0].Hash
+
+	rows, err := r.SessionsForContent(ctx, hash, 50)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("SessionsForContent: %v (%d rows)", err, len(rows))
+	}
+	ids := []int64{rows[0].ID, rows[1].ID}
+
+	positions, err := r.PositionsForContent(ctx, hash, ids)
+	if err != nil {
+		t.Fatalf("PositionsForContent: %v", err)
+	}
+	if len(positions) != 2 {
+		t.Fatalf("got %d positions, want one per request: %+v", len(positions), positions)
+	}
+	id1, id2 := idFor(t, r, "t1"), idFor(t, r, "t2")
+	if positions[id1].MsgIndex != 0 || positions[id1].Position != 0 {
+		t.Errorf("t1 position = %+v, want (0,0)", positions[id1])
+	}
+	if positions[id2].MsgIndex != 1 || positions[id2].Position != 0 {
+		t.Errorf("t2 position = %+v, want (1,0)", positions[id2])
 	}
 }

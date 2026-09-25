@@ -78,6 +78,11 @@ type Handler struct {
 	// so this only changes how a *miss* is explained, never whether a hit is
 	// shown.
 	captureContent atomic.Bool
+
+	// discoveryCache holds the Discovery ledger's expensive query result
+	// per parameter combination — see discovery.go's discoveryCache doc
+	// comment for why a TTL cache is the right shape here.
+	discoveryCache *discoveryCache
 }
 
 // New builds the UI around an already-open Reader. A nil reader is the
@@ -88,12 +93,13 @@ func New(reader *store.Reader, l logging.Logger) *Handler {
 		panic("ui: embedded static tree: " + err.Error())
 	}
 	return &Handler{
-		reader:       reader,
-		logger:       l,
-		pages:        parseTemplates(),
-		fragments:    parsePartials(),
-		assetsFS:     sub,
-		assetVersion: versionOf(assets),
+		reader:         reader,
+		logger:         l,
+		pages:          parseTemplates(),
+		fragments:      parsePartials(),
+		assetsFS:       sub,
+		assetVersion:   versionOf(assets),
+		discoveryCache: newDiscoveryCache(),
 	}
 }
 
@@ -138,12 +144,12 @@ func versionOf(fsys fs.FS) string {
 // in the newui rebuild (design/REDESIGN.md, DESIGN.md) — the old admin UI's
 // HTML/CSS/JS was ripped out and is being rebuilt page by page, not ported
 // incrementally. "sessions" landed first (#52); "session" (the transcript,
-// #53) next; "requests", "request", "overview", "discovery", and "block"
-// (RequestsHandler, RequestHandler, OverviewHandler, DiscoveryHandler,
-// BlockRequestsHandler) still hit h.exec's "no template set named …" 500 until
-// their own ticket (#50/#54) adds a replacement page here. This is expected —
-// PICKUP.md carries the pointer so the next session isn't surprised by it.
-var pageFiles = []string{"sessions", "session"}
+// #53) next; "discovery"/"block" (DiscoveryHandler, BlockRequestsHandler)
+// landed in #50. "requests", "request", "overview" still hit h.exec's "no
+// template set named …" 500 until their own ticket (#54) adds a replacement
+// page here. This is expected — PICKUP.md carries the pointer so the next
+// session isn't surprised by it.
+var pageFiles = []string{"sessions", "session", "discovery", "block"}
 
 // parseTemplates builds one template set per page, each from the layout, every
 // partial, and that one page. Go's html/template cannot redefine a block name
@@ -345,7 +351,7 @@ func (h *Handler) base(ctx context.Context, active string) viewBase {
 		Nav: []navItem{
 			{Name: "Overview", Href: "/admin/ui/overview", Stat: "$18", Unit: "/24h"},
 			{Name: "Sessions", Href: "/admin/ui/sessions", Stat: sessionsStat, Unit: "active"},
-			{Name: "Discovery", Href: "/admin/ui/content/repeated", Stat: "2", Unit: "gaps", ErrVal: true},
+			{Name: "Discovery", Href: "/admin/ui/content/repeated", Stat: "", Unit: "", ErrVal: true},
 		},
 		Active:        active,
 		AssetVersion:  h.assetVersion,

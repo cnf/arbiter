@@ -960,23 +960,48 @@ func (r *Reader) RepeatedContent(ctx context.Context, w Window, minRequests, min
 	// Sessions are counted with COUNT(DISTINCT) because session_key is
 	// nullable: rows with no session key collapse into one group rather than
 	// inflating the count, which is the honest reading of "distinct sessions".
+	//
+	// direction = 'request' restricts this to what the client actually sent,
+	// pre-guardrail. request_guardrailed (the post-rewrite text a guardrail
+	// rule already produced) and response (the model's own reply) are
+	// excluded: discovery exists to find new patterns worth writing a rule
+	// against, and mixing in a rule's own output would silently double-count
+	// a pattern that already has one (or misreport its reach) instead of
+	// showing what the client is sending.
+	//
+	// Ordered by session count alone: how many requests share a block only
+	// measures how long one conversation ran (a resent block appears once per
+	// owner_id it's referenced from), which is not itself a finding — see
+	// RepeatedContent's doc comment above.
+	// The content join is deliberately pulled outside the aggregation. If
+	// LEFT JOIN content sits in the FROM clause before GROUP BY, SQLite
+	// dereferences every matching content row (millions of content_refs rows
+	// in a real deployment) before the HAVING/LIMIT gets a chance to discard
+	// almost all of them. Measured against a 1.1GB production database
+	// (~4M direction='request' refs): with the join inlined the query took
+	// ~108s; aggregating first and joining content only for the ~50
+	// surviving rows took ~6s. Same result set, ~17x faster.
 	const q = `
-SELECT cr.hash,
-       MIN(cr.block_type),
-       COALESCE(MIN(cr.role), ''),
+SELECT h.hash, h.block_type, h.role,
        COALESCE(SUBSTR(c.body, 1, 200), ''),
-       COUNT(DISTINCT cr.owner_id) AS requests,
-       COUNT(DISTINCT r.session_key) AS sessions,
-       MIN(r.ts), MAX(r.ts)
-FROM content_refs cr
-JOIN requests r ON r.id = cr.owner_id AND cr.owner_kind = 'request'
-LEFT JOIN content c ON c.hash = cr.hash
-WHERE r.ts >= ? AND r.kind = 'client'
-GROUP BY cr.hash
-HAVING COUNT(DISTINCT cr.owner_id) >= ?
-   AND COUNT(DISTINCT r.session_key) >= ?
-ORDER BY requests DESC, sessions DESC
-LIMIT ?`
+       h.requests, h.sessions, h.first_ts, h.last_ts
+FROM (
+    SELECT cr.hash AS hash,
+           MIN(cr.block_type) AS block_type,
+           COALESCE(MIN(cr.role), '') AS role,
+           COUNT(DISTINCT cr.owner_id) AS requests,
+           COUNT(DISTINCT r.session_key) AS sessions,
+           MIN(r.ts) AS first_ts, MAX(r.ts) AS last_ts
+    FROM content_refs cr
+    JOIN requests r ON r.id = cr.owner_id AND cr.owner_kind = 'request'
+    WHERE r.ts >= ? AND r.kind = 'client' AND cr.direction = 'request'
+    GROUP BY cr.hash
+    HAVING COUNT(DISTINCT cr.owner_id) >= ?
+       AND COUNT(DISTINCT r.session_key) >= ?
+    ORDER BY sessions DESC
+    LIMIT ?
+) h
+LEFT JOIN content c ON c.hash = h.hash`
 
 	rows, err := r.db.QueryContext(ctx, q, w.Since, minRequests, minSessions, limit)
 	if err != nil {

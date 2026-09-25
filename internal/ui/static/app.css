@@ -370,7 +370,13 @@ footer.appfoot .spacer {
  * (format.go) rather than inventing new ones, so a node's ring color is
  * driven by the same function the flat requests page already uses. */
 
-.main { flex: 1; display: flex; overflow: hidden; }
+/* .main is a flex child of .app's column flex; its default min-height is its
+ * content's natural height (the same flex trap documented below for
+ * .list-pane/.focus-pane), so a tall transcript grows .main instead of
+ * letting .list-pane's own overflow-y:auto engage — the whole page scrolls
+ * and the list pane never does. min-height: 0 lets .main actually shrink to
+ * its flex-basis so descendants' own overflow rules take over. */
+.main { flex: 1; display: flex; overflow: hidden; min-height: 0; }
 
 .lanes-col { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
@@ -539,11 +545,354 @@ footer.appfoot .spacer {
 .capped { color: var(--text-faint); padding: 0 1.6rem 0.6rem; margin: 0; font-size: 11.5px; }
 
 /* ---------------------------------------------------------------------- */
-/* Nothing below this line yet: every remaining page-specific rule
- * (transcript inspector, Overview pivot/flow, Discovery ledger, request/
- * session/block detail) is deleted along with its old template and lands
- * fresh, per page, in #53/#54/#50. Until those land, any page other than
- * the shell itself and Sessions renders unstyled — expected, not a
- * regression: see PICKUP.md for the note that Go handlers referencing the
- * deleted templates will fail at render time until their own ticket ports
- * a replacement. */
+/* Session transcript (#53): turn list + persistent inspector. Ported from
+ * design/mockups/transcript-D-merged.html, which is this page's look-and-feel
+ * spec (values and grid shapes, not its client-side JSON-fetch mechanism —
+ * content here is server-rendered). Genuinely shared controls reuse what #55
+ * already defined (.toolbar's base rule, .empty, the modal .box/.box-head
+ * troika, statusClass's s-* / dot ring convention for a turn's own status).
+ * Everything the mockup defines that is specific to this page — the list
+ * row grid, the child-row grid, meta-grid's wrapping chip layout, the
+ * classifier-verdict block, the clamp-with-fade treatment on captured
+ * bodies — is taken at the mockup's own values, not re-derived, so this page
+ * matches transcript-D-merged rather than approximating it through
+ * unrelated components. Colors are the shared token set throughout (the
+ * mockup's --purple/--user/--tool/etc. are byte-identical to this file's),
+ * so a classifier call reads as the same purple here as in the Sessions lane
+ * view — never the mockup's literal hex. */
+
+.transcript { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+/* Toolbar: reuses .toolbar's base rule (height/padding/border come from
+ * there); only the content specific to this page is added. */
+.transcript .toolbar .crumb { color: var(--text-faint); font-size: 12px; white-space: nowrap; }
+.transcript .toolbar .crumb a { color: var(--text-dim); }
+.transcript .toolbar .stats {
+  margin-left: auto; display: flex; gap: 14px; font-size: 11.5px; color: var(--text-faint);
+  white-space: nowrap; font-family: var(--mono);
+}
+.transcript .toolbar .stats b { color: var(--text); font-weight: 600; }
+.transcript .toolbar .stats .err-count b { color: var(--err); }
+
+.preamble-btn {
+  background: transparent; border: 1px dashed var(--border); border-radius: var(--radius-md);
+  padding: 4px 10px; font-family: var(--mono); font-size: 10.5px; color: var(--text-faint);
+  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+}
+.preamble-btn:hover { color: var(--text-dim); border-color: var(--text-faint); }
+.preamble-btn:disabled { opacity: 0.45; cursor: default; }
+.preamble-btn .touched-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--warn); display: none;
+}
+.preamble-btn.touched .touched-dot { display: inline-block; }
+
+/* jump-trigger is the mockup's one deliberately loud control on this page —
+ * solid --primary, the same treatment the mockup gives it. Marked for your
+ * pass: I kept it exactly as designed rather than softening it to an
+ * outline button (my previous version did, silently). */
+.jump-trigger {
+  background: var(--primary); border: 1px solid var(--primary); color: var(--on-primary);
+  border-radius: var(--radius-md); padding: 4px 10px; font-size: 11px; font-weight: 600;
+  font-family: var(--sans); cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+}
+.jump-trigger:hover { filter: brightness(1.08); }
+.jump-trigger kbd {
+  background: rgba(20, 22, 26, 0.25); border-radius: 3px; padding: 0 5px;
+  font-family: var(--mono); font-size: 10px;
+}
+
+/* ---- master-detail: scrollable turn list beside a persistent inspector.
+ * .list-pane/.focus-pane are grid items; a grid item's default minimum size
+ * is its own content's height (not 0), so once the list's content is taller
+ * than the viewport the item refuses to shrink and grows the page instead of
+ * clipping — overflow-y: auto never gets a chance to engage. min-height: 0
+ * overrides that default. This is a latent bug in the mockup's own CSS too
+ * (same omission there); it only surfaces with real data long enough to
+ * overflow, which the mockup's static content never was. */
+.transcript .body { display: grid; grid-template-columns: 420px 1fr; flex: 1; min-height: 0; }
+.list-pane { border-right: 1px solid var(--border-soft); overflow-y: auto; background: var(--bg); min-height: 0; }
+.list-toolbar {
+  position: sticky; top: 0; z-index: 10; background: var(--bg);
+  border-bottom: 1px solid var(--border-soft); padding: 8px 10px; display: flex; gap: 6px; align-items: center;
+}
+.list-toolbar input {
+  width: 100%; background: var(--panel); border: 1px solid var(--border); color: var(--text);
+  border-radius: 5px; padding: 5px 8px; font-family: var(--mono); font-size: 11.5px;
+}
+.list-toolbar input::placeholder { color: var(--text-faint); }
+#list { min-height: 0; }
+
+/* ---- one turn. Two of .row's four grid tracks — .side and (in .child-row)
+ * the summary column — must be a fixed width, not auto/1fr: each .row is its
+ * own grid container (one per entry, not one shared table), so an `auto`
+ * track sizes to that row's own content. With .side auto-sized, a shorter
+ * cost/latency string ("$0.03 800ms") pulls the boundary in from a longer
+ * one ("$0.0412 4.2s") on the very next row — the "right side jumps" bug.
+ * The mockup's own layout has the same four-track grid; pinning .side's
+ * width here is what makes independent per-row grids line up as a column. */
+.entry { border-bottom: 1px solid var(--border-soft); }
+.entry .row {
+  display: grid; grid-template-columns: 34px 8px 1fr 92px;
+  gap: 8px; align-items: center; padding: 7px 10px; cursor: pointer;
+  font-family: var(--mono); font-size: 11.5px;
+}
+.entry .row:hover { background: var(--panel); }
+.entry .row.selected { background: var(--panel-2); box-shadow: inset 2px 0 0 0 var(--accent); }
+.entry .row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.entry .row .seq { color: var(--text-faint); text-align: right; }
+/* .dot's own status colors are a fill here (mockup: ok/err/user), distinct
+ * from the outlined-ring convention statusClass's s-* classes use elsewhere
+ * — the two read differently on purpose: a swimlane node is a status ring
+ * around empty space, a list row's dot is a small solid status light. */
+.entry .row .dot { width: 7px; height: 7px; border-radius: 50%; }
+.entry .row .dot.ok { background: var(--ok); }
+.entry .row .dot.err { background: var(--err); }
+.entry .row .dot.user { background: var(--user); }
+/* Deliberately stacked (not the mockup's cascade-collision version — see
+ * REDESIGN discussion): the mockup's own page-level `.main` sets
+ * flex-direction: column and leaks it into `.row .main` by class-name
+ * accident, but the *visual result* it produces — preview / badge /
+ * summary each on their own line, giving the list room to breathe — is
+ * what was approved. Reproduced here intentionally and scoped so it can't
+ * leak into the unrelated page-level `.main` layout container. */
+.entry .row .main {
+  color: var(--text-dim); display: flex; flex-direction: column; align-items: flex-start;
+  gap: 2px; min-width: 0; padding: 2px 0;
+}
+.entry .row .main .u-preview,
+.entry .row .main .summary {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+.entry .row .main .u-preview { color: var(--user-text); }
+.entry .row .main .badge { color: var(--text-faint); font-size: 10.5px; }
+.entry .row .side { display: flex; gap: 8px; justify-content: flex-end; color: var(--text-faint); font-size: 10.5px; align-self: center; }
+.entry .row.error-row .main .summary { color: var(--err); }
+.entry .row.error-row .dot { background: var(--err); }
+
+/* internal calls a turn spawned (classifier/title/subagent today), indented
+ * under their parent — one row each, own selectable inspector. */
+.entry .children { margin-left: 34px; border-left: 1px dashed var(--border); }
+.entry .child-row {
+  display: grid; grid-template-columns: 14px 1fr 70px;
+  gap: 8px; align-items: center; padding: 5px 10px 5px 12px; cursor: pointer;
+  font-family: var(--mono); font-size: 11px; color: var(--text-faint);
+}
+.entry .child-row:hover { background: var(--panel); }
+.entry .child-row.selected { background: var(--panel-2); box-shadow: inset 2px 0 0 0 var(--purple); }
+.entry .child-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.entry .child-row .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--purple); }
+.entry .child-row .badge { color: var(--purple); flex: none; }
+.entry .child-row .summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entry .child-row .side { text-align: right; }
+
+.more-row { padding: 12px 1rem; text-align: center; }
+.more-btn {
+  font: 12px var(--sans); font-weight: 600; padding: 7px 14px; cursor: pointer;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+  background: var(--panel); color: var(--accent);
+}
+.more-btn:hover { border-color: var(--accent-strong); }
+.more-btn .count { color: var(--text-faint); font-weight: 400; }
+.htmx-indicator { color: var(--text-faint); font-size: 11.5px; margin-left: 6px; }
+.list-end { color: var(--text-faint); font-size: 11px; padding: 10px 1rem 20px; margin: 0; text-align: center; }
+
+/* ---- the inspector. No background here — it inherits the page's --bg, so
+ * every inner block (.meta-grid/.narration/.call-block, all --panel) reads
+ * as a distinct raised surface against it. Setting --panel here (an earlier
+ * mistake) made every block the same color as its own container — the "one
+ * slab" bug. */
+.focus-pane { overflow-y: auto; padding: 20px 26px 60px; min-height: 0; }
+.focus-pane .empty-state {
+  color: var(--text-faint); font-family: var(--mono); font-size: 12px; padding: 40px 0; text-align: center;
+}
+.inspector { display: block; }
+/* #inspector-src is the hidden shelf the pane's markup is moved out of (see
+ * transcript.js); it must take no layout space at all. */
+.inspector-src { display: none; }
+
+.f-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+.f-head h2 { margin: 0; font-size: 15px; font-family: var(--mono); color: var(--text); }
+.f-head .chip {
+  font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 4px;
+  border: 1px solid var(--border); color: var(--text-dim);
+}
+.f-head .chip.err { border-color: var(--err); color: var(--err); }
+.f-head .chip.warn { border-color: var(--warn); color: var(--warn); }
+.f-sub { color: var(--text-faint); font-size: 11.5px; font-family: var(--mono); margin-bottom: 16px; }
+.f-sub .mono { color: var(--text-dim); }
+
+.f-section { margin-bottom: 18px; }
+.f-section .label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-faint); margin-bottom: 6px; font-family: var(--sans); font-weight: 600;
+}
+.f-note { font-size: 12px; color: var(--text-faint); }
+
+.meta-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px 18px; background: var(--panel); border: 1px solid var(--border-soft); border-radius: 6px;
+  padding: 12px 14px;
+}
+.meta-grid .kv { display: flex; flex-direction: column; gap: 2px; }
+.meta-grid .kv .k { font-size: 10px; color: var(--text-faint); }
+.meta-grid .kv .v { font-size: 12px; font-family: var(--mono); color: var(--text); }
+.meta-grid .kv .v.dim { color: var(--text-dim); }
+.meta-grid .kv .v.err { color: var(--err); }
+/* The model that actually answered differing from the alias served is the
+ * one fact on this grid worth noticing, so it is the only value with color. */
+.meta-grid .kv .v.changed { color: var(--warn); }
+
+.rationale-box {
+  background: var(--panel); border: 1px solid var(--border-soft); border-radius: 6px;
+  padding: 10px 12px; font-family: var(--mono); font-size: 11.5px; color: var(--text-dim);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+.error-block {
+  background: rgba(255, 138, 128, 0.08); border: 1px solid var(--err); border-radius: 6px;
+  padding: 10px 12px; font-family: var(--mono); font-size: 12px; color: var(--err);
+  white-space: pre-wrap; overflow-wrap: anywhere; margin-bottom: 14px;
+}
+.error-block b { text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.06em; }
+
+/* classifier verdict: the axes a classifier call decided, plus its words —
+ * always --purple, matching the classifier color used in the Sessions lane
+ * view's nodes/legend. */
+.classifier-verdict {
+  background: var(--panel); border: 1px solid var(--purple); border-left: 3px solid var(--purple);
+  border-radius: 6px; padding: 10px 12px;
+}
+.classifier-verdict .axes { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.classifier-verdict .axis {
+  font-family: var(--mono); font-size: 11px;
+  background: color-mix(in srgb, var(--purple) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--purple) 35%, transparent);
+  color: var(--purple); border-radius: 4px; padding: 2px 8px;
+}
+.classifier-verdict .axis.none { color: var(--text-faint); background: var(--panel-2); border-color: var(--border); }
+.classifier-verdict .rationale { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); }
+
+/* spawned internal calls, inside a parent's inspector */
+.children-strip { display: flex; flex-direction: column; gap: 6px; }
+.child-chip {
+  display: flex; align-items: center; gap: 8px; background: var(--panel);
+  border: 1px solid var(--border-soft); border-radius: 6px; padding: 7px 10px; cursor: pointer;
+  font-family: var(--mono); font-size: 11.5px; color: var(--text-dim);
+}
+.child-chip:hover { border-color: var(--purple); }
+.child-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--purple); flex: none; }
+.child-chip b { color: var(--purple); font-weight: 600; }
+.child-chip .rat { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.child-chip .side { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); flex: none; }
+
+/* captured bodies: user messages get the tinted --user treatment, reasoning
+ * and tool snippets get a neutral panel — two different classes because the
+ * mockup treats them as two different content types, not one shared block.
+ * Clipped with a fade (mask-image reads identically to the mockup's
+ * gradient-over-solid overlay, and survives a variable background), not
+ * shortened — "show full" is a reveal over markup already on the page. */
+.user-message {
+  background: var(--user-dim); border: 1px solid color-mix(in srgb, var(--user) 35%, transparent);
+  border-left: 3px solid var(--user); border-radius: 6px; padding: 10px 12px;
+  font-family: var(--mono); font-size: 12px; color: var(--user-text);
+  white-space: pre-wrap; overflow-wrap: anywhere; position: relative;
+}
+.narration, .snippet-block {
+  background: var(--panel); border: 1px solid var(--border-soft); border-radius: 6px;
+  padding: 10px 12px; font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+  white-space: pre-wrap; overflow-wrap: anywhere; position: relative;
+}
+/* the height clamp itself lives here, scoped to .clamped, alongside the fade
+ * — both must come off together on expand. Putting max-height on the base
+ * rule (as this used to) makes "show full" only strip the fade, leaving the
+ * block still visually clipped at 220px no matter what expand-link does. */
+.user-message.clamped, .narration.clamped, .snippet-block.clamped {
+  max-height: 220px; overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, #000 70%, transparent);
+  mask-image: linear-gradient(180deg, #000 70%, transparent);
+}
+.expand-link {
+  display: inline-block; margin-top: 6px; font-family: var(--mono); font-size: 11px;
+  color: var(--accent); cursor: pointer;
+}
+
+.call-block { border: 1px solid var(--border-soft); border-radius: 6px; margin-bottom: 10px; overflow: hidden; }
+.call-block .call-head {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: var(--panel-2); font-family: var(--mono); font-size: 11.5px;
+}
+.call-block .call-head .name { color: var(--tool); font-weight: 600; }
+.call-block .call-head .err-tag { color: var(--err); margin-left: auto; }
+.call-block .call-head .no-result { color: var(--text-faint); margin-left: auto; font-size: 10.5px; }
+.call-block .call-body { padding: 10px 12px; background: var(--panel); }
+.call-block .call-body .kv-line { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-bottom: 6px; overflow-wrap: anywhere; }
+
+/* client headers: collapsed by default, toggled in place */
+.headers-toggle {
+  background: transparent; border: 1px dashed var(--border); border-radius: 5px;
+  padding: 5px 10px; font-family: var(--mono); font-size: 11px; color: var(--text-faint); cursor: pointer;
+}
+.headers-toggle:hover { color: var(--text-dim); }
+.headers-box {
+  display: none; margin-top: 8px; background: var(--panel); border: 1px solid var(--border-soft);
+  border-radius: 6px; padding: 10px 12px; font-family: var(--mono); font-size: 11px; color: var(--text-faint);
+}
+.headers-box.open { display: block; }
+.headers-box .h-row { display: flex; gap: 8px; padding: 2px 0; }
+.headers-box .h-row .hk { color: var(--text-dim); min-width: 200px; }
+
+.jump-link { font-size: 12px; color: var(--accent); cursor: pointer; font-weight: 600; }
+.jump-link:hover { text-decoration: underline; }
+
+/* ---- modals: content peek, preamble, jump. Nothing in #55's shell defines
+ * a modal, so all three are introduced here — one shared base rule (open
+ * state, box chrome, box-head) plus each modal's own size, matching the
+ * mockup's own three rules exactly rather than one merged guess. */
+.content-modal, .preamble-modal, .jump-modal {
+  display: none; position: fixed; inset: 0; z-index: 300;
+  background: rgba(0, 0, 0, 0.65); align-items: center; justify-content: center;
+}
+.content-modal.open, .preamble-modal.open, .jump-modal.open { display: flex; }
+.content-modal .box, .preamble-modal .box, .jump-modal .box {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  display: flex; flex-direction: column;
+}
+.content-modal .box { width: min(880px, 92vw); max-height: 84vh; }
+.preamble-modal .box { width: min(900px, 92vw); max-height: 86vh; }
+.jump-modal { align-items: flex-start; padding-top: 14vh; }
+.jump-modal .box { width: min(420px, 90vw); border-color: var(--primary); }
+
+.box-head {
+  display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+  border-bottom: 1px solid var(--border-soft); font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+}
+.box-head .x { margin-left: auto; cursor: pointer; color: var(--text-faint); font-size: 18px; line-height: 1; }
+.box-head .x:hover { color: var(--text); }
+.box-body {
+  padding: 14px 16px; overflow-y: auto; font-family: var(--mono); font-size: 12px;
+  color: var(--text-dim); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+.preamble-modal .tabs { display: flex; gap: 6px; }
+.preamble-modal .tab {
+  background: transparent; border: 1px solid var(--border); border-radius: 5px;
+  padding: 4px 10px; font-family: var(--sans); font-size: 11.5px; color: var(--text-dim); cursor: pointer;
+}
+.preamble-modal .tab.active { background: var(--accent-dim); border-color: var(--accent); color: var(--tab-active-ink); }
+.preamble-untouched { color: var(--text-faint); font-style: italic; }
+
+/* diff rendering — the preamble modal's inline diff, fed by the store's own
+ * LineDiff (diff.go), so these three classes mirror DiffOp.Kind exactly:
+ * "add" | "del" | "eq". */
+.diff-del { background: rgba(255, 138, 128, 0.16); color: var(--err); text-decoration: line-through; display: block; padding: 1px 4px; }
+.diff-add { background: rgba(95, 201, 141, 0.16); color: var(--ok); display: block; padding: 1px 4px; }
+.diff-eq { color: var(--text-faint); display: block; padding: 1px 4px; }
+
+.jump-modal input {
+  width: 100%; background: transparent; border: none; outline: none; color: var(--text);
+  font-family: var(--mono); font-size: 15px; padding: 14px 16px;
+}
+.jump-hint { padding: 0 14px 10px; font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+.jump-hint b { color: var(--primary); font-family: var(--mono); }
+.jump-status { padding: 0 14px 10px; font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); }
+.jump-status.err { color: var(--err); }

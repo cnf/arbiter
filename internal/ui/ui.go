@@ -137,13 +137,13 @@ func versionOf(fsys fs.FS) string {
 // Greenfielded incrementally as of #55: every old page template was deleted
 // in the newui rebuild (design/REDESIGN.md, DESIGN.md) — the old admin UI's
 // HTML/CSS/JS was ripped out and is being rebuilt page by page, not ported
-// incrementally. "sessions" landed first (#52); "requests", "request",
-// "overview", "discovery", and "block" (RequestsHandler, RequestHandler,
-// OverviewHandler, DiscoveryHandler, BlockRequestsHandler) still hit h.exec's
-// "no template set named …" 500 until their own ticket (#50/#53/#54) adds a
-// replacement page here. This is expected — PICKUP.md carries the pointer so
-// the next session isn't surprised by it.
-var pageFiles = []string{"sessions"}
+// incrementally. "sessions" landed first (#52); "session" (the transcript,
+// #53) next; "requests", "request", "overview", "discovery", and "block"
+// (RequestsHandler, RequestHandler, OverviewHandler, DiscoveryHandler,
+// BlockRequestsHandler) still hit h.exec's "no template set named …" 500 until
+// their own ticket (#50/#54) adds a replacement page here. This is expected —
+// PICKUP.md carries the pointer so the next session isn't surprised by it.
+var pageFiles = []string{"sessions", "session"}
 
 // parseTemplates builds one template set per page, each from the layout, every
 // partial, and that one page. Go's html/template cannot redefine a block name

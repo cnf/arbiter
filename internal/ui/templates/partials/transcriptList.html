@@ -1,0 +1,56 @@
+{{/* transcriptList.html — the transcript's list entries (#53).
+
+These live in a partial, not in pages/session.html, because the "load more"
+control is an htmx fragment: htmx responses are rendered from the partials set
+alone (see Handler.render), so a fragment template that only existed in a page
+set would be undefined exactly when the browser asks for it. The page and the
+fragment therefore share one definition of a turn's row, which is also what
+keeps an appended page of turns identical to the first page. */}}
+
+{{/* transcript-more is a later page of turns, appended into #list. It carries
+the next load-more control with it — or, on the last page, the end-of-
+conversation note that replaces it. */}}
+{{define "transcript-more"}}
+{{range .Turns}}{{template "transcript-entry" .}}{{end}}
+{{if .HasMore}}
+<div class="more-row" id="more-row">
+  <button class="more-btn" type="button"
+          hx-get="{{.MoreURL}}" hx-target="#list" hx-swap="beforeend"
+          hx-indicator="#moreBusy">load {{.Limit}} more turns
+    <span class="count">({{.Loaded}} of {{.Total}})</span>
+  </button>
+  <span id="moreBusy" class="htmx-indicator">…</span>
+</div>
+{{else}}
+<p class="list-end">{{.Total}} turn{{if ne .Total 1}}s{{end}} — end of conversation</p>
+{{end}}
+{{end}}
+
+{{/* transcript-entry is one turn in the list: its row, plus a nested row for
+each internal call it spawned (a classifier call today). A child is
+selectable in its own right — it has its own inspector — so the nested row is
+a button, not a label. */}}
+{{define "transcript-entry"}}
+<div class="entry" data-search="{{.Badge}} {{.Summary}} {{.UserPreview}} {{.Provider}} {{.Model}} {{.Error}}">
+  <div class="row{{if eq .Dot "err"}} error-row{{end}}" data-id="{{.ID}}" data-seq="{{.Seq}}" tabindex="0" role="button">
+    <span class="seq">#{{.Seq}}</span>
+    <span class="dot {{.Dot}}"></span>
+    <span class="main">
+      {{if .UserPreview}}<span class="u-preview">» {{.UserPreview}}</span>{{end}}
+      <span class="badge">{{.Badge}}</span><span class="summary">{{.Summary}}</span>
+    </span>
+    <span class="side"><span>{{usd .CostUSD}}</span><span>{{dur .LatencyMs}}</span></span>
+  </div>
+  {{if .Children}}
+  <div class="children">
+    {{range .Children}}
+    <div class="child-row" data-id="{{.ID}}" tabindex="0" role="button">
+      <span class="dot"></span>
+      <span class="summary"><span class="badge">{{if .RequestKind}}{{.RequestKind}}{{else}}{{.Kind}}{{end}}</span> {{.Summary}}</span>
+      <span class="side">{{dur .LatencyMs}}</span>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}

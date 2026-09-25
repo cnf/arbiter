@@ -245,7 +245,7 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	// set gets an unstyled 401 on everything including the CSS — see the
 	// README's admin section.
 	r.HandleFunc("/admin/ui/", arbiterhttp.Gate(forwardAuthHeader, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-		stdhttp.Redirect(w, req, "/admin/ui/requests", stdhttp.StatusFound)
+		stdhttp.Redirect(w, req, "/admin/ui/sessions", stdhttp.StatusFound)
 	})).Methods("GET")
 	r.HandleFunc("/admin/ui/requests", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestsHandler)).Methods("GET")
 	// The live tail's poll endpoint. Polled by live.js rather than by htmx, for

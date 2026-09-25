@@ -12,6 +12,10 @@ import (
 // Unrecognized tool names still get a JSON dump, just not a name-specific
 // summary — the raw JSON behind a toggle is always available either way.
 type toolCallView struct {
+	// ID is the tool_use block's own id, kept so a tool_result can be matched
+	// to the call it answered: the store records that id in the result's
+	// for_id, which makes the pairing exact rather than positional.
+	ID      string
 	Name    string
 	Known   bool
 	Summary string
@@ -22,6 +26,9 @@ type toolCallView struct {
 // output text (or the error), with the {for_id,content,is_error} envelope
 // behind the same raw-JSON toggle.
 type toolResultView struct {
+	// ForID is the id of the tool_use this result answered, when the client
+	// recorded one — see toolCallView.ID.
+	ForID   string
 	Content string
 	IsError bool
 	RawJSON string
@@ -57,7 +64,7 @@ func parseToolCall(body string) toolCallView {
 	}
 	pretty := prettyJSON(c.Input)
 	summary, known := summarizeToolInput(c.Name, c.Input)
-	return toolCallView{Name: c.Name, Known: known, Summary: summary, RawJSON: pretty}
+	return toolCallView{ID: c.ID, Name: c.Name, Known: known, Summary: summary, RawJSON: pretty}
 }
 
 // parseToolResult decodes a captured tool_result block into its content-first
@@ -67,7 +74,7 @@ func parseToolResult(body string) toolResultView {
 	if err := json.Unmarshal([]byte(body), &c); err != nil {
 		return toolResultView{RawJSON: body}
 	}
-	return toolResultView{Content: c.Content, IsError: c.IsError, RawJSON: prettyJSON(c)}
+	return toolResultView{ForID: c.ForID, Content: c.Content, IsError: c.IsError, RawJSON: prettyJSON(c)}
 }
 
 // summarizeToolInput renders the meaningful part of a tool call's input for

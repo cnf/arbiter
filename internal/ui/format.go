@@ -23,6 +23,8 @@ var funcs = stdhtml.FuncMap{
 	"statusClass": statusClass,
 	"trunc":       truncBody,
 	"wasCut":      wasCut,
+	"clampLong":   visualClampLen,
+	"clampSnip":   snippetClampLen,
 	"pct":         fmtPct,
 	"inc":         func(i int) int { return i + 1 },
 	"avgCost":     fmtAvgCost,
@@ -37,6 +39,7 @@ var funcs = stdhtml.FuncMap{
 	"requestsForSession": requestsForSession,
 	"pivotLimit":         pivotLimitNote,
 	"seriesURL":          seriesURL,
+	"trace8":             fmtTrace,
 	"singleValuedHint":   func() string { return singleValuedHint },
 	// requestsForBlock builds the drill-down link from a repeated block to the
 	// requests containing it. A func rather than an inline expression because a
@@ -47,6 +50,17 @@ var funcs = stdhtml.FuncMap{
 	"blockPreviewBytes": func() int { return blockPreviewBytes },
 	"preview":           previewText,
 	"whitespaceOnly":    isWhitespaceOnly,
+}
+
+// fmtTrace returns a trace id's short form for display. A trace id is a
+// client-supplied identifier and may be long; the inspector shows a prefix
+// because the full value is not meant to be read, and the tooltip carries the
+// whole one (see the template).
+func fmtTrace(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
 }
 
 // fmtChars renders a character count compactly ("9.2k chars"). Transcript
@@ -242,6 +256,20 @@ func truncBody(s string) string {
 // wasCut reports whether a body was truncated, so the template can offer the
 // full text only when there is more of it.
 func wasCut(s string) bool { return len(s) > blockPreviewBytes }
+
+// visualClampLen is how long a rendered body has to be before the inspector
+// clips it to a fixed height with a fade and an expand-link — independent of
+// wasCut/blockPreviewBytes, which caps what goes on the wire (8KB) for an
+// entirely different reason (never bloat the document with a multi-megabyte
+// body). Gating the visual clip on wasCut, as an earlier version of this
+// file did, meant almost nothing ever qualified: a body has to run past 8KB
+// before the class — and therefore the only way to un-clip it — appeared at
+// all, so a merely-long user message or reasoning block sat clipped inside a
+// 220px box with no "show full" link. These are the mockup's own numbers
+// (clampedBlock/clampedBlockPre): 900 characters for a message or reasoning
+// block, 500 for a tool call's snippet.
+func visualClampLen(s string) bool  { return len(s) > 900 }
+func snippetClampLen(s string) bool { return len(s) > 500 }
 
 // whitespaceOnlyNote stands in for a body that carries no printable text.
 //

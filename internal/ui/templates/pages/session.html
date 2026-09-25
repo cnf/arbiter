@@ -1,0 +1,142 @@
+{{/* session.html — the conversation transcript page (#53): one session's turns
+as a scrollable list beside a persistent inspector, ported from
+design/mockups/transcript-D-merged.html. That mockup is this page's spec;
+DESIGN.md's page-pattern prose is not authoritative here (stale — it describes
+the pre-D rail generation), only DESIGN.md's top-of-file token block is.
+
+The mockup is a standalone document that fetches a JSON blob and builds every
+node in JS. This is the same page with a server behind it: the list rows *and*
+every turn's inspector markup are rendered here and shipped in one document,
+so selecting a turn is a class swap over markup the browser already has — not
+a fetch, and not a re-render. The mockup's session-picker dropdown is dropped
+outright: a real page is reached by ?key=, and a control for switching session
+from inside one session's transcript was a prototyping mechanism with no
+meaning once the URL is real.
+
+The list-row and load-more templates live in partials/transcriptList.html,
+not here, because the load-more response is an htmx fragment rendered from the
+partials set alone (see Handler.render) — one definition, used by both. */}}
+{{define "content"}}
+<div class="main">
+  {{template "session-turns" .}}
+</div>
+{{end}}
+
+{{/* session-turns is the page body: toolbar, master-detail, and the modals.
+It is also the fragment htmx swaps when the page itself is re-requested, so
+it is defined here and rendered as the whole content region. */}}
+{{define "session-turns"}}
+<div class="transcript">
+  <div class="toolbar">
+    <span class="crumb"><a href="/admin/ui/sessions">sessions</a> / <span class="mono" title="{{.Key}}">{{.ShortKey}}</span></span>
+    <button class="preamble-btn{{if .Preamble.Guardrailed}} touched{{end}}" id="preamble-btn" type="button"
+            title="{{if .Preamble.Guardrailed}}a pre-guardrail rewrote this before it went upstream{{else}}sent unmodified{{end}}{{if not .Preamble.Present}} — none captured{{end}}"
+            {{if not .Preamble.Present}}disabled{{end}}>
+      <span class="touched-dot"></span>system preamble
+    </button>
+    <button class="jump-trigger" id="jump-trigger" type="button">jump to # <kbd>/</kbd></button>
+    <div class="stats">
+      <span><b>{{.Totals.Turns}}</b> requests</span>
+      <span class="err-count"><b>{{.Totals.Errors}}</b> errors</span>
+      <span><b>{{usd .Totals.CostUSD}}</b></span>
+      <span><b>{{tokens .Totals.Tokens}}</b> tok</span>
+    </div>
+  </div>
+
+  <div class="body">
+    <div class="list-pane">
+      <div class="list-toolbar">
+        <input type="text" id="filter-text" placeholder="filter — tool, path, error text…" autocomplete="off">
+      </div>
+      <div id="list">
+        {{if .Turns}}
+          {{range .Turns}}{{template "transcript-entry" .}}{{end}}
+          {{if .HasMore}}
+          <div class="more-row" id="more-row">
+            <button class="more-btn" type="button"
+                    hx-get="{{.MoreURL}}" hx-target="#list" hx-swap="beforeend"
+                    hx-indicator="#moreBusy">load {{.Limit}} more turns
+              <span class="count">({{.Loaded}} of {{.Total}})</span>
+            </button>
+            <span id="moreBusy" class="htmx-indicator">…</span>
+          </div>
+          {{else if gt .Total 0}}
+          <p class="list-end">{{.Total}} turn{{if ne .Total 1}}s{{end}} — end of conversation</p>
+          {{end}}
+        {{else if .Found}}
+          <p class="empty">This session has no turns in the store.</p>
+        {{else}}
+          <p class="empty">No requests recorded under this session key. It may have
+            aged out of the store, or the key may be misspelled —
+            <a href="/admin/ui/sessions">back to sessions</a>.</p>
+        {{end}}
+      </div>
+    </div>
+
+    <div class="focus-pane" id="focus-pane">
+      <div class="empty-state">select a request to inspect it</div>
+    </div>
+  </div>
+</div>
+
+{{/* Every turn's inspector ships with the document, hidden, and is moved into
+the pane on selection (see transcript.js). It is rendered through the same
+named template the pane would use, so a selected turn and this shelf can
+never describe a turn differently — and it sits outside .body so it costs no
+layout while hidden. Children are included because they are selectable too. */}}
+<div class="inspector-src" id="inspector-src" hidden>
+  {{range .Turns}}
+    {{template "transcript-inspector" .}}
+    {{range .Children}}{{template "transcript-inspector" .}}{{end}}
+  {{end}}
+</div>
+
+<script>
+  // The turn a jump asked for, handed to transcript.js so the page opens on
+  // it. A number, not a second copy of the view model — the script may only
+  // read it, never reconstruct the page from it.
+  window.TRANSCRIPT_SELECTED = {{.SelectedID}};
+</script>
+
+<div class="content-modal" id="content-modal">
+  <div class="box">
+    <div class="box-head"><span id="content-modal-title">content</span><span class="x" id="content-modal-close">✕</span></div>
+    <div class="box-body" id="content-modal-body"></div>
+  </div>
+</div>
+
+{{if .Preamble.Present}}
+<div class="preamble-modal" id="preamble-modal">
+  <div class="box">
+    <div class="box-head">
+      <span>system preamble</span>
+      <div class="tabs">
+        <button class="tab active" type="button" data-tab="sent">as sent{{if .Preamble.Guardrailed}} (guardrailed){{end}}</button>
+        <button class="tab" type="button" data-tab="original">client original</button>
+        <button class="tab" type="button" data-tab="diff">diff</button>
+      </div>
+      <span class="x" id="preamble-modal-close">✕</span>
+    </div>
+    <div class="box-body">
+      <div class="preamble-panel" data-panel="sent">{{.Preamble.AsSent}}</div>
+      <div class="preamble-panel" data-panel="original" hidden>{{.Preamble.Original}}</div>
+      <div class="preamble-panel" data-panel="diff" hidden>
+        {{if .Preamble.Guardrailed}}
+          {{range .Preamble.Diff}}<span class="diff-{{.Kind}}">{{.Text}}</span>{{end}}
+        {{else}}
+          <span class="preamble-untouched">no pre-guardrail touched this preamble — it was sent as the client wrote it.</span>
+        {{end}}
+      </div>
+    </div>
+  </div>
+</div>
+{{end}}
+
+<div class="jump-modal" id="jump-modal">
+  <div class="box">
+    <input type="text" id="jump-input" placeholder="jump to request #…" autocomplete="off">
+    <div class="jump-hint">sequence number in this session, e.g. <b>42</b> — press <b>Enter</b></div>
+    <div class="jump-status" id="jump-status"></div>
+  </div>
+</div>
+{{end}}

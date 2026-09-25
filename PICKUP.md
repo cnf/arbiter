@@ -59,8 +59,21 @@ committed this session either) — **#52 implemented**: the Sessions page
 `internal/ui/templates/partials/laneRow.html` + `SessionsHandler`; app.css
 gained the page's own rules; **ticket intentionally left open** — user is
 doing #50/#52/#53/#54 in one uncommitted batch, then testing, then closing
-them together. Run `git log --oneline -1` and `gh issue list --state open`
-for the truth.
+them together. New §29 added 2026-09-25b, same branch, HEAD still
+`35a0262` — feedback round 2: toolbar chrome fixes (pagehead/lede removed,
+errors/all toggle bug fixed), and the nav's "N active" Sessions stat wired
+to a real cache-TTL-derived query (`affinity_pins`) instead of a mockup
+placeholder. New §30 added 2026-09-25c, same branch, HEAD still `35a0262`
+— feedback round 3: the lane list's flex-sizing chain fixed so it scrolls
+vertically in a bounded region instead of growing the page, and long
+sessions' timeline nodes compress to the lane's own width
+(`--node-scale`, `laneTimeline.js`) instead of forcing horizontal scroll.
+New §31 added 2026-09-25d, branch `newui`, **now at `77c37b5`** — §28-30's
+work and all three feedback rounds **committed in one commit**; ticket
+**still intentionally left open** per the user, who is batching
+#50/#52/#53/#54 before testing and closing. Branch has no upstream
+configured yet (`git push -u origin newui` needed on first push). Run
+`git log --oneline -1` and `gh issue list --state open` for the truth.
 
 ---
 
@@ -2368,3 +2381,73 @@ the next thing to check.
 
 
 
+
+---
+
+## 31. Session 2026-09-25d — §28-30's Sessions/#52 work committed (branch `newui`, now at `77c37b5`)
+
+**Orient (run these, don't trust the numbers below):**
+```bash
+git status -sb          # newui, clean except design/REDESIGN.md (pre-existing, see below)
+git log --oneline -3    # 77c37b5 is HEAD
+gh issue list --state open --limit 5   # needs devenv; #52 still open
+```
+
+**What happened:** nothing new was built this session — this was purely
+"commit what §28-30 already implemented and verified." The prior three
+sessions (lane view port, feedback round 2, feedback round 3's scroll
+fix) had accumulated on disk without a single commit across all of them.
+
+**What's in `77c37b5`:** exactly the 16 files touched by §28-30 — lane
+view model/handler/templates/CSS/JS, the `active`-stat and errors-toggle
+fixes, the flex-sizing/node-compression scroll fix, `PICKUP.md` itself,
+and the supporting store/test changes. Full list and rationale in the
+commit body (`git show --stat 77c37b5`, `git show 77c37b5` for the full
+message).
+
+**Deliberately left out of the commit — do not assume these are related
+to #52:** `design/REDESIGN.md` (modified) and a batch of untracked files
+(`cmd/previewserver/`, `design/build_data.py`, `design/discovery_export.json`,
+`design/inline_data.py`, `design/mockups/{Caddyfile,arbiter-redesign-7/8/9-*.html,data,data-v2,data-v3,devenv.lock,discovery-{A,B,C}-*.html,fonts.conf,transcript-{B,C,D}-*.html}`,
+`design/overview-mockups/`) — these predate this session (exploration
+artifacts for #50/#53/#54's own design threads, per §24-26) and are the
+user's to commit or discard when those tickets land. Verify with
+`git log -1 --format=%ci -- design/REDESIGN.md` before assuming otherwise
+— it was last touched well before this session.
+
+**One fix made during the commit attempt:** `golangci-lint` (run via the
+repo's pre-commit hook, which needs `devenv shell` for `go` to be on
+`PATH` — a bare `git commit` fails the hook with "go: executable file not
+found") caught `whichProviderA` in `internal/ui/ui_test.go` as unused —
+a leftover from §28's test-file rewrite that removed its last usage.
+Deleted the dead const; re-ran build/vet/test (still only the same 3
+pre-existing failures: `internal/config` litellm-endpoint ×2,
+`TestSeriesEndpointShape`) before re-committing.
+
+**Verified, not just written:**
+```
+$ devenv shell --no-tui -- go build ./...    # clean
+$ devenv shell --no-tui -- go vet ./...      # clean
+$ devenv shell --no-tui -- go test ./...     # same 3 pre-existing failures, nothing new
+$ devenv shell --no-tui -- git commit ...    # pre-commit hooks all passed: gitleaks,
+                                              # golangci-lint, ripsecrets, trufflehog
+```
+
+**State:** branch `newui` has **no upstream configured**
+(`git rev-parse --abbrev-ref --symbolic-full-name @{u}` fails) — this
+branch has never been pushed. First push needs
+`git push -u origin newui`. Not done this session; pushing is the user's
+call.
+
+**Next steps, in order:**
+1. **Do not close #52.** Still the user's explicit instruction — they're
+   batching #50/#52/#53/#54, testing, then closing together.
+2. Carried over, still open: `Reader.Sessions`' hard `kind = 'client'`
+   filter hides classifier-only sessions outright (§29); the node-click
+   interaction design fork, client-side panel vs. navigate-to-detail
+   (§28); node-compression follow-ups like scaling the stack node's
+   `.stackn` label font-size (§30).
+3. Continue with #50/#53/#54 page ports per the batch plan — nothing
+   landed on any of those three yet (confirm with `git log` before
+   trusting that, per this file's own self-distrust rule).
+4. Branch `newui` is unpushed; ask before pushing.

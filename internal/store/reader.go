@@ -400,6 +400,195 @@ LIMIT ?`
 	return out, rows.Err()
 }
 
+// SessionClientPage returns one page of a session's client requests in
+// conversation order — oldest first — starting at offset.
+//
+// It is a separate method from Session rather than a flag on it, because the
+// two answer different questions and return different shapes. Session returns
+// the thinner SessionRequest for the JSON trajectory API and for "where did
+// this request sit in its conversation"; this returns the full list projection
+// the transcript's inspector reads (domain, effort, cost_class, actual_model,
+// request_kind — none of which SessionRequest carries), because the transcript
+// page is a browsing view over one conversation and needs the same per-row
+// facts the flat requests list shows.
+//
+// Client rows only, and that is what makes the transcript's own numbering
+// work: the page numbers each conversation *turn*, and a classifier call is
+// not a turn — it is something a turn did. Its children are attached by
+// trace_id afterwards (see SessionChildren), not by sharing a page of rows, so
+// a classifier that finished *before* its parent (the documented #8 case) can
+// never end up numbered as a turn or stranded on the previous page.
+//
+// Offset paging rather than a keyset cursor is deliberate here, and safe for
+// the same reason it would be wrong on the newest-first requests list: a
+// conversation only ever grows at its tail, so a new turn always arrives with
+// a greater (ts, id) than everything already stored. New turns land beyond the
+// last page a reader has already seen, never behind it, so an offset cannot be
+// invalidated by traffic the way it would be on a list ordered newest-first.
+func (r *Reader) SessionClientPage(ctx context.Context, key string, limit, offset int) ([]RequestRow, error) {
+	if limit <= 0 {
+		limit = maxRequestListLimit
+	}
+	if limit > maxRequestListLimit {
+		limit = maxRequestListLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	// id is the tiebreaker for the same reason ListRequests uses it: ts has
+	// sub-second precision and several turns can share a tick.
+	const q = `SELECT` + requestRowColumns + `
+FROM requests WHERE session_key = ? AND kind = 'client'
+ORDER BY ts ASC, id ASC
+LIMIT ? OFFSET ?`
+
+	rows, err := r.db.QueryContext(ctx, q, key, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("session transcript: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []RequestRow{}
+	for rows.Next() {
+		s, err := scanRequestRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// SessionChildren returns the non-client rows (a classifier call today,
+// title-gen/subagent later) whose trace_id is one of traceIDs — the internal
+// calls that ran inside the given client requests.
+//
+// Keyed on trace_id rather than on "the rows sharing this page" precisely so
+// the child's own timestamp is irrelevant: a classifier call routinely
+// finishes before the request that spawned it, which is the whole reason #8
+// nests by trace rather than sorting by time. One query for a whole page's
+// worth of parents, so attaching children costs a single round trip, not one
+// per row.
+func (r *Reader) SessionChildren(ctx context.Context, traceIDs []string) ([]RequestRow, error) {
+	if len(traceIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(traceIDs))
+	args := make([]interface{}, 0, len(traceIDs))
+	for i, id := range traceIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	q := `SELECT` + requestRowColumns + `
+FROM requests WHERE kind <> 'client' AND trace_id IN (` + strings.Join(placeholders, ", ") + `)
+ORDER BY ts ASC, id ASC`
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("session children: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []RequestRow{}
+	for rows.Next() {
+		s, err := scanRequestRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// SessionTurnAt resolves a turn number to its request id: turn numbers are
+// 1-based positions in the conversation's client-ordered sequence, so turn N is
+// simply the N-th client row. Returning the id rather than the row is what
+// lets the caller load the page turn N falls on in one step — it needs to know
+// which page that is before it reads any rows.
+//
+// The offset scan is cheap here in a way it would not be for the flat request
+// list: a conversation is bounded and appends only at its tail, so a position
+// in it is stable, and the query is an indexed range on one session key.
+func (r *Reader) SessionTurnAt(ctx context.Context, key string, turn int) (int64, bool, error) {
+	if turn < 1 {
+		return 0, false, nil
+	}
+	const q = `SELECT id FROM requests
+WHERE session_key = ? AND kind = 'client'
+ORDER BY ts ASC, id ASC
+LIMIT 1 OFFSET ?`
+
+	var id int64
+	err := r.db.QueryRowContext(ctx, q, key, turn-1).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("session turn at: %w", err)
+	}
+	return id, true, nil
+}
+
+// SessionFirstClient returns the session's opening client request — the turn
+// that introduced the conversation, and therefore the one whose system
+// preamble the page's preamble modal inspects. ok is false for a session with
+// no client row at all.
+func (r *Reader) SessionFirstClient(ctx context.Context, key string) (RequestRow, bool, error) {
+	const q = `SELECT` + requestRowColumns + `
+FROM requests WHERE session_key = ? AND kind = 'client'
+ORDER BY ts ASC, id ASC
+LIMIT 1`
+
+	rows, err := r.db.QueryContext(ctx, q, key)
+	if err != nil {
+		return RequestRow{}, false, fmt.Errorf("session first client: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	if !rows.Next() {
+		return RequestRow{}, false, rows.Err()
+	}
+	s, err := scanRequestRow(rows)
+	if err != nil {
+		return RequestRow{}, false, err
+	}
+	return s, true, rows.Err()
+}
+
+// SessionTotals is a session's headline numbers: how many turns, how many of
+// them failed, what the whole conversation cost, and how many tokens it moved.
+//
+// Turns and Errors count client rows only — the conversation's own turns, the
+// same unit the transcript list numbers. Cost and Tokens cover every row in
+// the session, because a classifier call is real spend and hiding it would
+// make the header disagree with the bill.
+type SessionTotals struct {
+	Turns   int64   `json:"turns"`
+	Errors  int64   `json:"errors"`
+	Tokens  int64   `json:"tokens"`
+	CostUSD float64 `json:"cost_usd"`
+}
+
+// SessionTotals computes one session's headline numbers. It is deliberately
+// not windowed: a transcript is a conversation, and a conversation that
+// half-falls outside a window is not half a conversation. (The sessions
+// *index* is windowed for the opposite reason — see SessionSummary.)
+func (r *Reader) SessionTotals(ctx context.Context, key string) (SessionTotals, error) {
+	const q = `
+SELECT
+    CAST(COALESCE(SUM(CASE WHEN kind = 'client' THEN 1 ELSE 0 END), 0) AS INTEGER),
+    CAST(COALESCE(SUM(CASE WHEN kind = 'client' AND status_code >= 400 THEN 1 ELSE 0 END), 0) AS INTEGER),
+    CAST(COALESCE(SUM(input_tokens + output_tokens), 0) AS INTEGER),
+    COALESCE(SUM(cost_usd), 0)
+FROM requests WHERE session_key = ?`
+
+	var t SessionTotals
+	if err := r.db.QueryRowContext(ctx, q, key).Scan(&t.Turns, &t.Errors, &t.Tokens, &t.CostUSD); err != nil {
+		return SessionTotals{}, fmt.Errorf("session totals: %w", err)
+	}
+	return t, nil
+}
+
 // Tools counts tool-name occurrences over a window. tool_calls_json holds a
 // JSON array per row; json_each expands it, so a request that used two tools
 // contributes one to each. Rows with no tool calls are excluded by the NOT

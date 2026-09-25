@@ -1,0 +1,181 @@
+{{/* transcriptInspector.html — one turn's inspector pane content (#53), ported
+from design/mockups/transcript-D-merged.html's renderRequestFocus/2. It is a
+partial rather than part of session.html because both the page and the
+hidden-copy approach use the same block, and one definition is what keeps the
+server-rendered copy and the pane from drifting apart.
+
+A classifier call is rendered with exactly this layout plus a verdict section —
+the mockup's rule, and the reason a classifier call is legible in context
+rather than hidden: it is a request like any other, one Arbiter made on its own
+behalf.
+
+Content is clipped in place with a "show full" affordance rather than truncated
+server-side, so nothing is lost and the browser can reveal it without a round
+trip (transcript.js moves the full text into the content modal). */}}
+{{define "transcript-inspector"}}
+<div class="inspector" data-id="{{.ID}}" hidden>
+  <div class="f-head">
+    <h2>{{if .Seq}}#{{.Seq}} — {{end}}request {{.ID}}</h2>
+    <span class="chip">{{.Provider}}/{{.Model}}</span>
+    {{if ge .StatusCode 400}}<span class="chip err">HTTP {{.StatusCode}}</span>{{end}}
+    {{if eq .Kind "client"}}{{if .RequestKind}}<span class="chip warn">{{.RequestKind}}</span>{{end}}
+    {{else}}<span class="chip warn">{{.Kind}}</span>{{end}}
+  </div>
+  <div class="f-sub"><span title="{{ts .Ts}}">{{clock .Ts}} UTC</span> · trace <span title="{{.TraceID}}">{{trace8 .TraceID}}</span> · {{usd .CostUSD}} · {{dur .LatencyMs}}</div>
+
+  {{if .Inspector.ParentSeq}}
+  <div class="f-section">
+    <span class="jump-link" data-jump="{{.Inspector.ParentID}}">↑ back to parent request #{{.Inspector.ParentSeq}}</span>
+  </div>
+  {{end}}
+
+  {{if .Error}}<div class="error-block"><b>request-level error</b><br>{{.Error}}</div>{{end}}
+
+  {{if .Inspector.IsClassifier}}
+  <div class="f-section">
+    <div class="label">classifier verdict</div>
+    <div class="classifier-verdict">
+      <div class="axes">
+        {{if .Inspector.HasVerdict}}
+          {{if .Domain}}<span class="axis">domain={{.Domain}}</span>{{end}}
+          {{if .Effort}}<span class="axis">effort={{.Effort}}</span>{{end}}
+          {{if .CostClass}}<span class="axis">cost_class={{.CostClass}}</span>{{end}}
+          {{if gt .Inspector.Confidence 0.0}}<span class="axis">confidence={{pct .Inspector.Confidence}}</span>{{end}}
+        {{else}}
+          <span class="axis none">no axis reported</span>
+        {{end}}
+      </div>
+      <div class="rationale">{{if .RoutingRationale}}{{.RoutingRationale}}{{else}}(no rationale captured){{end}}</div>
+    </div>
+  </div>
+  {{end}}
+
+  <div class="f-section">
+    <div class="label">routing &amp; model</div>
+    <div class="meta-grid">
+      <div class="kv"><span class="k">alias requested</span><span class="v">{{if .AliasUsed}}{{.AliasUsed}}{{else}}(literal model){{end}}</span></div>
+      <div class="kv"><span class="k">model served</span><span class="v">{{.Model}}</span></div>
+      <div class="kv"><span class="k">actual model (upstream-reported)</span><span class="v{{if and .ActualModel (ne .ActualModel .Model)}} changed{{end}}">{{if .ActualModel}}{{.ActualModel}}{{else}}same as served{{end}}</span></div>
+      <div class="kv"><span class="k">provider</span><span class="v">{{.Provider}}</span></div>
+      <div class="kv"><span class="k">config epoch</span><span class="v">{{if .ConfigEpoch}}{{.ConfigEpoch}}{{else}}—{{end}}</span></div>
+    </div>
+  </div>
+
+  {{if and .RoutingRationale (not .Inspector.IsClassifier)}}
+  <div class="f-section">
+    <div class="label">routing rationale</div>
+    <div class="rationale-box">{{.RoutingRationale}}</div>
+  </div>
+  {{end}}
+
+  <div class="f-section">
+    <div class="label">tokens &amp; cost</div>
+    <div class="meta-grid">
+      <div class="kv"><span class="k">input</span><span class="v">{{tokens .InputTokens}}</span></div>
+      <div class="kv"><span class="k">output</span><span class="v">{{tokens .OutputTokens}}</span></div>
+      <div class="kv"><span class="k">cost</span><span class="v">{{usd .CostUSD}}</span></div>
+      <div class="kv"><span class="k">latency</span><span class="v">{{dur .LatencyMs}}</span></div>
+    </div>
+  </div>
+
+  {{if .Children}}
+  <div class="f-section">
+    <div class="label">spawned {{len .Children}} internal call{{if ne (len .Children) 1}}s{{end}}</div>
+    <div class="children-strip">
+      {{range .Children}}
+      <div class="child-chip" data-jump="{{.ID}}">
+        <span class="dot"></span><b>{{if .RequestKind}}{{.RequestKind}}{{else}}{{.Kind}}{{end}}</b>
+        <span class="rat">{{.RoutingRationale}}</span>
+        <span class="side">{{dur .LatencyMs}}</span>
+      </div>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
+  {{if .Inspector.UserMessages}}
+  <div class="f-section">
+    <div class="label">{{if .Inspector.IsClassifier}}text classified{{else}}user message{{end}}</div>
+    {{range .Inspector.UserMessages}}{{template "transcript-user-clamped" .Body}}{{end}}
+  </div>
+  {{end}}
+
+  {{if .Inspector.Reasoning}}
+  <div class="f-section">
+    <div class="label">assistant reasoning</div>
+    {{range .Inspector.Reasoning}}{{template "transcript-narration-clamped" .Body}}{{end}}
+  </div>
+  {{end}}
+
+  {{if .Inspector.Calls}}
+  <div class="f-section">
+    <div class="label">tool calls</div>
+    {{range .Inspector.Calls}}
+    <div class="call-block">
+      <div class="call-head">
+        <span class="name">{{if .Call.Name}}{{.Call.Name}}{{else}}tool result{{end}}</span>
+        {{if and .Result .Result.IsError}}<span class="err-tag">tool error</span>
+        {{else if not .Result}}<span class="no-result">no result captured</span>{{end}}
+      </div>
+      <div class="call-body">
+        {{if .Call.Summary}}<div class="kv-line">{{.Call.Summary}}</div>{{end}}
+        {{if .Call.RawJSON}}{{template "transcript-snippet" .Call.RawJSON}}{{end}}
+        {{if .Result}}{{template "transcript-snippet" .Result.Content}}{{end}}
+      </div>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+
+  {{if and .Inspector.ContentLoaded (not .Inspector.UserMessages) (not .Inspector.Reasoning) (not .Inspector.Calls)}}
+  <div class="f-section"><span class="f-note">no client-visible content on this turn</span></div>
+  {{end}}
+  {{if and .Inspector.ContentLoaded .Inspector.CaptureOff}}
+  <div class="f-section"><span class="f-note">content capture is off, or nothing was captured for this request</span></div>
+  {{end}}
+  {{if .Inspector.ContentErr}}
+  <div class="f-section"><span class="f-note">the stored content for this request could not be read — see the logs. Its metadata above is still correct.</span></div>
+  {{end}}
+
+  {{if .Inspector.Headers}}
+  <div class="f-section">
+    <button class="headers-toggle" type="button" data-headers-toggle>client headers ({{len .Inspector.Headers}})</button>
+    <div class="headers-box">
+      {{range $k, $v := .Inspector.Headers}}<div class="h-row"><span class="hk">{{$k}}</span><span>{{$v}}</span></div>{{end}}
+    </div>
+  </div>
+  {{else}}
+  <div class="f-section"><span class="f-note">no client headers on this request{{if .Inspector.IsClassifier}} — internal call, not client-initiated{{end}}</span></div>
+  {{end}}
+</div>
+{{end}}
+
+{{/* transcript-user-clamped renders one captured user-message body with the
+mockup's tinted --user treatment. Clip-and-reveal triggers at clampLong (the
+mockup's own 900-char threshold for a message/reasoning block) — a purely
+visual CSS clip (max-height), not a truncation: the full body is always in
+the DOM so "show full" (transcript.js) only ever has to drop the .clamped
+class, never fetch anything. blockPreviewBytes/truncBody is a different
+page's safety net (the block detail page) and must not apply here — using it
+silently caps "show full" at 8KB regardless of what the expand-link's own
+{{chars}} count promises, which is the #53 second-round "show full doesn't
+work" bug. */}}
+{{define "transcript-user-clamped"}}
+<div class="user-message{{if clampLong .}} clamped{{end}}">{{.}}</div>
+{{if clampLong .}}<span class="expand-link" data-title="full text">show full ({{chars (len .)}}) →</span>{{end}}
+{{end}}
+
+{{/* transcript-narration-clamped renders assistant reasoning with the
+mockup's neutral panel treatment — same clip-and-reveal, different class. */}}
+{{define "transcript-narration-clamped"}}
+<div class="narration{{if clampLong .}} clamped{{end}}">{{.}}</div>
+{{if clampLong .}}<span class="expand-link" data-title="reasoning">show full ({{chars (len .)}}) →</span>{{end}}
+{{end}}
+
+{{/* transcript-snippet renders a tool call's or result's JSON/text body, with
+the same clip-and-reveal treatment at the mockup's lower, 500-char snippet
+threshold. */}}
+{{define "transcript-snippet"}}
+<div class="snippet-block{{if clampSnip .}} clamped{{end}}">{{.}}</div>
+{{if clampSnip .}}<span class="expand-link" data-title="raw">show full ({{chars (len .)}}) →</span>{{end}}
+{{end}}

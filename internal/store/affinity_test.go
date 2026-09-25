@@ -10,6 +10,8 @@ import (
 // fake Pinner, so these cover the half those cannot: the SQL, the upsert, and
 // the expiry rule as the store enforces it.
 
+// TestSaveAndLoadPin proves the round trip: a saved pin loads back with the
+// same fields, and its expiry survives the UTC round trip through sqlite.
 func TestSaveAndLoadPin(t *testing.T) {
 	r, db := newTestReader(t)
 	ctx := context.Background()
@@ -155,5 +157,39 @@ func TestSweepPinsRemovesOnlyExpired(t *testing.T) {
 	}
 	if remaining != 1 {
 		t.Errorf("affinity_pins holds %d rows, want 1", remaining)
+	}
+}
+
+// TestActiveSessionCount proves the nav bar's "N active" Sessions stat counts
+// sessions still inside their cache TTL (a live affinity_pins row) and
+// excludes ones whose pin has already expired — "active" means "still
+// pinned for prompt-cache reuse", not "had any request ever".
+func TestActiveSessionCount(t *testing.T) {
+	r, db := newTestReader(t)
+	ctx := context.Background()
+	w := &SQLiteWriter{db: db}
+
+	if n, err := r.ActiveSessionCount(ctx); err != nil || n != 0 {
+		t.Fatalf("ActiveSessionCount on an empty table = (%d, %v), want (0, nil)", n, err)
+	}
+
+	if err := w.SavePin(ctx, AffinityPin{SessionKey: "live-1", RequestedModel: "auto", Provider: "p", Model: "m", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatalf("SavePin live-1: %v", err)
+	}
+	if err := w.SavePin(ctx, AffinityPin{SessionKey: "live-2", RequestedModel: "auto", Provider: "p", Model: "m", ExpiresAt: time.Now().Add(time.Minute)}); err != nil {
+		t.Fatalf("SavePin live-2: %v", err)
+	}
+	if err := w.SavePin(ctx, AffinityPin{SessionKey: "dead", RequestedModel: "auto", Provider: "p", Model: "m", ExpiresAt: time.Now().Add(-time.Minute)}); err != nil {
+		t.Fatalf("SavePin dead: %v", err)
+	}
+
+	// Three rows in the table, but only two are still within their TTL — the
+	// expired one must not count as active even though SweepPins hasn't run.
+	n, err := r.ActiveSessionCount(ctx)
+	if err != nil {
+		t.Fatalf("ActiveSessionCount: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("ActiveSessionCount = %d, want 2 (one live pin has already expired and must not count)", n)
 	}
 }

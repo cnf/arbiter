@@ -520,6 +520,31 @@ WHERE ts >= ? AND (session_key IS NULL OR session_key = '') AND kind = 'client'`
 	return n, nil
 }
 
+// ActiveSessionCount counts sessions with a live affinity pin — i.e. still
+// inside the TTL that keeps them routed to the same provider/model for
+// prompt-cache reuse (see pipeline.affinityStore, affinity_pins.expires_at).
+// It backs the nav bar's "N active" Sessions stat (see Handler.base): "active"
+// means "still within its cache TTL", not merely "had a request recently" —
+// a session can easily see no traffic for hours and still be a real ongoing
+// conversation, while an expired pin means the next turn (if there is one)
+// re-routes from scratch anyway. This is the one nav-item number that is a
+// real query rather than the header's other "fake live" literals
+// (design/REDESIGN.md §8 item 5), per an explicit user callout that the
+// sessions count specifically should stop being a placeholder.
+//
+// A store with no affinity_pins rows (session affinity never pinned anything,
+// or nothing is currently live) reports 0, not an error — an empty table is
+// a legitimate steady state, not a broken query.
+func (r *Reader) ActiveSessionCount(ctx context.Context) (int64, error) {
+	const q = `SELECT COUNT(*) FROM affinity_pins WHERE expires_at >= ?`
+
+	var n int64
+	if err := r.db.QueryRowContext(ctx, q, time.Now().UTC()).Scan(&n); err != nil {
+		return 0, fmt.Errorf("active session count: %w", err)
+	}
+	return n, nil
+}
+
 // MaxSessionListLimit caps the sessions index. Higher than the request list's
 // cap because one row is a whole conversation, so a page of them is still a
 // readable overview. Exported because the caller has to know what it asked for

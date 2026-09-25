@@ -87,7 +87,7 @@ func (h *Handler) DiscoveryHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	view := discoveryView{
-		viewBase:    h.base("Discovery"),
+		viewBase:    h.base(r.Context(), "Discovery"),
 		SinceRaw:    q.Get("since"),
 		MinReqRaw:   q.Get("min_requests"),
 		MinSessRaw:  q.Get("min_sessions"),
@@ -217,7 +217,7 @@ func (h *Handler) BlockRequestsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view := blockRequestsView{
-		viewBase:  h.base("Discovery"),
+		viewBase:  h.base(r.Context(), "Discovery"),
 		Hash:      hash,
 		ShortHash: shortHash(hash),
 		Limit:     store.MaxRepeatedLimit,

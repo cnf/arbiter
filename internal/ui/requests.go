@@ -763,7 +763,7 @@ func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
 	fv.Any = f.Provider != "" || f.Alias != "" || f.SessionKey != "" || f.StatusCode != 0 ||
 		f.ErrorsOnly || f.SessionKeyless || !f.Since.IsZero() || fv.KindRaw != "" || fv.ReqKindRaw != ""
 
-	view := requestsView{viewBase: h.base("Requests"), rowsView: rowsView{F: fv}}
+	view := requestsView{viewBase: h.base(r.Context(), "Requests"), rowsView: rowsView{F: fv}}
 
 	// Default-list read: the page renders Lines, which fold Rows. Two readers
 	// need the full five-hundred, so they keep the plain fetch:
@@ -992,7 +992,7 @@ func (h *Handler) RequestHandler(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, http.StatusBadRequest, "request id must be a positive integer")
 		return
 	}
-	view := detailView{viewBase: h.base("Requests")}
+	view := detailView{viewBase: h.base(r.Context(), "Requests")}
 
 	if h.reader != nil {
 		detail, ok, err := h.reader.GetRequest(r.Context(), id)
@@ -1063,7 +1063,7 @@ func (h *Handler) RequestContentHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	showAsSent := r.URL.Query().Get("as_sent") == "1"
-	view := detailView{viewBase: h.base("Requests"), ContentLoaded: true, ShowingAsSent: showAsSent}
+	view := detailView{viewBase: h.base(r.Context(), "Requests"), ContentLoaded: true, ShowingAsSent: showAsSent}
 
 	if h.reader != nil {
 		blocks, hasGuardrailedVariant, err := h.reader.ContentForRequest(r.Context(), id, showAsSent)

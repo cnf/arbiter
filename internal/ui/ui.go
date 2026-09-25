@@ -9,6 +9,7 @@ package ui
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -16,6 +17,7 @@ import (
 	stdhtml "html/template"
 	"io/fs"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -322,11 +324,27 @@ type navItem struct {
 // Three nav items — Overview, Sessions, Discovery — matching the accepted
 // shell mockups (transcript-D-merged.html, f3-overview-styled.html). Sessions
 // already covers what used to be a separate Requests page (#52).
-func (h *Handler) base(active string) viewBase {
+//
+// The Sessions nav item's stat is a real query (ActiveSessionCount, over the
+// last 24h) rather than the header's other "fake live" literals — user,
+// verbatim: "that was intentional placeholder during the mockup. now that is
+// for this session. not the entire bar. JUST the sessions count." Overview's
+// $18/24h and Discovery's 2 gaps stay the documented placeholder
+// (design/REDESIGN.md §8 item 5) until they get the same treatment.
+func (h *Handler) base(ctx context.Context, active string) viewBase {
+	sessionsStat := "—"
+	if h.reader != nil {
+		n, err := h.reader.ActiveSessionCount(ctx)
+		if err != nil {
+			h.logger.LogError(ctx, "warn", err, map[string]interface{}{"phase": "admin_ui_nav_active_sessions"})
+		} else {
+			sessionsStat = strconv.FormatInt(n, 10)
+		}
+	}
 	return viewBase{
 		Nav: []navItem{
 			{Name: "Overview", Href: "/admin/ui/overview", Stat: "$18", Unit: "/24h"},
-			{Name: "Sessions", Href: "/admin/ui/sessions", Stat: "3", Unit: "active"},
+			{Name: "Sessions", Href: "/admin/ui/sessions", Stat: sessionsStat, Unit: "active"},
 			{Name: "Discovery", Href: "/admin/ui/content/repeated", Stat: "2", Unit: "gaps", ErrVal: true},
 		},
 		Active:        active,

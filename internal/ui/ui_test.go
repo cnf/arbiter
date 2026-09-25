@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -152,13 +153,13 @@ type viewEntry struct {
 // pageViews maps each page to the view its handler passes. The pairing is the
 // point: it is what a page's template can actually reference.
 var pageViews = map[string]viewEntry{
-	"requests":  {view: func(h *Handler, n string) interface{} { return requestsView{viewBase: h.base(n)} }},
-	"request":   {view: func(h *Handler, n string) interface{} { return detailView{viewBase: h.base(n)} }},
-	"sessions":  {view: func(h *Handler, n string) interface{} { return sessionsView{viewBase: h.base(n)} }},
-	"session":   {view: func(h *Handler, n string) interface{} { return sessionView{viewBase: h.base(n)} }},
-	"overview":  {view: func(h *Handler, n string) interface{} { return overviewView{viewBase: h.base(n)} }},
-	"discovery": {view: func(h *Handler, n string) interface{} { return discoveryView{viewBase: h.base(n)} }},
-	"block":     {view: func(h *Handler, n string) interface{} { return blockRequestsView{viewBase: h.base(n)} }},
+	"requests":  {view: func(h *Handler, n string) interface{} { return requestsView{viewBase: h.base(context.Background(), n)} }},
+	"request":   {view: func(h *Handler, n string) interface{} { return detailView{viewBase: h.base(context.Background(), n)} }},
+	"sessions":  {view: func(h *Handler, n string) interface{} { return sessionsView{viewBase: h.base(context.Background(), n)} }},
+	"session":   {view: func(h *Handler, n string) interface{} { return sessionView{viewBase: h.base(context.Background(), n)} }},
+	"overview":  {view: func(h *Handler, n string) interface{} { return overviewView{viewBase: h.base(context.Background(), n)} }},
+	"discovery": {view: func(h *Handler, n string) interface{} { return discoveryView{viewBase: h.base(context.Background(), n)} }},
+	"block":     {view: func(h *Handler, n string) interface{} { return blockRequestsView{viewBase: h.base(context.Background(), n)} }},
 
 	// error.html is parsed but rendered by nothing: Handler.fail builds its HTML
 	// inline, on purpose — a renderer failure must not be reported by the
@@ -170,7 +171,7 @@ var pageViews = map[string]viewEntry{
 			viewBase
 			Code    int
 			Message string
-		}{viewBase: h.base(n)}
+		}{viewBase: h.base(context.Background(), n)}
 	}},
 }
 
@@ -380,9 +381,6 @@ func TestStaticAssetsAreServedAndVersioned(t *testing.T) {
 	}
 }
 
-
-// whichProviderA keeps the session tests' provider name in one place.
-const whichProviderA = "alpha"
 
 // The cursor is opaque and URL-safe: the payload contains the stored timestamp
 // text, whose `+` characters must not survive into a query string as spaces.

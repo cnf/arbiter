@@ -63,7 +63,7 @@ func (h *Handler) OverviewHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	view := overviewView{
-		viewBase:   h.base("Overview"),
+		viewBase:   h.base(r.Context(), "Overview"),
 		Dimension:  store.DimProvider,
 		Metric:     store.MetricCost,
 		DimRaw:     q.Get("dim"),

@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"context"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/cnf/arbiter/internal/store"
@@ -36,18 +38,61 @@ func shortSessionKey(key string) string {
 	return key[:sessionKeyDisplayLen]
 }
 
-// sessionRow is one conversation in the sessions index: the aggregate plus the
-// display-only shortening of its key.
-type sessionRow struct {
+// previewBytes caps how much of a session's opening message the lane header
+// shows — a one-line preview, not a transcript excerpt (the full text is a
+// click away, on the session's own transcript page).
+const previewBytes = 200
+
+// noClientBodyPreview stands in for a session whose earliest client row has
+// no captured request body — a pre-guardrail rejection with content capture
+// on (#5: "nothing invisible", so the row itself still exists), content
+// capture off entirely, or a client row whose only content was a system
+// preamble with no user turn. All three read identically from here: there is
+// nothing to preview, and the reason is a capture-page question, not a
+// lanes-page one.
+const noClientBodyPreview = "(no client body captured)"
+
+// laneRow is one conversation in the sessions lane view: the aggregate,
+// its already-folded/nested request lines (the exact computation the flat
+// requests page uses — see foldRequestLines/attachTraceChildren), and the
+// display-only bits the lane header needs.
+type laneRow struct {
 	store.SessionSummary
 	ShortKey string
+
+	// Lines is this session's requests, folded and nested exactly as the
+	// requests page computes them: a streamed run collapses into one Run
+	// line (the lane's "stack" node), and a classifier call nests under the
+	// client line sharing its trace_id (a "satellite" node on that line's
+	// stem). No new query or grouping logic — this is the same
+	// requestLineView tree, rendered as a timeline instead of table rows.
+	Lines []requestLineView
+
+	// SatelliteCount totals every nested (non-top-level) line across Lines,
+	// for the lane header's "N satellites" count. Only one nesting level
+	// exists today (attachTraceChildren does not recurse), so this is a
+	// flat sum of each top-level line's Children.
+	SatelliteCount int
+
+	// Preview is the opening client message of the session (its earliest
+	// kind="client" row's first user-role request block), truncated to
+	// previewBytes. Empty when there is nothing to show — see
+	// PreviewNote for why.
+	Preview string
+
+	// PreviewNote explains an empty Preview: capture is off, the row's
+	// content was never captured (a guardrail rejection before capture),
+	// or the session's earliest row carried no user-role block at all.
+	// Rendered in place of Preview so an empty lane header reads as
+	// "nothing to show and here is why", not as a blank cell.
+	PreviewNote string
 }
 
-// sessionsView is the sessions index page.
+// sessionsView is the sessions lane page.
 type sessionsView struct {
 	viewBase
 
-	Rows []sessionRow
+	Rows []laneRow
 
 	// SessionlessCount is how many requests in the window have no session key.
 	// It gets its own row rather than being folded into the list, because those
@@ -63,10 +108,25 @@ type sessionsView struct {
 	// the whole picture.
 	Capped bool
 	Limit  int
+
+	// Filter state, echoed back into the toolbar — the same "the address bar
+	// is the view" convention the requests page's filter form uses.
+	Query      string
+	ErrorsOnly bool
+	ClientOnly bool
+
+	// InView totals the lanes actually rendered (post-filter), for the
+	// detail panel's default "in view" stat grid.
+	InViewSessions int
+	InViewRequests int64
+	InViewErrors   int64
+	InViewCostUSD  float64
 }
 
-// sessionsHandler handles GET /admin/ui/sessions: one row per conversation,
-// most recently active first.
+// sessionsHandler handles GET /admin/ui/sessions: one lane per conversation,
+// most recently active first, its requests (and the classifier calls they
+// triggered) laid out as a timeline instead of cross-referenced against a
+// separate requests list.
 func (h *Handler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 	if disabled := h.storeDisabled(w, r); disabled && fragmentsRequested(r) {
 		return
@@ -85,39 +145,129 @@ func (h *Handler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view := sessionsView{
-		viewBase: h.base("Sessions"),
-		SinceRaw: q.Get("since"),
-		Since:    since,
-		Limit:    store.MaxSessionListLimit,
+		viewBase:   h.base(r.Context(), "Sessions"),
+		SinceRaw:   q.Get("since"),
+		Since:      since,
+		Limit:      store.MaxSessionListLimit,
+		Query:      q.Get("q"),
+		ErrorsOnly: q.Get("errors") == "1",
+		ClientOnly: q.Has("client_only"),
 	}
 	view.Title = "sessions"
 
 	if h.reader != nil {
+		ctx := r.Context()
 		w0 := store.Window{Since: time.Now().UTC().Add(-since)}
-		rows, err := h.reader.Sessions(r.Context(), w0, view.Limit)
+		sessions, err := h.reader.Sessions(ctx, w0, view.Limit)
 		if err != nil {
-			h.logger.LogError(r.Context(), "error", err,
+			h.logger.LogError(ctx, "error", err,
 				map[string]interface{}{"phase": "admin_ui_sessions"})
 			h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
 			return
 		}
-		for _, s := range rows {
-			view.Rows = append(view.Rows, sessionRow{SessionSummary: s, ShortKey: shortSessionKey(s.Key)})
-		}
-		view.Capped = len(rows) == view.Limit
+		view.Capped = len(sessions) == view.Limit
 
-		n, err := h.reader.SessionlessRequestCount(r.Context(), w0)
+		needle := strings.ToLower(strings.TrimSpace(view.Query))
+		for _, s := range sessions {
+			if view.ErrorsOnly && s.Errors == 0 {
+				continue
+			}
+
+			kindFilter := ""
+			if view.ClientOnly {
+				kindFilter = "client"
+			}
+			rows, err := h.reader.ListRequests(ctx, store.RequestFilter{
+				SessionKey: s.Key,
+				Since:      w0.Since,
+				Limit:      maxRequestRows,
+				Kind:       kindFilter,
+			})
+			if err != nil {
+				h.logger.LogError(ctx, "error", err,
+					map[string]interface{}{"phase": "admin_ui_sessions_lane", "session": s.Key})
+				h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
+				return
+			}
+
+			lane := laneRow{SessionSummary: s, ShortKey: shortSessionKey(s.Key)}
+			lane.Preview, lane.PreviewNote = h.lanePreview(ctx, rows)
+
+			views := make([]requestRowView, 0, len(rows))
+			for _, row := range rows {
+				views = append(views, requestRowView{RequestRow: row, ShortSession: lane.ShortKey})
+			}
+			lane.Lines = attachTraceChildren(foldRequestLines(views))
+			for _, line := range lane.Lines {
+				lane.SatelliteCount += len(line.Children)
+			}
+
+			if needle != "" {
+				haystack := strings.ToLower(s.Key + " " + s.Providers + " " + lane.Preview)
+				if !strings.Contains(haystack, needle) {
+					continue
+				}
+			}
+
+			view.InViewSessions++
+			view.InViewRequests += s.Turns
+			view.InViewErrors += s.Errors
+			view.InViewCostUSD += s.CostUSD
+			view.Rows = append(view.Rows, lane)
+		}
+
+		n, err := h.reader.SessionlessRequestCount(ctx, w0)
 		if err != nil {
 			// Degrade rather than fail: the sessions themselves loaded, and the
 			// sessionless row is a courtesy. Its absence is visible (the row is
 			// simply not there), not silently wrong.
-			h.logger.LogError(r.Context(), "warn", err,
+			h.logger.LogError(ctx, "warn", err,
 				map[string]interface{}{"phase": "admin_ui_sessions_sessionless"})
 		}
 		view.SessionlessCount = n
 	}
 
 	h.render(w, r, "sessions", "session-rows", view)
+}
+
+// lanePreview finds a lane's opening message: the earliest kind="client" row
+// among rows (which ListRequests returns newest-first, so the oldest client
+// row is the last one seen), and the first user-role request block it
+// captured.
+//
+// This is a per-lane content fetch, not a new aggregate query — the same
+// N+1 shape the requests page already accepts for attachTitleChildren's
+// per-line ParentSessionForTitle call. Single-user, single-digit-concurrency
+// scale (per the deployment this UI serves) makes that a non-issue here.
+func (h *Handler) lanePreview(ctx context.Context, rows []store.RequestRow) (preview, note string) {
+	if !h.captureContent.Load() {
+		return "", "content capture is off — set storage.capture_content to preview messages"
+	}
+	var earliest *store.RequestRow
+	for i := range rows {
+		if rows[i].Kind == "client" {
+			earliest = &rows[i]
+		}
+	}
+	if earliest == nil {
+		return "", noClientBodyPreview
+	}
+	blocks, _, err := h.reader.ContentForRequest(ctx, earliest.ID, false)
+	if err != nil {
+		h.logger.LogError(ctx, "warn", err,
+			map[string]interface{}{"phase": "admin_ui_sessions_preview", "request_id": earliest.ID})
+		return "", noClientBodyPreview
+	}
+	for _, b := range blocks {
+		if b.Direction == "request" && b.Role == "user" && b.Captured {
+			body := b.Body
+			if len(body) > previewBytes {
+				body = truncBody(body[:min(len(body), previewBytes+1)])
+			}
+			return strings.TrimSpace(body), ""
+		}
+	}
+	return "", noClientBodyPreview
 }
 
 // transcriptBlock is one block of one turn's content, with its hash carried
@@ -216,7 +366,7 @@ func (h *Handler) SessionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view := sessionView{
-		viewBase: h.base("Sessions"),
+		viewBase: h.base(r.Context(), "Sessions"),
 		Key:      key,
 		ShortKey: shortSessionKey(key),
 	}

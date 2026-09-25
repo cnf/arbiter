@@ -2643,3 +2643,221 @@ land.
    actually using it"*, don't resume with more speculative polish) before
    picking either up.
 3. Branch `newui` still has no upstream configured — ask before pushing.
+
+## 34. Session 2026-09-25g — #50 (Discovery) implemented end-to-end (branch `newui`, nothing committed yet)
+
+**Orient (run these, don't trust the numbers below):**
+```bash
+git status -sb          # newui, no upstream; #50's changes uncommitted
+git log --oneline -5    # e4af022 is HEAD, unchanged by this session
+gh issue view 50        # needs devenv: title+body now match what shipped
+```
+
+**What landed (all uncommitted):**
+
+Store layer:
+- `internal/store/schema.sql` — new `discovery_state` table (BLOB hash PK,
+  `state` TEXT, `marked_at_last_seen` TEXT). `CREATE TABLE IF NOT EXISTS` is
+  applied unconditionally, so **no migration/addColumn pass is needed** for a
+  brand-new table (confirmed in `schema_test.go`).
+- `internal/store/reader.go` — `RepeatedContent` now filters
+  `cr.direction = 'request'` (was mixing client-original, guardrail-rewritten
+  and response hashes into one grouping) and orders by
+  `sessions DESC` **only** — request count is no longer a sort key (it only
+  measures how long one conversation ran).
+- `internal/store/discovery.go` — same direction filter added to
+  `ContentHashCounts` so the two definitions stay in agreement
+  (`TestContentHashCountsAgree` depends on that); new state API
+  (`DiscoveryStates`, `SetDiscoveryState`, `ClearDiscoveryState`,
+  `DiscoveryMark`, `PositionsForContent`, state constants, error sentinels).
+  Read+write both live on `Reader` — it already owned write paths
+  (`SweepContent`, `ForgetRequests`) and opens its own `*sql.DB`, so no new
+  writer type. State changes are operator actions, not traffic, so they
+  bypass the async `Writer.Record(Event)` queue on purpose.
+
+UI layer:
+- `internal/ui/discovery.go` — `repeatedBlockView.State`; state lookup joined
+  into `DiscoveryHandler`; `blockRequestRowView` (embeds `requestRowView`, adds
+  the diff-link coordinates from `PositionsForContent`);
+  `DiscoverySetStateHandler` (the state-cycle POST).
+- `internal/ui/templates/pages/discovery.html` (new) — ledger + detail pane.
+- `internal/ui/templates/partials/discoveryRow.html` (new) — the
+  `repeated-rows` / `repeated-row` fragment split, plus the
+  `discovery-state-dot` named template.
+- `internal/ui/templates/pages/block.html` (new, 13 lines) + 
+  `internal/ui/templates/partials/blockRequests.html` (new) — the drill-down.
+  Split because a full page renders from the page set and an htmx fragment
+  renders from the partials-only set; the page just includes the fragment so
+  the two shapes cannot drift.
+- `internal/ui/templates/partials/guardrailDiff.html` (new) — **re-creates the
+  `guardrail-diff` fragment that #55 deleted** along with the rest of the old
+  admin UI. `GuardrailDiffHandler` had been left referencing a template name
+  that no longer existed, so it 500'd; it is now live again and is Discovery's
+  only caller (session.html computes its preamble diff eagerly in
+  `transcript.go` and never reaches this handler).
+- `internal/ui/static/discovery.js` (new) — selection, detail-pane render,
+  arrow-key nav, click-to-cycle handled by the dot's own hx-post,
+  Enter/double-click → workspace mode, Escape back out.
+- `internal/ui/static/app.css` — Discovery table/state-dot/detail-pane rules.
+  Reuses the existing `.toolbar`/`.lanes-col`/`.detail-col`/`.diff-*` classes
+  rather than porting the mockup's duplicates.
+- `internal/ui/ui.go` — `pageFiles` gained `discovery`/`block`.
+- `internal/ui/templates/layout.html` — loads `discovery.js`.
+- `cmd/arbiter/main.go` — `POST /admin/ui/content/repeated/state`, the first
+  POST under `/admin/ui/`, registered `Methods("POST")` like `/admin/reload`
+  so a fronting proxy can allow the GETs and deny this one specifically.
+- Tests: `internal/ui/discovery_ui_test.go` (new, 8 tests),
+  appended store tests in `internal/store/discovery_test.go`.
+
+**State model, as shipped:** unseen / seen / ignored, hash-keyed, absence of a
+row = unseen (untouched blocks cost nothing). `seen` reverts to `unseen` when
+the block's `last_seen` advances past `marked_at_last_seen`; `ignored` never
+re-flags. The state dot's swap is CSS `:has()`-driven off the button's own
+class — the fragment response replaces only the `<button>`, never the row.
+
+**What was verified live (not just unit-green):**
+Built the real binary against a seeded sqlite DB and fetched it over HTTP.
+- ledger groups on raw hash, `direction='request'` only, sorted by sessions;
+  a block repeated 5× inside ONE session correctly does **not** appear at the
+  default `min_sessions=2`, and does at `min_sessions=0`.
+- the drill-down lists every request containing a block, each with a working
+  "view diff" → the re-created fragment renders real `.diff-eq`/`.diff-del`/
+  `.diff-add` spans.
+- the state POST cycles unseen→seen→ignored→unseen and the mark survives a
+  page reload.
+- error paths: bad/missing hash → 400 naming the parameter; unknown-but-valid
+  hash → normal empty page (content may have aged out); GET on the state route
+  → 405; non-integer `msg`/`pos` → 400; htmx fragment request carries rows and
+  no page chrome.
+- `discovery.js` was exercised in its shipped form under a throwaway Node DOM
+  shim (Node is in the Nix store, not on PATH), then the shim was proven real
+  by breaking the shipped file and watching the harness fail.
+- CSS comment balance checked (`42` opens, `42` closes) — an unbalanced
+  comment silently swallows the next rule, which is a landmine this file has
+  hit before.
+
+**Known noise (unchanged, do not re-diagnose):**
+```
+devenv shell --no-tui -- go build ./...   # clean
+devenv shell --no-tui -- go vet ./...     # clean
+devenv shell --no-tui -- go test ./...    # same 3 pre-existing failures as §33:
+    internal/config: TestShippedArbiterYAMLLoads, TestShippedTitlePatternsAreTheIntendedRegexes
+    internal/ui: TestSeriesEndpointShape
+```
+Re-confirmed pre-existing this session by stashing **including untracked files**
+(`git stash -u`) and re-running on the clean tree — plain `git stash` is not
+enough evidence here, because it leaves the new untracked templates/JS in place
+and the comparison is contaminated. That is the trap §31/§32 fell into.
+
+**Deliberately out of scope (per the scoping conversation, encoded in #50):**
+pattern-family clustering (the mockup's 9 labels came from a one-off Python
+heuristic in `design/build_data.py`, not a live query), UA/client sort toggle,
+smart substring search/column sort, and the mockup's pre-seeded ignore list.
+
+**Next steps, in order:**
+1. Do not close #50/#52/#53/#54/#55 — still batched, pending the user's own
+   full-UI test pass.
+2. #54 (Overview) is now the **only** remaining unported page in the batch.
+3. The Discovery work is uncommitted. Ask before committing or pushing;
+   branch `newui` still has no upstream.
+
+## 35. Session 2026-09-26 — #50 (Discovery) follow-ups + committed (branch `newui`, commit c836c9b)
+
+**Orient (run these, don't trust the numbers below):**
+```bash
+git status -sb          # newui, no upstream; c836c9b is #50's commit
+git log --oneline -5    # c836c9b HEAD
+gh issue view 50        # progress comment posted this session
+```
+
+Continues §34 (same session thread, different context window). Three
+follow-ups landed on top of what §34 already shipped, then everything
+was committed as one commit:
+
+1. **Caching.** The live ledger query was ~14-21s on the real prod DB
+   (1.1GB, 4M+ content refs) — too slow to be "usable now" per the user.
+   Added an in-memory TTL cache (`discoveryCache` in
+   `internal/ui/discovery.go`) fronting `RepeatedContent` +
+   `ContentHashCounts`, keyed on `(since, min_requests, min_sessions,
+   limit)`. Single-admin traffic → plain mutex + TTL is enough, no
+   singleflight/sharding, no invalidation beyond expiry. Seen/ignored
+   state is deliberately **not** cached (cheap query, and staleness
+   would be user-visible/wrong) — writes through immediately even
+   while the ledger itself is served stale. On-disk caching explicitly
+   deferred by the user ("finetuning later... i just want it usable
+   now"). Verified live: cold 14.4s, cached reload 5ms; different
+   params still pay full cost once then cache; state POST reflected
+   immediately through a cached ledger.
+2. **Workspace-mode full text.** User: "when going into workspace
+   mode, the text field should be as large as can fit in the
+   workspace, and show the full text, untruncated." Workspace mode had
+   been showing only the ledger row's 200-char SQL preview stretched
+   into a bigger CSS box — not actually more text. Added
+   `GET /admin/ui/content/block/body?hash=` (`DiscoveryBlockBodyHandler`,
+   fragment-only), which `discovery.js`'s `renderWorkspace` now
+   htmx-fetches on entry. **First pass reused `blockPreviewBytes`' 8KB
+   render cap** (the same one the drill-down page uses) — this was
+   wrong; the user explicitly asked for untruncated text in workspace
+   mode specifically, caught it ("workspace mode still truncates at
+   8192 bytes?"). Fixed: workspace's fragment renders `.Block.Body`
+   raw, no cap — the one place on the site `blockPreviewBytes` does
+   not apply. `TestDiscoveryBlockBodyIsNotTruncated` seeds an ~18.4KB
+   block and asserts the tail survives with no truncation notice —
+   this is the regression test that would have caught the original
+   mistake.
+3. **Hide ignored.** User: "i'd like a way to just not show ignored
+   rows. otherwise they are not really ignored." Default behavior
+   (dim-in-place, per the mockup) stayed as-is; added `hide_ignored=1`
+   as an opt-in toolbar checkbox (`discoveryView.HideIgnored`) that
+   drops ignored rows from the rendered list after state marks are
+   attached — applied post-cache, not folded into the SQL query, since
+   "ignored" is a UI-only mark the aggregation query has no concept of.
+   `Shown` count adjusts to match what's actually on the page.
+
+**Also answered, no code change:** "is it expected that ignored still
+show up [by default]?" — yes, confirmed against the mockup
+(`design/mockups/discovery-B-ledger.html`): ignored rows dim
+(opacity 0.55/0.22) but were never meant to vanish; that's what
+`hide_ignored` (item 3) is for.
+
+**Committed as `c836c9b`** — one commit, all of §34 + this session's
+three follow-ups together (they're one continuous feature, never
+shipped separately). Staged explicitly by path, NOT `git add -A`: the
+untracked design/mockup/dev-scaffolding files listed in §32-34
+(`cmd/bigpreview/`, `cmd/previewserver/`, `cmd/realpreview/`,
+`design/build_data.py`, `design/discovery_export.json`,
+`design/inline_data.py`, `design/mockups/*` exploration artifacts,
+`design/overview-mockups/`) are still untracked and still deliberately
+excluded — same disposition as before, unrelated to what shipped here.
+Also left out: `support/pasted_content_2026-09-25_14-23-43-630_7b956f.txt`,
+a stray paste artifact, not part of this feature.
+
+Pre-commit hook note: `golangci-lint` needs `go` on PATH, which only
+exists inside `devenv shell` — running `git commit` directly on the
+host shell fails the hook (`exec: "go": executable file not found`).
+Always commit via `devenv shell --no-tui -- bash -c "git commit ..."`.
+
+**Ticket:** posted a progress comment on #50
+(https://github.com/cnf/arbiter/issues/50#issuecomment-5840851844)
+summarizing what shipped, including the three follow-ups beyond the
+original scope. **Left open**, per the batch convention — #50/#52
+(shipped)/#53 (shipped)/#54/#55 close together after the user's own
+full-UI pass. #54 (Overview) is still the only unported page left in
+the batch.
+
+**Known noise (unchanged, do not re-diagnose):**
+```
+devenv shell --no-tui -- go build ./...   # clean
+devenv shell --no-tui -- go vet ./...     # clean
+devenv shell --no-tui -- go test ./...    # same 3 pre-existing failures:
+    internal/config: TestShippedArbiterYAMLLoads, TestShippedTitlePatternsAreTheIntendedRegexes
+    internal/ui: TestSeriesEndpointShape
+```
+Re-verified post-commit, not just pre-commit — build/vet/test run again
+against the committed tree, same result.
+
+**Next steps, in order:**
+1. Do not close #50/#52/#53/#54/#55 — still batched, pending the user's
+   own full-UI test pass.
+2. #54 (Overview) is the only remaining unported page in the batch.
+3. Branch `newui` still has no upstream configured — ask before pushing.

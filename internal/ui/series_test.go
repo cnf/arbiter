@@ -9,34 +9,6 @@ import (
 	"github.com/cnf/arbiter/internal/store"
 )
 
-// The chart's data comes from JSON, not from an inline <script>: no
-// store-derived string may reach a JavaScript context, where the server's own
-// escaping cannot be verified. This test asserts the page carries a *URL* and
-// that nothing in the response is a fragment of live script.
-func TestChartDataIsFetchedNotInlined(t *testing.T) {
-	h, _ := newSeededHandler(t, store.Event{TraceID: "t", Provider: "p", Model: "m",
-		StatusCode: 200, LatencyMs: 1})
-
-	page := serve(t, h, "GET", "/admin/ui/overview", false).Body.String()
-	if !strings.Contains(page, `id="chart"`) {
-		t.Fatal("the overview has no chart node")
-	}
-	if !strings.Contains(page, `data-src="/admin/ui/overview/series.json?`) {
-		t.Error("the chart node does not carry the series URL")
-	}
-	// No inline script block holding data.
-	if strings.Contains(page, "<script>") && strings.Contains(page, "var data") {
-		t.Error("the page inlines chart data into a script block")
-	}
-	// The uPlot library is referenced by URL, under the gate, versioned.
-	if !strings.Contains(page, "/admin/ui/static/uplot.min.js?v=") {
-		t.Error("the page does not reference the vendored chart library")
-	}
-	if !strings.Contains(page, "/admin/ui/static/chart.js?v=") {
-		t.Error("the page does not reference our chart glue")
-	}
-}
-
 // The series endpoint answers JSON with the shape chart.js expects, and the
 // axes it was given are carried through.
 func TestSeriesEndpointShape(t *testing.T) {

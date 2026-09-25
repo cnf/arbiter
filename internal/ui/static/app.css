@@ -1,64 +1,84 @@
-/* Arbiter admin UI.
+/* Arbiter admin UI — newui redesign (branch `newui`).
  *
- * Token values and component rules come from DESIGN.md (repo root) — that
- * file is the source of truth for anything that isn't a page-specific layout
- * decision (routing chain, threading, transcript rail, etc. — those land as
- * the per-page rebuilds in #47-#50). This file is #46: the shared design
- * system every other phase builds on.
+ * This file was fully replaced, not edited, as part of #55: the `newui`
+ * thread's mockups (design/mockups/arbiter-redesign-5-lanes-realdata.html,
+ * design/mockups/transcript-D-merged.html, design/overview-mockups/
+ * f3-overview-styled.html) superseded the previous admin UI outright. See
+ * DESIGN.md and design/REDESIGN.md for the design history; nothing in the
+ * pre-newui version of this file carries over — the whole prior admin UI
+ * (HTML/CSS/JS) is being ripped out and rebuilt page by page under
+ * #50/#52/#53/#54, with this file (tokens + shared chrome) landing first so
+ * every later page builds against one vocabulary instead of inventing its
+ * own.
  *
- * Dense and discovery-oriented: the page exists to be read and scanned, not
- * to be admired. Monospace for anything the store produced, because
- * identifiers, model names, hashes and rationales are read character by
- * character; a proportional face makes them harder to compare down a column.
+ * Token vocabulary is the later mockup lineage's (transcript-D-merged.html /
+ * f3-overview-styled.html), not the earlier one (arbiter-redesign-5/9) —
+ * ticket #55's resolution: same underlying colors in both lineages, this is
+ * the naming that survives. Two border tokens are kept as separate concepts
+ * rather than merged, because they visually do different jobs, confirmed
+ * against every mockup call site:
+ *   --border        the normal hairline
+ *   --border-soft    same hue, low alpha — passive dividers (panel edges,
+ *                    section headers, list rows): fainter than normal
+ *   --border-strong  solid, heavier — interactive control outlines (chips,
+ *                    buttons, tags): the one case that should read as
+ *                    stronger than the passive hairline, not fainter
  *
- * Everything is UTC (that is what is stored); the header says so once rather
- * than half-converting. Light and dark are both honoured via
- * prefers-color-scheme — a single dark theme would be a choice made for the
- * operator rather than by them. DESIGN.md's token spec gives -dark pairs for
- * every color except primary/secondary/secondary-ink, which hold their value
- * across both schemes (bright brand accents don't need a dark variant to stay
- * legible on either background).
+ * Dark is canonical; light is an explicit `data-theme="light"` attribute
+ * swap (an in-page toggle button), not a `prefers-color-scheme` hook — see
+ * DESIGN.md for the reasoning. Monospace for anything the store produced
+ * (identifiers, model names, hashes, rationales) — read character by
+ * character, so a proportional face makes them harder to compare down a
+ * column.
  */
 
 :root {
-  color-scheme: light dark;
+  /* ---- surfaces ---- */
+  --bg: #14161c;
+  --panel: #1b1e26;
+  --panel-2: #21242e;
+  --panel-3: #262a35;
 
-  /* Brand accents. primary = the one committing action per view; secondary =
-     navigation/reference. Neither doubles as a status signal. See
-     DESIGN.md's Colors section and Do's/Don'ts for the full rule. */
+  /* ---- borders (three distinct jobs, not one token — see file header) ---- */
+  --border: #2a2e3a;
+  --border-soft: rgba(42, 46, 58, 0.6);
+  --border-strong: #3b4051;
+
+  /* ---- text ---- */
+  --text: #e6e8ec;
+  --text-dim: #9aa1ac;
+  --text-faint: #6b7280;
+
+  /* ---- brand / accent ---- */
   --primary: #ff6700;
-  --secondary: #0098ff;
-  --secondary-ink: #0072cc; /* AA-safe text/button-label variant of secondary */
-  --on-primary: var(--ink);
-  --on-secondary: var(--ink);
+  --on-primary: #14161a;
+  --accent: #46b4ff;
+  --accent-strong: #0098ff;
+  --accent-dim: #1b3a57;
 
-  /* Page chrome. */
-  --ink: #14161a;
-  --bg: #fbfbfc;
-  --surface: #ffffff;
-  --line: #d9dce1;
-  --muted: #6b7280;
+  /* ---- status ---- */
+  --ok: #5fc98d;
+  --warn: #e0a44a;
+  --err: #ff8a80;
+  --note: #a6a6f0;
 
-  /* Status channel — request-outcome semantics only, reused nowhere else. */
-  --ok: #16794a;
-  --warn: #a35a00;
-  --err: #b3261e;
-  --note: #3f3f8f;
+  /* ---- request-kind / role colors ---- */
+  --purple: #a996ff; /* classifier */
+  --kind-title: #5fd4d4;
+  --kind-subagent: #e58bcb;
+  --tool: #e0b34a;
+  --user: #e0b34a;
+  --user-dim: #3a2a14;
+  --user-text: #f0dcb0;
 
-  /* Kind channel — request_kind only (classifier/title/subagent). Wired up
-     by #47; defined here so every later phase reads the same three values. */
-  --kind-classifier: #7c5cfc;
-  --kind-title: #0ea5a5;
-  --kind-subagent: #c2419c;
+  --tab-active-ink: #d6ecff;
 
-  /* Tool-call/tool-result content in a transcript. Distinct from warn (a tool
-     call is neutral, not a problem) and from kind (a request's kind and its
-     tool activity are different facts). */
-  --tool: #b8860b;
-
-  --radius-sm: 3px;
+  /* ---- type / shape ---- */
+  --mono: "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --radius-sm: 4px;
   --radius-md: 6px;
-  --radius-lg: 10px;
+  --radius-lg: 8px;
   --radius-pill: 9999px;
 
   --space-xs: 4px;
@@ -67,719 +87,448 @@
   --space-lg: 20px;
   --space-xl: 32px;
 
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: dark;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ink: #e6e8ec;
-    --bg: #15171b;
-    --surface: #1b1e23;
-    --line: #2b2f36;
-    --muted: #9aa1ac;
-    --ok: #5fc98d;
-    --warn: #e0a44a;
-    --err: #ff8a80;
-    --note: #a6a6f0;
-    --kind-classifier: #a996ff;
-    --kind-title: #5fd4d4;
-    --kind-subagent: #e58bcb;
-    --tool: #e0b34a;
-  }
+html[data-theme="light"] {
+  --bg: #f5f4f1;
+  --panel: #ffffff;
+  --panel-2: #fafaf8;
+  --panel-3: #f0eee9;
+
+  --border: #e5e3dd;
+  --border-soft: rgba(210, 207, 198, 0.6);
+  --border-strong: #d2cfc6;
+
+  --text: #17181b;
+  --text-dim: #6e6a61;
+  --text-faint: #a5a196;
+
+  --accent: #0072cc;
+  --accent-strong: #0072cc;
+  --accent-dim: #d6ecff;
+
+  --ok: #16794a;
+  --warn: #a35a00;
+  --err: #b3261e;
+  --note: #3f3f8f;
+
+  --purple: #7c5cfc;
+  --kind-title: #0ea5a5;
+  --kind-subagent: #c2419c;
+  --tool: #8a6215;
+  --user: #8a6215;
+  --user-dim: #fbf0dc;
+  --user-text: #6b4a0f;
+
+  --tab-active-ink: #003a66;
+
+  color-scheme: light;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
+html,
 body {
   margin: 0;
+  padding: 0;
+  height: 100%;
   background: var(--bg);
-  color: var(--ink);
-  font: 0.875rem/1.45 var(--sans); /* body-md */
+  color: var(--text);
+  font: 0.875rem/1.45 var(--sans);
 }
 
-/* Secondary is the navigation/reference color; secondary-ink is its AA-safe
-   text form (flat secondary-on-surface text is ~3:1, under WCAG AA). */
-a { color: var(--secondary-ink); text-decoration: none; }
-a:hover { text-decoration: underline; }
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
 
-.muted { color: var(--muted); }
-.mono, pre, code { font-family: var(--mono); font-size: 0.78125rem; line-height: 1.4; } /* data-mono */
+.mono,
+code,
+pre {
+  font-family: var(--mono);
+  font-size: 0.78125rem;
+  line-height: 1.4;
+}
 
-/* ---------------------------------------------------------------- chrome -- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------------------------------------------------------- site chrome -- */
+/* header.top + footer.appfoot + store-disabled banner: the shared shell,
+ * settled in design/REDESIGN.md §7-§8 and reused verbatim across every
+ * newui mockup (transcript-D-merged.html, f3-overview-styled.html). */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
 
 header.top {
   display: flex;
-  align-items: center;
-  gap: 1.25rem;
-  padding: 0.5rem 1rem;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface);
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  flex-wrap: wrap;
+  align-items: stretch;
+  padding: 0 1.2rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex: 0 0 auto;
+  height: 58px;
 }
-
 header.top .brand {
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--ink);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-right: 1.4rem;
+  margin-right: 0.3rem;
+  border-right: 1px solid var(--border);
+  text-decoration: none;
+  color: var(--text);
 }
-
-header.top nav { display: flex; gap: 0.75rem; }
-/* An inactive nav item recedes to muted; the active one is marked in
-   secondary — "the active nav item" is explicitly one of DESIGN.md's named
-   uses for the secondary channel. */
-header.top nav a { color: var(--muted); }
-header.top nav a.on { color: var(--secondary-ink); font-weight: 600; }
-
-header.top .reload { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
-header.top .clock { color: var(--muted); font-family: var(--mono); font-size: 12px; }
-
-main { padding: 1rem; max-width: 1600px; }
-h1 { font-size: 1.15rem; font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; margin: 0.25rem 0 0.25rem; }
-h2 { font-size: 0.95rem; font-weight: 600; line-height: 1.3; margin: 0 0 0.5rem; display: flex; align-items: center; gap: 0.75rem; }
-.lede { margin: 0 0 0.75rem; color: var(--muted); }
+header.top .brand:hover {
+  text-decoration: none;
+}
+header.top .brand .mark {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-lg);
+  flex: 0 0 auto;
+  background: linear-gradient(135deg, var(--primary), var(--accent-strong));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+header.top .brand .mark svg {
+  width: 17px;
+  height: 17px;
+  stroke: #14161a;
+  fill: none;
+  stroke-width: 2.2;
+}
+header.top .brand span {
+  color: var(--primary);
+}
+header.top nav {
+  display: flex;
+  align-items: stretch;
+}
+header.top nav a {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 1.15rem;
+  text-decoration: none;
+  color: var(--text-faint);
+  border-bottom: 2px solid transparent;
+  border-right: 1px solid var(--border);
+  min-width: 98px;
+}
+header.top nav a .lbl {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+header.top nav a .stat {
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+header.top nav a .stat .u {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-weight: 500;
+  margin-left: 3px;
+}
+header.top nav a .stat.errval {
+  color: var(--err);
+}
+header.top nav a.on {
+  border-bottom-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
+}
+header.top nav a.on .lbl {
+  color: var(--primary);
+}
+header.top .actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+header.top .live {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+header.top .themebtn {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-faint);
+  font-size: 11px;
+  padding: 5px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+}
+header.top .themebtn:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+header.top .themebtn svg {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+}
 
 .banner {
   margin: 0;
   padding: 0.5rem 1rem;
   background: color-mix(in srgb, var(--warn) 14%, transparent);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--border);
   color: var(--warn);
+  font-size: 0.8125rem;
 }
 
-footer {
+footer.appfoot {
   display: flex;
-  gap: 1rem;
-  padding: 0.75rem 1rem 2rem;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-/* ----------------------------------------------------------------- forms -- */
-
-.filters {
-  display: flex;
+  align-items: center;
+  gap: 1.2rem;
   flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 0.6rem;
-  padding: 0.6rem 0.75rem;
-  margin-bottom: 0.75rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
+  padding: 0.6rem 1.6rem;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-faint);
+  font-size: 11.5px;
+  flex: 0 0 auto;
 }
-
-.filters label {
+footer.appfoot .reload {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: lowercase;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  border: 0;
 }
-
-/* input component: background matches the page (bg, not surface), so a
-   focused field visually recedes into the page until it's actively used. */
-.filters input[type="text"] {
-  font: 12.5px var(--mono);
-  padding: 3px 5px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--bg);
-  color: var(--ink);
-}
-
-.filters label.check { flex-direction: row; align-items: center; gap: 4px; }
-
-/* button-secondary is the default for every plain button on the page today:
-   ghost, ink text on surface, everything reversible or non-committing. Which
-   controls (if any) get promoted to button-primary is a page-layout decision
-   owned by the phase that rebuilds each page (#47-#50), not this foundation
-   phase. */
-button, .filters button, .load, .more {
-  font: 12px var(--sans);
-  padding: 4px 9px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--secondary-ink);
+footer.appfoot .reload button {
+  all: unset;
   cursor: pointer;
+  font: 700 11px var(--sans);
+  color: var(--text-faint);
+  padding: 5px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
 }
-button:hover { border-color: var(--secondary); }
-.filters a.reset { font-size: 12px; color: var(--muted); }
-
-.htmx-indicator { opacity: 0; transition: opacity 120ms; }
-.htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; }
-#rows > [data-tail-indicator] { opacity: 0; transition: opacity 120ms; }
-
-/* The live tail control. It sits above the table inside #rows so an htmx filter
-change swaps it along with the rows it follows. */
-.tail {
-  display: flex; align-items: center; gap: 0.6rem;
-  margin: 0 0 0.6rem; font-size: 12px; color: var(--muted);
+footer.appfoot .reload button:hover {
+  color: var(--text);
+  border-color: var(--accent-strong);
 }
-.tail button {
-  font-family: inherit; font-size: 12px; cursor: pointer;
-  padding: 3px 10px; border-radius: var(--radius-sm);
-  border: 1px solid var(--line); background: var(--surface); color: var(--secondary-ink);
+footer.appfoot .reload .note {
+  font-family: var(--mono);
+  font-size: 11px;
 }
-.tail button[aria-pressed="true"] {
-  border-color: color-mix(in srgb, var(--ok) 55%, var(--line));
+footer.appfoot .reload .note.ok {
   color: var(--ok);
 }
-.tail .tailstatus { font-family: var(--mono); }
-.tail .tailstatus:not(.new):not(.warn):not(.bad) { color: var(--muted); }
-/* The status carries the state: a quiet store and a stopped tail look the same
-   without it, which is why the timestamp is part of every message. */
-.tail .tailstatus.new { color: var(--ok); }
-.tail .tailstatus.warn { color: var(--warn); }
-.tail .tailstatus.bad { color: var(--err); }
-
-/* ------------------------------------------------------------ req grid -- */
-/* The request list, per DESIGN.md's "Request rows" spec: a CSS grid, not a
- * <table> — each row is its own grid with 3px status-bar | 84px time | 1fr
- * chain | auto session | auto cost, cost/latency pinned last via `order`
- * rather than markup position so a future column slots in without touching
- * every row template.
- */
-
-.reqlist {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-
-.reqhead, .reqrow {
-  display: grid;
-  grid-template-columns: 3px 84px 1fr auto auto;
-  align-items: start;
-  column-gap: var(--space-sm);
-}
-
-.reqhead {
-  padding: 5px 8px;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: lowercase;
-  color: var(--muted);
-  border-bottom: 1px solid var(--line);
-}
-.reqhead .c-bar { visibility: hidden; }
-
-.reqrow {
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--line);
-  font-size: 12px;
-}
-.reqrow:last-child { border-bottom: 0; }
-.reqrow:hover { background: color-mix(in srgb, var(--secondary) 5%, transparent); }
-
-/* The status bar is a full-height colored edge, not a dot — every row keeps
-   it, parent or child, per DESIGN.md: no row is ever exempt. align-self
-   stretches the 3px column to the row's own height regardless of how much
-   the chain/axes lines wrap it to. */
-.reqrow .c-bar, .reqhead .c-bar {
-  align-self: stretch;
-  border-radius: var(--radius-sm);
-  background: var(--line);
-}
-.reqrow .c-bar.s-ok   { background: var(--ok); }
-.reqrow .c-bar.s-note { background: var(--note); }
-.reqrow .c-bar.s-warn { background: var(--warn); }
-.reqrow .c-bar.s-err  { background: var(--err); }
-
-.c-time {
+footer.appfoot .clock {
   font-family: var(--mono);
+  color: var(--text-faint);
+}
+footer.appfoot .spacer {
+  flex: 1 1 auto;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Sessions (#52): lanes list + persistent detail panel. Ported from
+ * design/mockups/arbiter-redesign-5-lanes-realdata.html — token names
+ * translated to this file's vocabulary (--panel/--border/--text-* etc,
+ * per #55's reconciliation), layout and behavior unchanged. Node status
+ * colors reuse statusClass's existing s-ok/s-warn/s-err/s-note classes
+ * (format.go) rather than inventing new ones, so a node's ring color is
+ * driven by the same function the flat requests page already uses. */
+
+.main { flex: 1; display: flex; overflow: hidden; }
+
+.lanes-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+.pagehead { padding: 1.1rem 1.6rem 0.8rem; }
+.pagehead h1 { font-size: 1.25rem; margin: 0 0 3px; letter-spacing: -0.01em; }
+.pagehead .lede { color: var(--text-dim); font-size: 12.5px; margin: 0; max-width: 62ch; }
+
+.toolbar {
+  display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap;
+  padding: 0.7rem 1.6rem; border-bottom: 1px solid var(--border);
+}
+.toolbar input.search {
+  flex: 1; min-width: 200px; max-width: 420px; font: 12.5px var(--mono);
+  padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+  background: var(--panel); color: var(--text);
+}
+.toolbar select, .toolbar .chip {
+  font: 12px var(--sans); padding: 5px 10px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md); background: var(--panel); color: var(--text-dim); cursor: pointer;
+}
+.toolbar .chip.on {
+  background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent); font-weight: 600;
+}
+.toolbar .spacer { flex: 1 1 auto; min-width: 0; }
+.toolbar .count { color: var(--text-faint); font-size: 11.5px; white-space: nowrap; }
+
+.lane-scroll { flex: 1; overflow-y: auto; padding: 0.4rem 0 3rem; }
+
+/* ---- swimlane: full-width row — head line (sid+meta left / preview+cost
+ * right), then a full-width timeline below ---- */
+.lane-row {
+  display: flex; flex-direction: column; gap: 10px;
+  border-bottom: 1px solid var(--border);
+  padding: 14px 1.6rem;
+  transition: background .1s;
+}
+.lane-row:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.lane-row.selected { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+
+.lane-head { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; }
+.lane-head-left { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1 1 auto; }
+.lane-head-left .sid {
+  font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent); padding: 2px 8px;
+  border-radius: var(--radius-sm); flex: 0 0 auto;
+}
+.lane-head-left .meta { font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
+.lane-head-left .meta b { color: var(--text-dim); font-weight: 600; }
+
+.lane-head-right {
+  display: flex; align-items: baseline; gap: 14px; justify-content: flex-end;
+  min-width: 0; flex: 1 1 auto; text-align: right;
+}
+.lane-head-right .preview {
+  font-size: 12.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; min-width: 0;
+}
+.lane-head-right .preview.muted { color: var(--text-faint); font-style: italic; }
+.lane-head-right .cost { font-family: var(--mono); font-weight: 700; font-size: 13px; color: var(--text); flex: 0 0 auto; }
+
+.lane-timeline { position: relative; display: flex; align-items: center; min-height: 40px; padding-left: 4px; width: 100%; }
+.lane-timeline::before {
+  content: ""; position: absolute; left: 0; right: 12px; top: 50%; height: 2px;
+  background: var(--border-strong); transform: translateY(-1px);
+}
+.node { position: relative; z-index: 2; cursor: pointer; flex: 0 0 auto; border: 0; }
+.node.client {
+  width: 18px; height: 18px; border-radius: 50%; background: var(--panel);
+  border: 3px solid var(--ok); margin-right: 38px;
+}
+.node.client.s-err { border-color: var(--err); }
+.node.client.s-warn { border-color: var(--warn); }
+.node.client.s-note { border-color: var(--note); }
+.node.client.is-selected { background: var(--ok); }
+.node.client.s-err.is-selected { background: var(--err); }
+.node.client.s-warn.is-selected { background: var(--warn); }
+.node.sat {
+  width: 10px; height: 10px; border-radius: 50%; margin-right: 26px; margin-top: -24px;
+  border: 2px solid var(--text-faint); background: var(--panel);
+}
+.node.sat::after {
+  content: ""; position: absolute; left: 2px; top: 9px; width: 2px; height: 18px;
+  background: var(--border-strong); opacity: 0.65;
+}
+.node.sat.classifier { border-color: var(--purple); }
+.node.sat.title { border-color: var(--kind-title); }
+.node.sat.subagent { border-color: var(--kind-subagent); }
+.node.sat.is-selected { background: currentColor; }
+.node.stack {
+  width: auto; min-width: 34px; height: 22px; padding: 0 8px; border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  border: 2px solid var(--accent); margin-right: 34px;
+  display: flex; align-items: center; justify-content: center;
+}
+.node.stack .stackn { font-family: var(--mono); font-size: 10.5px; font-weight: 700; color: var(--accent); }
+.node.stack.is-selected { background: var(--accent); }
+.node.stack.is-selected .stackn { color: var(--on-primary); }
+.node .tip {
+  position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+  white-space: nowrap; font-size: 10.5px; font-family: var(--mono); color: var(--text-dim);
+  background: var(--panel); border: 1px solid var(--border); padding: 2px 6px; border-radius: var(--radius-sm);
+  opacity: 0; transition: opacity .1s; pointer-events: none;
+}
+.node:hover .tip, .node:focus-visible .tip { opacity: 1; }
+.node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.axistags { display: flex; gap: 5px; margin-left: 10px; position: relative; z-index: 3; }
+.axistags span, .axistags .tag {
+  font-family: var(--mono); font-size: 10px; color: var(--text-dim);
+  background: var(--panel); border: 1px solid var(--border); padding: 1px 6px; border-radius: var(--radius-sm);
   white-space: nowrap;
-  order: 2;
 }
-.c-time .sub { display: block; color: var(--muted); font-size: 11px; font-family: var(--sans); }
+.axistags .tag.err { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
 
-/* A child row (a classifier/title/subagent call threaded above its parent,
-   see attachTraceChildren/attachTitleChildren, #8) gets its indent only on
-   the time column's `↳` marker — never the whole row, and never the cost
-   column, so cost stays in a straight scannable line regardless of nesting
-   depth. */
-.reqrow.child .c-time { padding-left: 1.1rem; position: relative; }
-.reqrow.child .c-time::before {
-  content: "↳";
-  position: absolute;
-  left: 0;
-  color: var(--muted);
+/* ---- right detail panel — persistent, page-native (not a modal/dock) ---- */
+.detail-col {
+  flex: 0 0 380px; border-left: 1px solid var(--border); background: var(--panel);
+  overflow-y: auto; padding: 20px;
 }
-.reqrow.child { background: color-mix(in srgb, var(--line) 25%, transparent); }
+.detail-col h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); margin: 0 0 14px; font-weight: 700; }
 
-.c-chain { order: 3; min-width: 0; }
-.reqmeta { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.chain { display: block; font-family: var(--mono); font-size: 12px; margin-top: 1px; overflow-wrap: anywhere; }
-.chain .arrow { color: var(--muted); margin: 0 2px; }
-/* Axis pills (domain/effort/cost_class) sit on their own line below the
-   model-name/status line, not beside the chain and not beside cost — see
-   DESIGN.md. */
-.axes { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 2px; font-size: 11px; }
-.axes .why { color: var(--muted); max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.c-session { order: 4; white-space: nowrap; }
-.c-cost {
-  order: 5;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 1px;
-  font-family: var(--mono);
-  font-size: 12px;
-  white-space: nowrap;
+.default-panel .stat-grid, .node-panel .stat-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px 10px; margin-bottom: 20px;
 }
-.c-cost .cost { color: var(--ink); }
-
-/* Session id renders as a bordered chip with a dot-marker — a "conversation
-   handle," not incidental metadata (DESIGN.md). */
-.sesschip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 6px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--secondary-ink);
-  text-decoration: none;
+.default-panel .stat dt, .node-panel .stat dt { font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3px; }
+.default-panel .stat dd, .node-panel .stat dd { margin: 0; font-family: var(--mono); font-size: 19px; color: var(--text); font-weight: 700; }
+.default-panel .hint, .node-panel .hint {
+  color: var(--text-dim); font-size: 12px; line-height: 1.6; border-top: 1px solid var(--border);
+  padding-top: 14px;
 }
-.sesschip:hover { background: color-mix(in srgb, var(--secondary) 10%, transparent); }
-.sesschip .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
+.default-panel .hint b { color: var(--text); }
+.node-panel .open-link { display: inline-block; margin-top: 14px; font-size: 12px; font-weight: 600; }
+
+.legend {
+  display: flex; gap: 10px; flex-wrap: wrap; font-size: 10.5px; color: var(--text-faint);
+  padding: 8px 1.6rem; border-top: 1px solid var(--border); background: var(--panel);
 }
-
-/* A collapsed run of streamed turns. It is deliberately *not* loud: the point of
-   folding is that the eye reaches the distinct events, so the summary line
-   recedes and its count is the one thing that stands forward. The count badge is
-   also the link that opens the constituents (the flat, filtered view), which is
-   why it is styled as a control rather than as text. Per DESIGN.md the badge
-   sits below the "x ago" text, not beside it — the time column stacks them. */
-.grouping {
-  margin: 0 0 0.5rem;
-  color: var(--muted);
-  font-size: 12px;
+.legend .dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%; border: 2px solid;
+  margin-right: 3px; vertical-align: -1px; background: var(--panel);
 }
-.reqrow.run .c-time, .reqrow.run .c-chain .muted { color: var(--muted); }
-.reqrow.run .count {
-  display: block;
-  width: fit-content;
-  color: var(--secondary-ink);
-  text-decoration: none;
-  font-family: var(--sans);
-  font-size: 11px;
-  padding: 0 4px;
-  margin-top: 1px;
-  border: 1px solid color-mix(in srgb, var(--secondary) 40%, transparent);
-  border-radius: var(--radius-pill);
-}
-.reqrow.run .count:hover { background: color-mix(in srgb, var(--secondary) 15%, transparent); }
+.legend .dot.ok { border-color: var(--ok); }
+.legend .dot.err { border-color: var(--err); }
+.legend .dot.warn { border-color: var(--warn); }
+.legend .dot.classifier { border-color: var(--purple); }
+.legend .dot.title { border-color: var(--kind-title); }
+.legend .dot.subagent { border-color: var(--kind-subagent); }
 
+.empty { color: var(--text-dim); padding: 1.2rem 1.6rem; margin: 0; font-size: 13px; }
+.capped { color: var(--text-faint); padding: 0 1.6rem 0.6rem; margin: 0; font-size: 11.5px; }
 
-.pager { display: flex; align-items: center; gap: 0.75rem; margin: 0.6rem 0 0; color: var(--muted); font-size: 12px; }
-
-/* Status is its own channel, independent of brand/kind — a glance down this
-   column is never ambiguous with a glance down an accent or a kind chip. */
-.status {
-  display: inline-block;
-  min-width: 3ch;
-  text-align: center;
-  font-family: var(--mono);
-  font-size: 12px;
-  padding: 0 4px;
-  border-radius: var(--radius-sm);
-  border: 1px solid transparent;
-}
-.s-ok   { color: var(--ok);   border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
-.s-note { color: var(--note); border-color: color-mix(in srgb, var(--note) 40%, transparent); }
-.s-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
-.s-err  { color: var(--err);  border-color: color-mix(in srgb, var(--err) 40%, transparent); }
-.s-none { color: var(--muted); }
-.status[title] { cursor: help; }
-
-/* tag component: the neutral pill for kind/axis labels that aren't a status. */
-.tag {
-  display: inline-block;
-  font-size: 11px;
-  padding: 0 5px;
-  margin-right: 3px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  color: var(--muted);
-}
-.tag.kind-classifier, .tag.kind-title, .tag.kind-subagent {
-  color: var(--kind-classifier);
-  border-color: color-mix(in srgb, var(--kind-classifier) 40%, transparent);
-}
-/* request_kind (classifier/title/subagent) renders as one chip style,
-   distinguished only by color — never a different tag shape per kind
-   (DESIGN.md). Kind above (who sent the request — Arbiter's own internal
-   traffic) shares the same visual language deliberately: both answer "what
-   kind of row is this", just on different axes, so the reader learns one
-   pattern. */
-.tag.kind-title { color: var(--kind-title); border-color: color-mix(in srgb, var(--kind-title) 40%, transparent); }
-.tag.kind-subagent { color: var(--kind-subagent); border-color: color-mix(in srgb, var(--kind-subagent) 40%, transparent); }
-
-.empty { padding: 1rem; border: 1px dashed var(--line); border-radius: var(--radius-sm); color: var(--muted); }
-.fail h1 { font-size: 2rem; margin: 2rem 1rem 0; }
-.fail p.error { margin: 0.5rem 1rem; font-family: var(--mono); }
-
-/* --------------------------------------------------------------- detail -- */
-
-.crumbs { color: var(--muted); font-size: 12px; margin-bottom: 0.25rem; }
-
-.facts {
-  display: grid;
-  /* auto-fit, not auto-fill: auto-fill keeps an empty column track when the item
-     count does not fill the row, and because this grid's own background is the
-     line colour, that track renders as a solid empty cell — a metric that looks
-     like it failed to load. auto-fit collapses the empties and stretches the
-     last item instead. */
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 1px;
-  margin: 0 0 1rem;
-  background: var(--line);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-.facts > div { background: var(--surface); padding: 5px 8px; }
-.facts dt { font-size: 11px; color: var(--muted); }
-.facts dd { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
-
-/* card component: the default bordered surface for a panel or a turn. */
-.panel {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--surface);
-  padding: 0.6rem 0.75rem;
-  margin-bottom: 0.75rem;
-}
-.panel.bad { border-color: color-mix(in srgb, var(--err) 50%, var(--line)); }
-.panel pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-
-.content .block { border-top: 1px solid var(--line); padding-top: 0.5rem; margin-top: 0.5rem; }
-.content .block:first-child { border-top: 0; margin-top: 0; }
-.blockmeta { display: flex; align-items: center; gap: 0.5rem; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
-.blockmeta .role { font-weight: 600; color: var(--ink); }
-.block pre {
-  margin: 0;
-  max-height: 22rem;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  padding: 6px 8px;
-}
-.block .binary { color: var(--muted); font-size: 12px; margin: 0; }
-
-/* ------------------------------------------------------------ sessions -- */
-
-/* A session key is an opaque handle (64 hex chars when content-derived), so it
-   is monospace, never wrapped, and shown truncated with the full value in the
-   tooltip. Wrapping it would make every row two lines tall for no reader. */
-td.key { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
-
-/* ---------------------------------------------------------- transcript -- */
-
-.turn {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--surface);
-  margin-bottom: 0.6rem;
-  padding: 0.5rem 0.75rem 0.6rem;
-}
-
-.turnmeta {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  font-size: 12px;
-  padding-bottom: 0.4rem;
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 0.5rem;
-}
-
-.turnmeta .turnno a { font-family: var(--mono); font-weight: 600; }
-.turnmeta .openreq { margin-left: auto; }
-
-.turnerror {
-  margin: 0 0 0.5rem;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--err);
-  border-left: 2px solid var(--err);
-  padding-left: 0.5rem;
-  overflow-wrap: anywhere;
-}
-
-.turnempty { margin: 0; font-size: 12px; }
-
-/* Inside a turn the direction is the label that matters: it is what turns two
-   parallel streams of blocks into a dialogue. */
-.blockmeta .dir {
-  font-weight: 600;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  padding: 0 4px;
-}
-
-/* The system preamble is its own field: a client's standing instructions are
-   worth having apart from the conversation, and they are usually the largest
-   single thing in a turn. Closed by default — it is context, not the message. */
-details.preamble {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--bg);
-  margin-bottom: 0.4rem;
-  padding: 0.3rem 0.5rem;
-}
-details.preamble > summary {
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--muted);
-}
-details.preamble > summary::marker { color: var(--muted); }
-details.preamble[open] > summary { margin-bottom: 0.4rem; }
-
-/* A replay pointer. It replaced the replayed text rather than hiding it: a
-   <details> would still ship the same bytes to the browser every turn. */
-.replayref {
-  margin: 0.3rem 0 0;
-  font-size: 11px;
-  color: var(--muted);
-  border-left: 2px solid var(--line);
-  padding-left: 0.5rem;
-}
-
-/* The new content is the point of the turn, so it is not boxed like the rest:
-   no border, no background, just the blocks and their labels. */
-.newcontent { margin-top: 0.2rem; }
-.newcontent .block:first-child { margin-top: 0; }
-
-/* The response half is what the reader is usually looking for; give it the
-   accent so a turn reads as question-then-answer at a glance. */
-.block:has(> .blockmeta > .dir) { }
-.turnmeta .openreq { margin-left: auto; font-size: 11px; }
-
-/* How much of a turn was context it re-sent rather than new. Kept in the header
-   because it is the answer to "why is this turn 8k input tokens", but it is not
-   repeated content: the text itself lives once, at the turn that introduced it. */
-.replaynote { font-size: 11px; }
-
-/* -------------------------------------------------------------- chart -- */
-
-/* The chart is a sibling of the table, never a replacement: the table is exact
-   and the chart is a shape, and either alone answers a different question. */
-#chart {
-  width: 100%;
-  min-height: 260px;
-  margin: 0 0 0.75rem;
-  padding: 0.25rem 0 0;
-}
-#chart .muted { padding: 1rem; }
-
-/* uPlot's own stylesheet is scoped to .uplot; only the legend needs aligning
-   with the page's type scale. */
-.uplot { font-family: var(--mono); font-size: 11px; }
-.u-legend { font-size: 11px; }
-.u-legend .u-marker { border-width: 1px; }
-
-/* ------------------------------------------------------------ popover -- */
-
-/* The full-screen popover, per DESIGN.md's "one component, not four" rule:
-   built once here in the foundation phase, wired up by the session transcript
-   (#48, its first heavy user), the sessions index (#49) and discovery (#50).
-   popover.js owns the DOM node and open/close behavior; these are its only
-   styles. */
-.popover-overlay {
-  position: fixed;
-  inset: 0;
-  background: color-mix(in srgb, var(--ink) 45%, transparent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 50;
-  padding: var(--space-lg);
-}
-.popover-overlay[hidden] { display: none; }
-
-.popover {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  width: 100%;
-  max-width: min(900px, 100%);
-  max-height: 100%;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.popover-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
-  border-bottom: 1px solid var(--line);
-}
-.popover-header .popover-meta {
-  margin-left: auto;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 0.75rem;
-}
-.popover-close {
-  padding: 2px 8px;
-}
-
-.popover-body {
-  padding: var(--space-md);
-  overflow: auto;
-}
-.popover-body pre {
-  margin: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-family: var(--mono);
-  font-size: 0.78125rem;
-}
-
-/* Session transcript (#48). No chat bubbles: each turn is a full-width block
-   with a colored left border for direction, and metadata sits in a rail
-   beside the blocks rather than a row between them (DESIGN.md). */
-.transcript { display: flex; flex-direction: column; gap: var(--space-lg); max-width: 78ch; }
-
-.turn {
-  display: grid;
-  grid-template-columns: 15ch 1fr;
-  gap: var(--space-md);
-  align-items: start;
-}
-@media (max-width: 760px) {
-  .turn { grid-template-columns: 1fr; }
-}
-
-.turn-rail {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-  padding-top: 2px;
-  font-size: 11px;
-  color: var(--muted);
-}
-.turn-rail .turnno { font-family: var(--mono); font-weight: 600; color: var(--ink); }
-.turn-rail .turnmodel { font-size: 11px; }
-.turn-rail .turnnums { display: flex; flex-direction: column; gap: 1px; font-size: 11px; }
-.turn-rail .turnnums .cost { color: var(--ink); }
-.turn-rail .turnwhy { max-width: 15ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
-.turn-rail .turnlink { font-size: 11px; }
-
-.turn-body { display: flex; flex-direction: column; gap: var(--space-sm); min-width: 0; }
-
-.preamble { display: flex; flex-direction: column; gap: var(--space-sm); }
-.fieldlabel { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; }
-
-/* One content block: left border marks direction (never a filled bubble),
-   consistent whether it holds prose, a tool call, or a tool result. */
-.block {
-  border-left: 3px solid var(--line);
-  padding: var(--space-xs) 0 var(--space-xs) var(--space-md);
-  min-width: 0;
-}
-.block.dir-request { border-left-color: var(--secondary); }
-.block.dir-response { border-left-color: var(--primary); }
-.blocktag { margin-bottom: 3px; }
-.blocktext {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: 0.8125rem;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.turn-replay { font-size: 11px; }
-
-/* No nested scrollboxes: long text fades under a gradient and expands
-   in place on click, rather than an inner overflow:auto box (DESIGN.md). */
-.showmore { position: relative; max-height: 168px; overflow: hidden; }
-.showmore.is-short { max-height: none; }
-.showmore.is-expanded { max-height: none; }
-.showmore-fade {
-  position: absolute;
-  left: 0; right: 0; bottom: 0;
-  height: 2.5em;
-  background: linear-gradient(to bottom, transparent, var(--bg));
-  pointer-events: none;
-}
-.showmore.is-short .showmore-fade, .showmore.is-expanded .showmore-fade { display: none; }
-.showmore-btn {
-  margin-top: 2px;
-  padding: 1px 8px;
-  font-size: 11px;
-  color: var(--secondary-ink);
-  background: none;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-}
-
-/* Small pill action — a chip is a button that opens more detail (raw JSON,
-   a guardrail diff), distinct from .tag which is a passive label. */
-.chip {
-  display: inline-block;
-  font-size: 11px;
-  padding: 1px 7px;
-  margin: 2px 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  color: var(--muted);
-  background: var(--surface);
-  cursor: pointer;
-}
-.chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
-.chip.warn:hover { background: color-mix(in srgb, var(--warn) 10%, transparent); }
-
-/* Tool call/result: the `tool` color, not `warn` — a tool call is neutral
-   information, not a problem state (DESIGN.md). Content-first: the
-   summarized command/pattern/path is what's shown; the {id,name,input}
-   envelope is a chip away, not the default view. */
-.toolcall, .toolresult { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
-.tag.tool { color: var(--tool); border-color: color-mix(in srgb, var(--tool) 40%, transparent); }
-.toolname { font-size: 11px; color: var(--tool); }
-.toolsummary {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: 0.8125rem;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.toolsummary.generic { color: var(--muted); }
-.toolresult.is-error .blocktext { color: var(--err); }
-
-/* Guardrail-modified content: collapsed by default behind a warn chip; the
-   diff itself renders unified-diff style when the chip's popover opens. */
-.diff { font-family: var(--mono); font-size: 0.78125rem; }
-.diffline { display: flex; gap: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.diffmark { flex: none; width: 1ch; color: var(--muted); }
-.diff-eq { color: var(--muted); }
-.diff-del { color: var(--err); text-decoration: line-through; }
-.diff-del .diffmark { color: var(--err); }
-.diff-add { color: var(--ok); }
-.diff-add .diffmark { color: var(--ok); }
+/* ---------------------------------------------------------------------- */
+/* Nothing below this line yet: every remaining page-specific rule
+ * (transcript inspector, Overview pivot/flow, Discovery ledger, request/
+ * session/block detail) is deleted along with its old template and lands
+ * fresh, per page, in #53/#54/#50. Until those land, any page other than
+ * the shell itself and Sessions renders unstyled — expected, not a
+ * regression: see PICKUP.md for the note that Go handlers referencing the
+ * deleted templates will fail at render time until their own ticket ports
+ * a replacement. */

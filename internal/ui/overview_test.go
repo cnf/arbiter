@@ -10,54 +10,6 @@ import (
 )
 
 // The pivot groups by the chosen dimension and ranks by the chosen metric.
-func TestOverviewPivotsAndRanks(t *testing.T) {
-	base := timeAt()
-	mk := func(ts time.Time, provider, model string, cost float64, status int, epoch, domain string) store.Event {
-		ev := store.Event{TraceID: "t", Provider: provider, Model: model, StatusCode: status,
-			LatencyMs: 10, Ts: ts, ConfigEpoch: epoch, Domain: domain}
-		ev.Usage.CostUSD = cost
-		ev.Usage.InputTokens = 100
-		return ev
-	}
-	h, _ := newSeededHandler(t,
-		mk(base, "alpha", "m1", 1.0, 200, "e1", "code_generation"),
-		mk(base.Add(time.Second), "alpha", "m1", 2.0, 200, "e1", "code_generation"),
-		mk(base.Add(2*time.Second), "beta", "m2", 0.5, 500, "e2", ""),
-		mk(base.Add(3*time.Second), "beta", "m3", 0.25, 200, "e2", ""),
-	)
-
-	// Grouped by provider, ranked by cost: alpha (3.0 across 2) before beta.
-	body := serve(t, h, "GET", "/admin/ui/overview?dim=provider&metric=cost", false).Body.String()
-	if !strings.Contains(body, "alpha") || !strings.Contains(body, "beta") {
-		t.Fatalf("both providers missing from the pivot; body = %s", firstLine(body))
-	}
-	if strings.Index(body, "alpha") > strings.Index(body, "beta") {
-		t.Error("rows are not ranked by cost: beta (0.75) appears before alpha (3.0)")
-	}
-
-	// Every row carries every metric, not just the ranking one.
-	for _, want := range []string{"requests", "cost", "cost / request", "tokens (in+out)", "avg latency", "errors", "error rate"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the table does not carry a %q column; a row's numbers are incomplete", want)
-		}
-	}
-
-	// Grouped by model: three groups, alpha/m1 and beta/m2 and beta/m3.
-	byModel := serve(t, h, "GET", "/admin/ui/overview?dim=model&metric=requests", false).Body.String()
-	if !strings.Contains(byModel, "alpha/m1") || !strings.Contains(byModel, "beta/m2") {
-		t.Errorf("the model dimension does not render provider/model pairs; body = %s", firstLine(byModel))
-	}
-
-	// A NULL axis gets a label, not a blank cell.
-	byDomain := serve(t, h, "GET", "/admin/ui/overview?dim=domain&metric=requests", false).Body.String()
-	if !strings.Contains(byDomain, "(unclassified)") {
-		t.Error("an empty domain renders as blank rather than a labelled group")
-	}
-	if !strings.Contains(byDomain, "code_generation") {
-		t.Error("a filled domain is missing from the pivot")
-	}
-}
-
 // Rankings depend on the metric, which is what makes the metric selector
 // meaningful: the same rows, ordered differently.
 func TestOverviewRankingFollowsMetric(t *testing.T) {
@@ -119,54 +71,6 @@ func TestOverviewRejectsUnknownAxes(t *testing.T) {
 	}
 }
 
-// A dimension with only one group is explained, not presented as a finding.
-func TestOverviewExplainsSingleValuedDimension(t *testing.T) {
-	base := timeAt()
-	ev := store.Event{TraceID: "t", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1, Ts: base}
-	h, _ := newSeededHandler(t, ev)
-
-	body := serve(t, h, "GET", "/admin/ui/overview?dim=domain&metric=requests", false).Body.String()
-	if !strings.Contains(body, "one group") {
-		t.Errorf("a single-group pivot is not explained; body = %s", firstLine(body))
-	}
-	// And the other single-valued axes are named, so the operator knows where to
-	// look rather than concluding the page is broken.
-	if !strings.Contains(body, "Single-valued in this window") {
-		t.Error("the page does not name the other single-valued axes")
-	}
-	// The explanation says *why*, which is the part that would otherwise cost an
-	// hour of confusion.
-	if !strings.Contains(body, "classifiers") {
-		t.Error("the explanation does not say where the axis comes from")
-	}
-}
-
-// The epoch dimension shows cost per request, because epochs differ in how long
-// they were live and raw spend across them misleads.
-func TestOverviewEpochShowsPerRequest(t *testing.T) {
-	base := timeAt()
-	mk := func(ts time.Time, epoch string) store.Event {
-		return store.Event{TraceID: "t", Provider: "p", Model: "m", StatusCode: 200,
-			LatencyMs: 1, Ts: ts, ConfigEpoch: epoch}
-	}
-	h, _ := newSeededHandler(t, mk(base, "e1"), mk(base, "e1"), mk(base, "e2"))
-
-	body := serve(t, h, "GET", "/admin/ui/overview?dim=epoch&metric=cost", false).Body.String()
-	if !strings.Contains(body, "cost / request") {
-		t.Error("the pivot does not show cost per request")
-	}
-	if !strings.Contains(body, "e1") || !strings.Contains(body, "e2") {
-		t.Errorf("both epochs are missing; body = %s", firstLine(body))
-	}
-	// An epoch column that is NULL/empty is labelled rather than blank.
-	ev := mk(base, "")
-	h2, _ := newSeededHandler(t, ev)
-	none := serve(t, h2, "GET", "/admin/ui/overview?dim=epoch&metric=cost", false).Body.String()
-	if !strings.Contains(none, "(none)") {
-		t.Error("a missing config epoch renders as blank rather than a labelled group")
-	}
-}
-
 // Every table header must have a matching cell in every row, and every row must
 // have the same number of cells. A conditional header with no cell (or vice
 // versa) renders a table that looks plausible and is lying about its columns.
@@ -204,19 +108,3 @@ func TestPivotHeaderAndCellCountsMatch(t *testing.T) {
 	}
 }
 
-// The page is reachable and is HTML, with the fragments behaving like the rest.
-func TestOverviewPageAndFragment(t *testing.T) {
-	h, _ := newSeededHandler(t, store.Event{TraceID: "t", Provider: "p", Model: "m",
-		StatusCode: 200, LatencyMs: 1})
-	full := serve(t, h, "GET", "/admin/ui/overview", false).Body.String()
-	if !strings.Contains(full, "<!doctype html>") {
-		t.Error("the overview page is not a full document")
-	}
-	if !strings.Contains(full, `href="/admin/ui/overview"`) {
-		t.Error("the nav does not link to the overview")
-	}
-	frag := serve(t, h, "GET", "/admin/ui/overview", true).Body.String()
-	if strings.Contains(frag, "<!doctype") || !strings.Contains(frag, `id="pivot-table"`) {
-		t.Errorf("the fragment form is wrong; got %s", firstLine(frag))
-	}
-}

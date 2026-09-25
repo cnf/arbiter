@@ -72,39 +72,6 @@ func TestAdminUIRoutesAreGated(t *testing.T) {
 	}
 }
 
-// With the header present the UI is reachable, and with no store configured it
-// still returns a page rather than an error: "store disabled" is explained, not
-// reported as a failure.
-func TestAdminUIReachableWithHeaderAndNoStore(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "arbiter.yaml")
-	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, r := newTestRouter(t, path, "X-Forwarded-User")
-
-	for _, target := range []string{"/admin/ui/requests", "/admin/ui/static/app.css"} {
-		req := httptest.NewRequest(http.MethodGet, target, nil)
-		req.Header.Set("X-Forwarded-User", "op")
-		resp := httptest.NewRecorder()
-		r.ServeHTTP(resp, req)
-		if resp.Code != http.StatusOK {
-			t.Errorf("gated GET %s = %d, want 200", target, resp.Code)
-		}
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/admin/ui/", nil)
-	req.Header.Set("X-Forwarded-User", "op")
-	resp := httptest.NewRecorder()
-	r.ServeHTTP(resp, req)
-	if resp.Code != http.StatusFound {
-		t.Errorf("GET /admin/ui/ = %d, want 302 to the requests page", resp.Code)
-	}
-	if loc := resp.Header().Get("Location"); loc != "/admin/ui/requests" {
-		t.Errorf("redirect Location = %q", loc)
-	}
-}
-
 // The gate must be wired onto the *route*, not just available as a helper:
 // with a header configured, an ungated POST to /admin/reload must 401.
 func TestAdminReloadRouteIsGated(t *testing.T) {

@@ -2451,3 +2451,129 @@ call.
    landed on any of those three yet (confirm with `git log` before
    trusting that, per this file's own self-distrust rule).
 4. Branch `newui` is unpushed; ask before pushing.
+
+
+---
+
+## 32. Session 2026-09-25e — #53 (session transcript) implemented, 5 live bugs fixed, committed `9faebe6`
+
+**Orient (run these, don't trust the numbers below):**
+```bash
+git status -sb          # newui, should be clean of #53's own files
+git log --oneline -3    # 9faebe6 should be HEAD
+gh issue list --state open --limit 5   # needs devenv; #50/#52/#53/#54 still open (batched)
+```
+
+**What happened:** #53 (session transcript / detail page,
+`GET /admin/ui/session?key=`) was implemented from scratch this session —
+`internal/ui/transcript.go`, the three new templates, `transcript.js`,
+~360 lines of `app.css`, plus store/format/toolcall support — then tested
+against the user's **real production DB** (not synthetic fixtures) through
+several rounds of live feedback. Five bugs got reported and fixed; see the
+commit body of `9faebe6` (`git show -s --format=%B 9faebe6`) for the full
+per-bug root-cause writeup — don't duplicate it here, but the short version:
+
+1. **List pane wouldn't scroll** — not a flexbox issue. `app.css:553`'s
+   comment literally contained `*/` (`s-*/dot`), closing the CSS comment
+   early and silently dropping the very next rule (`.transcript`'s
+   `display:flex`). **When a CSS rule visibly in the source has no effect
+   in the browser, check comment balance before anything else.**
+2. **"Show full" did nothing** — `max-height`/`overflow:hidden` were on
+   the *unconditional* base rule, not scoped to the `.clamped` class the
+   JS was toggling. **A class-toggle interaction is only as good as which
+   rule actually reads that class.**
+3. **List rows looked cramped vs. the mockup**, despite every measured
+   CSS value (padding, grid columns, font-size) already matching the
+   mockup exactly. The mockup's own rows render as 2-3 stacked lines
+   because of a name collision — its page-level `.main` (`flex-direction:
+   column`) accidentally leaks into `.row .main` (a list row's content
+   span) since an isolated single-file mockup has no namespacing. Fixed
+   by reproducing the *visual result* deliberately and scoped
+   (`.entry .row .main { flex-direction: column }`), not by copying the
+   mockup's colliding rule. **An approved mockup's rendered look and its
+   source are different contracts — when they conflict, matching pixels
+   without importing the mockup's own cross-scope bugs into shared
+   vocabulary is the right call, and the user confirmed this explicitly.**
+4. Right-side cost/latency column width jumped row to row — each `.row`
+   is its own grid container, so an auto-sized `.side` track sizes to
+   that row's own content. Pinned `.side` to a fixed width.
+5. List showed an identical user-message preview on every row — the
+   "what's new this turn" computation was wrong. Fixed via
+   `newestRequestMessage`'s last-request-message-index approach.
+
+**Also, twice this session:** an incorrect "stale binary" theory got
+raised for early symptoms and the user shut it down hard both times
+(**"I RECOMPILE EVERY FUCKING TIME"**). The setup is a **bind mount** —
+compiles inside this container, runs the resulting binary on the host —
+confirmed by MD5-matching a sandbox rebuild against the user's host
+binary. **Never suggest staleness in this repo; verify the actual
+rendering pipeline (parser → cascade → DOM) instead.**
+
+**Tooling built this session, kept on disk but deliberately NOT
+committed** (user's explicit call — useful for reuse, not part of the
+shipped feature): `cmd/bigpreview/` (synthetic 20+-turn session
+generator, for exercising pagination/scroll without real data) and
+`cmd/realpreview/` (read-only webserver on `:8097` against the real
+`/data/arbiter/arbiter.db` — safe because the store opens WAL mode, so a
+read-only reader can run alongside the live writer). `cmd/previewserver/`
+remains pre-existing/unrelated, per `design/REDESIGN.md`'s own note.
+
+**CDP-based visual verification workflow** (new this session, worth
+reusing for #50/#54): headless Chromium via
+`devenv --option packages:pkgs "chromium fontconfig dejavu_fonts" shell --
+ -- chromium --headless=new --remote-debugging-port=9222
+ --remote-debugging-address=127.0.0.1`, driven with a small Python
+`websockets` CDP client (`devenv --option packages:pkgs "…" shell --
+python3 …`) to read actual `getComputedStyle`/`getBoundingClientRect`
+values and dispatch real click/keyboard events — not just screenshots.
+**The vision model was unreliable for exact pixel/color claims this
+session** (self-contradicted on a background color across two calls);
+`convert '%[pixel:p{x,y}]'` (ImageMagick, via
+`devenv --option packages:pkgs "imagemagick"`) was the tiebreaker.
+**Resource limit**: this container caps concurrent processes — more than
+~10 Chromium instances running at once caused
+`fork: retry: Resource temporarily unavailable` and forced the user to
+manually kill a pile of leftover sessions. Keep concurrent Chromium ≤~10
+and kill each one once its screenshot/measurement is captured; don't leave
+background CDP browsers running across many rounds of iteration.
+
+**Verified, not just written:**
+```
+$ devenv shell --no-tui -- go build ./...    # clean
+$ devenv shell --no-tui -- go vet ./...      # clean
+$ devenv shell --no-tui -- go test ./internal/ui/...  # only TestSeriesEndpointShape
+                                              # fails — pre-existing, unrelated
+                                              # (req-line template, overview chart)
+$ devenv shell --no-tui -- git commit ...    # pre-commit hooks all passed: gitleaks,
+                                              # golangci-lint, ripsecrets, trufflehog
+```
+All 5 bug fixes were also verified **live against the real DB**
+(session `20260925_000937_c52312`) via the CDP driver, not just the test
+suite — computed styles/DOM state read before and after each interaction.
+
+**State:** branch `newui` still has **no upstream configured** — unpushed.
+`9faebe6` is on top of `77c37b5`. `design/REDESIGN.md` §8 was extended
+in the same commit with the full bug-hunt narrative (more detail than
+here); §7/§9 (rejected transcript direction, Discovery/#50 parked thread)
+were folded in from untracked working notes that predated this session —
+unrelated to #53's own code, kept in the same design-log file. Design
+exploration artifacts specific to #50 (Discovery) and #54 (Overview) —
+`design/mockups/discovery-*.html`, `design/overview-mockups/`,
+`design/build_data.py`, `design/discovery_export.json`,
+`design/inline_data.py`, `design/mockups/data*/` — remain **untracked,
+deliberately not committed**, same convention as `77c37b5`: they're the
+user's to commit or discard when those tickets land.
+
+**Next steps, in order:**
+1. **Do not close #53 (or #50/#52/#54).** Still batched — user tests the
+   whole UI, then closes together.
+2. #50 (Discovery) and #54 (Overview) haven't been ported into the app
+   yet — design threads exist in `design/REDESIGN.md` §9 (Discovery,
+   parked mid-exploration per the user's own words) but nothing has
+   landed in `internal/ui/` for either. Confirm with `git log` before
+   trusting that, per this file's own self-distrust rule.
+3. Carried over from §28-30, still open: `Reader.Sessions`' hard
+   `kind = 'client'` filter hides classifier-only sessions outright; the
+   node-click interaction design fork (client-side panel vs.
+   navigate-to-detail).
+4. Branch `newui` is unpushed; ask before pushing.

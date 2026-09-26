@@ -1360,8 +1360,8 @@ This is the **JSON** surface, and it is the only one. The browser UI under
 below); the request-list *page* it used to have was deleted in the newui
 rebuild, so `/admin/ui/requests` is a 404 — and `flatLineHref`
 (`internal/ui/requests.go`) still builds links to it, which is a real defect on
-the Sessions page's "open flat list" affordance, not a doc problem. **Known,
-unfixed, no ticket yet.**
+the Sessions page's "open flat list" affordance, not a doc problem. **Tracked as
+#56.**
 
 `?no_session` exists because an empty `?session=` means "any", so the requests
 with *no* session key (those whose affinity derivation declined to pin them)
@@ -1703,16 +1703,25 @@ is enforcing reachability.
 
 ## The live tail
 
-**The tail's endpoint survives but no page mounts it.** `TailHandler` still
-serves `GET /admin/ui/requests/tail`, and `live.js` still implements the polling
-client, but `live.js` only activates on a `[data-tail-src]` element and nothing
-in the template tree renders one — the old requests page was its only mount
-point and the newui rebuild deleted that page. So the endpoint returns 200 and
-nothing ever calls it. This is dead-but-working, not broken, and it is the
-cheapest thing to re-mount when the rebuilt request list lands: the server half
-(cursor, cap, group placement) is tested and unchanged.
+**The tail is broken and unmounted; both halves are tracked as #57.** Two
+independent defects, either of which would stop it working:
 
-What it does, for when it is re-mounted: while the control is on and the tab is
+1. **It returns 200 with an empty `html` for every row.** `renderTailRow`
+   (`internal/ui/live.go`) renders each row through the `req-line` partial,
+   which was deleted with the old requests page — and the error is swallowed by
+   design (one bad row must not take out the response), so the endpoint reports
+   success while producing nothing. Verified live: ids, group keys and cursor are
+   correct; every `html` is `""`.
+2. **No page mounts it.** `live.js` activates only on a `[data-tail-src]`
+   element and nothing in the template tree renders one; the deleted requests
+   page was its only mount point.
+
+So the endpoint, the cursor and the group-placement logic are all tested and
+unchanged, but nothing observes it and it could not render a row if it did.
+Where it belongs instead (the Sessions lanes view, and what that costs) is
+scoped in #57.
+
+What it does, for when it is restored: while the control is on and the tab is
 visible, the page polls the endpoint and prepends new requests as they arrive. It
 reports how many arrived and the time of the last poll, which is the point of
 watching one — a tail that has silently stopped looks exactly like a store with
@@ -1734,6 +1743,8 @@ Three things about it are deliberate and each was wrong in a first version:
   trigger cannot skip a hidden tab, cannot append instead of swapping the table
   under the reader, cannot stop after repeated failures, and cannot say how many
   rows arrived. The last of those is the main reason to look at a tail at all.
+  (#57 notes that these same three reasons apply to whichever shape the rebuilt
+  tail takes.)
 
 A poll is capped (50 rows) and returns the newest rows that fit, so a burst larger
 than that in one interval is truncated — reported as such rather than shown as a
@@ -1750,8 +1761,9 @@ The server sends each row's group with the row, computed by the same function
 that folded the page, so the two cannot disagree about what a group is. In Flat
 mode every row was prepended as before. The mode travelled on the tail's own
 query string, so a flat list got a flat tail. (`?flat=1` was the requests page's
-own escape hatch and went with that page; the group-placement logic in
-`live.js` is still there for the rebuild to reuse.)
+own escape hatch and went with that page; the group-placement logic in `live.js`
+is still there for the rebuild to reuse — note it targets `.reqrow` list rows,
+which the lanes view does not have, so #57 prices that reuse.)
 
 ## Grouping: a run of streamed turns is one line
 

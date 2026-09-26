@@ -2970,20 +2970,26 @@ Two bugs underneath it passed every existing test, both worth remembering:
   shape as the phase-1 burst bug: unrealistically tidy seed data hid a live-only
   defect.** The test now seeds `123456789ns`.
 
-**Two real defects found while refreshing the docs, neither fixed — no ticket
-yet.** Both are consequences of the greenfield rip-out that nobody re-checked:
+**Two real defects found during the doc pass, both now tracked — and the second
+is worse than this session first reported it.** Both are consequences of the
+greenfield rip-out that nobody re-checked:
 
-1. **Every `flatLineHref` link 404s.** `internal/ui/requests.go` still builds
-   `/admin/ui/requests?flat=1…` for the Sessions page's "open flat list"
-   affordance (rendered as `data-open-href`, used by `laneDetail.js`), but the
-   page it points at was deleted in the rebuild. Confirmed live: the link is in
-   the rendered page and the target returns **404**.
-2. **The live tail is dead-but-working.** `TailHandler` serves
-   `/admin/ui/requests/tail` and returns 200, and `live.js` implements the whole
-   polling client — but `live.js` only activates on a `[data-tail-src]` element
-   and **nothing in the template tree renders one**. Its only mount point was
-   the deleted requests page. The server half is tested and unchanged, so
-   re-mounting is cheap when the rebuilt request list lands.
+1. **#56 — every `flatLineHref` link 404s.** `internal/ui/requests.go` still
+   builds `/admin/ui/requests?flat=1…` for the Sessions page's "open flat list"
+   affordance (`data-open-href`, consumed by `laneDetail.js`, plus a second
+   client-built href at `live.js:322`), but that page was deleted in the
+   rebuild. Confirmed live: link present, target 404.
+2. **#57 — the live tail returns 200 with an EMPTY `html` on every row, and
+   nothing mounts it.** This session initially called it "dead-but-working" on
+   the strength of the endpoint returning 200. That was too generous and wrong:
+   `renderTailRow` renders through the `req-line` partial, which was deleted in
+   `572443e`, and the error is swallowed by design — so the endpoint reports
+   success while producing no markup at all. Verified live: ids, keys and cursor
+   correct, `html` is `""` for every row. **The lesson: a 200 is not evidence a
+   handler produced anything**, and a deliberately-swallowed render error is
+   exactly where that assumption fails. The same pass also sized the user's real
+   question in that ticket — what live tailing the Sessions *lanes* page would
+   cost, and the two shapes it could take.
 
 **Docs refreshed in this session** (README endpoint table + Admin web UI +
 live-tail + grouping + Overview sections; REQUIREMENTS 7b-1/7b-3a/7b-3b;
@@ -2998,8 +3004,11 @@ that describes `/admin/ui/requests` as a page is stale.
 1. **Do not close #50/#52/#53/#55** — batched, and #54 now joins them. The user's
    own full-UI pass is the gate, and every page is built, so that pass is the
    immediate next step.
-2. **The two defects above** (dead flat-list links; unmounted live tail) are the
-   most concrete known-broken things in the UI. Neither has a ticket.
+2. **#56 and #57** — the two defects found in the doc pass. #56 (dead flat-list
+   links) is a `bug/priority:medium`. **#57 carries the user's actual question:**
+   the live tail both returns empty HTML and has no mount point, and the ticket
+   scopes what live tailing the Sessions *lanes* page would cost (fragment-refresh
+   ≈ a day; true row-splicing ≈ several days, dominated by placement rules).
 3. Housekeeping the user has been offered and not yet greenlit:
    `build/livecheck.db` (1.2GB, gitignored, safe to delete) and a stale
    `.claude/worktrees/*` checkout.

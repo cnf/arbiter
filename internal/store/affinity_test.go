@@ -193,3 +193,59 @@ func TestActiveSessionCount(t *testing.T) {
 		t.Errorf("ActiveSessionCount = %d, want 2 (one live pin has already expired and must not count)", n)
 	}
 }
+
+// TestSessionPinExpiry proves the Sessions lane list's data source (the "hot"
+// dot and the "live only" filter) reports each pin's own expiry — not just a
+// bool — and respects the since floor: a pin that expired before since is
+// excluded, one on or after since (live, or expired but within a grace
+// window the caller chose by picking since) is included with its real
+// ExpiresAt. An empty table reports an empty, non-nil map rather than an
+// error.
+func TestSessionPinExpiry(t *testing.T) {
+	r, db := newTestReader(t)
+	ctx := context.Background()
+	w := &SQLiteWriter{db: db}
+
+	expiry, err := r.SessionPinExpiry(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("SessionPinExpiry on an empty table: %v", err)
+	}
+	if expiry == nil || len(expiry) != 0 {
+		t.Fatalf("SessionPinExpiry on an empty table = %v, want empty non-nil map", expiry)
+	}
+
+	liveExpiresAt := time.Now().Add(time.Hour)
+	deadExpiresAt := time.Now().Add(-time.Minute)
+	if err := w.SavePin(ctx, AffinityPin{SessionKey: "live-1", RequestedModel: "auto", Provider: "p", Model: "m", ExpiresAt: liveExpiresAt}); err != nil {
+		t.Fatalf("SavePin live-1: %v", err)
+	}
+	if err := w.SavePin(ctx, AffinityPin{SessionKey: "dead", RequestedModel: "auto", Provider: "p", Model: "m", ExpiresAt: deadExpiresAt}); err != nil {
+		t.Fatalf("SavePin dead: %v", err)
+	}
+
+	// since = now: only the still-live pin qualifies, and its own expiry
+	// (not merely a bool) comes back.
+	expiry, err = r.SessionPinExpiry(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("SessionPinExpiry: %v", err)
+	}
+	if len(expiry) != 1 {
+		t.Fatalf("SessionPinExpiry(now) = %v, want exactly {live-1: ...} (the expired pin must not appear)", expiry)
+	}
+	if got, ok := expiry["live-1"]; !ok || got.Sub(liveExpiresAt).Abs() > time.Second {
+		t.Errorf("live-1 expiry = %v, want ~%v", got, liveExpiresAt)
+	}
+
+	// since = an hour before now: the expired pin is now within the grace
+	// window and must appear too, with its own (past) expiry.
+	expiry, err = r.SessionPinExpiry(ctx, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("SessionPinExpiry(grace window): %v", err)
+	}
+	if len(expiry) != 2 {
+		t.Fatalf("SessionPinExpiry(now-1h) = %v, want both live-1 and dead (both expired after the grace floor)", expiry)
+	}
+	if _, ok := expiry["dead"]; !ok {
+		t.Errorf("SessionPinExpiry(now-1h) missing dead's own (past) expiry: %v", expiry)
+	}
+}

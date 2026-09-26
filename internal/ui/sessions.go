@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,22 @@ import (
 // describe "recently" the same way, without this package reaching into that one
 // for an unexported constant.
 const defaultWindow = 7 * 24 * time.Hour
+
+// affinityDefaultTTL is the pin TTL routing hands out when a provider config
+// doesn't set its own — see internal/pipeline. The store only ever persists
+// the resulting expires_at, not the TTL that produced it (per-provider TTLs
+// can differ), so this is the one place the UI has to assume a number rather
+// than read it back.
+const affinityDefaultTTL = 25 * time.Hour
+
+// liveOnlyGraceWindow is how long a lane keeps showing under "live only"
+// after its pin expires, instead of disappearing the instant the pin does.
+// A hard cutoff at expiry would make an in-progress read (you're mid-reply,
+// the tab is open) blink out from under you; 2x the default pin TTL gives
+// enough slack for that without the filter drifting far from "live" as a
+// word — the tradeoff explicitly asked for over an exact per-pin TTL, which
+// the store doesn't retain.
+const liveOnlyGraceWindow = 2 * affinityDefaultTTL
 
 // sessionKeyDisplayLen is how much of a session key the UI shows.
 //
@@ -43,6 +60,28 @@ func shortSessionKey(key string) string {
 // click away, on the session's own transcript page).
 const previewBytes = 200
 
+// sessionNodeHref is a lane node's "open" link: every node — a plain client
+// request, a satellite (classifier/title) call, or a folded stack of
+// streamed turns — opens the SAME destination, the session's own transcript
+// page, landed on the turn that node belongs to. There used to be a second
+// destination (a flat, filtered requests list) for a folded run's node; that
+// page was removed in #54, so this is now the only "open" link any node has
+// — see SessionHandler's ?id= handling and store.SessionTurnForRequest,
+// which resolves a satellite's own id to its parent client turn.
+//
+// head.ID is the newest row of a folded/nested group (requestLineView.Head),
+// which is a real, resolvable request id in every case: a satellite's Head
+// is its own row (folding only merges same-identity streamed repeats, and a
+// satellite line is never a Run), and a stack's Head is one of the streamed
+// requests it stands for, which SessionTurnForRequest resolves like any
+// other client row.
+func sessionNodeHref(sessionKey string, head requestRowView) string {
+	q := url.Values{}
+	q.Set("key", sessionKey)
+	q.Set("id", strconv.FormatInt(head.ID, 10))
+	return "/admin/ui/session?" + q.Encode()
+}
+
 // noClientBodyPreview stands in for a session whose earliest client row has
 // no captured request body — a pre-guardrail rejection with content capture
 // on (#5: "nothing invisible", so the row itself still exists), content
@@ -59,6 +98,19 @@ const noClientBodyPreview = "(no client body captured)"
 type laneRow struct {
 	store.SessionSummary
 	ShortKey string
+
+	// Active is true when this session has a live affinity pin — the same
+	// "still within cache TTL" definition the nav bar's "N active" stat
+	// uses. Drives the lane header's subtle "hot" dot: not merely "had a
+	// request recently", but "the next turn, if there is one, still reuses
+	// this session's prompt cache instead of re-routing from scratch."
+	Active bool
+
+	// PinExpiresAt is this session's affinity pin expiry, when it has one
+	// (zero otherwise) — Active's underlying timestamp, kept alongside the
+	// bool so the live-updates poller can tell the client when a lane's
+	// dot is due to go dark without re-deriving it server-side per poll.
+	PinExpiresAt time.Time
 
 	// Lines is this session's requests, folded and nested exactly as the
 	// requests page computes them: a streamed run collapses into one Run
@@ -115,6 +167,14 @@ type sessionsView struct {
 	ErrorsOnly bool
 	ClientOnly bool
 
+	// LiveOnly hides lanes with no live (or recently-expired, within
+	// liveOnlyGraceWindow) affinity pin. Defaults to on: a query string
+	// with no live_only param at all means "on", so a first visit to the
+	// page opens already filtered to the sessions a next turn would still
+	// route consistently for — everything else is history, not "live".
+	// An explicit live_only=0 is the only way to see the unfiltered list.
+	LiveOnly bool
+
 	// InView totals the lanes actually rendered (post-filter), for the
 	// detail panel's default "in view" stat grid.
 	InViewSessions int
@@ -152,6 +212,7 @@ func (h *Handler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 		Query:      q.Get("q"),
 		ErrorsOnly: q.Get("errors") == "1",
 		ClientOnly: q.Has("client_only"),
+		LiveOnly:   q.Get("live_only") != "0",
 	}
 	view.Title = "sessions"
 
@@ -167,39 +228,39 @@ func (h *Handler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		view.Capped = len(sessions) == view.Limit
 
+		pinExpiry, err := h.reader.SessionPinExpiry(ctx, time.Now().Add(-liveOnlyGraceWindow))
+		if err != nil {
+			// Degrade rather than fail: the lane list itself loaded fine, and
+			// the "hot" dot / live-only filter are courtesy features on top
+			// of it — losing them for one request is preferable to losing
+			// the whole page. Degrading here means every lane reads as
+			// "not active" and live_only=1 (the default) would show nothing;
+			// that is a visible, honest failure mode, not a silent wrong one.
+			h.logger.LogError(ctx, "warn", err,
+				map[string]interface{}{"phase": "admin_ui_sessions_pin_expiry"})
+			pinExpiry = map[string]time.Time{}
+		}
+		now := time.Now()
+
 		needle := strings.ToLower(strings.TrimSpace(view.Query))
 		for _, s := range sessions {
 			if view.ErrorsOnly && s.Errors == 0 {
 				continue
 			}
 
-			kindFilter := ""
-			if view.ClientOnly {
-				kindFilter = "client"
+			_, hasPin := pinExpiry[s.Key]
+			if view.LiveOnly && !hasPin {
+				// No pin at all within the grace floor already applied to
+				// the query — this lane is neither live nor recently live.
+				continue
 			}
-			rows, err := h.reader.ListRequests(ctx, store.RequestFilter{
-				SessionKey: s.Key,
-				Since:      w0.Since,
-				Limit:      maxRequestRows,
-				Kind:       kindFilter,
-			})
+
+			lane, err := h.buildLane(ctx, s, pinExpiry, now, w0.Since, view.ClientOnly)
 			if err != nil {
 				h.logger.LogError(ctx, "error", err,
 					map[string]interface{}{"phase": "admin_ui_sessions_lane", "session": s.Key})
 				h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
 				return
-			}
-
-			lane := laneRow{SessionSummary: s, ShortKey: shortSessionKey(s.Key)}
-			lane.Preview, lane.PreviewNote = h.lanePreview(ctx, rows)
-
-			views := make([]requestRowView, 0, len(rows))
-			for _, row := range rows {
-				views = append(views, requestRowView{RequestRow: row, ShortSession: lane.ShortKey})
-			}
-			lane.Lines = attachTraceChildren(foldRequestLines(views))
-			for _, line := range lane.Lines {
-				lane.SatelliteCount += len(line.Children)
 			}
 
 			if needle != "" {
@@ -228,6 +289,55 @@ func (h *Handler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.render(w, r, "sessions", "session-rows", view)
+}
+
+// buildLane assembles one session's lane row: its requests (folded/nested
+// exactly as the requests page computes them), its opening-message preview,
+// and its Active/PinExpiresAt fields from an already-fetched pin-expiry map.
+//
+// Factored out of SessionsHandler so the live-tail poller (see
+// SessionsTailHandler) can rebuild exactly one lane — the one whose pin
+// changed — without duplicating the per-lane query and folding logic the
+// full page render already has. clientOnly mirrors the toolbar's own
+// "client only" chip; the poller passes the same value the page was loaded
+// with, carried in the tail's own query string.
+func (h *Handler) buildLane(ctx context.Context, s store.SessionSummary, pinExpiry map[string]time.Time, now time.Time, since time.Time, clientOnly bool) (laneRow, error) {
+	kindFilter := ""
+	if clientOnly {
+		kindFilter = "client"
+	}
+	rows, err := h.reader.ListRequests(ctx, store.RequestFilter{
+		SessionKey: s.Key,
+		Since:      since,
+		Limit:      maxRequestRows,
+		Kind:       kindFilter,
+	})
+	if err != nil {
+		return laneRow{}, err
+	}
+
+	lane := laneRow{SessionSummary: s, ShortKey: shortSessionKey(s.Key)}
+	if expiresAt, hasPin := pinExpiry[s.Key]; hasPin {
+		lane.PinExpiresAt = expiresAt
+		lane.Active = !expiresAt.Before(now)
+	}
+	lane.Preview, lane.PreviewNote = h.lanePreview(ctx, rows)
+
+	views := make([]requestRowView, 0, len(rows))
+	for _, row := range rows {
+		views = append(views, requestRowView{RequestRow: row, ShortSession: lane.ShortKey})
+	}
+	lane.Lines = attachTraceChildren(foldRequestLines(views))
+	for i := range lane.Lines {
+		lane.Lines[i].OpenHref = sessionNodeHref(s.Key, lane.Lines[i].Head)
+		for j := range lane.Lines[i].Children {
+			lane.Lines[i].Children[j].OpenHref = sessionNodeHref(s.Key, lane.Lines[i].Children[j].Head)
+		}
+	}
+	for _, line := range lane.Lines {
+		lane.SatelliteCount += len(line.Children)
+	}
+	return lane, nil
 }
 
 // lanePreview finds a lane's opening message: the earliest kind="client" row

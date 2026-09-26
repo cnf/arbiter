@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -242,6 +243,109 @@ func TestTranscriptJumpResolvesTurnToItsPage(t *testing.T) {
 	if rec.Code != 400 {
 		t.Errorf("jump with a non-numeric turn = %d, want 400", rec.Code)
 	}
+}
+
+// TestTranscriptIDOpensTheOwningTurn covers the Sessions lane list's "open"
+// link (sessionNodeHref): unlike ?seq=N (a turn number, resolved once inside
+// SessionHandler already), ?id=<request id> is what a lane node actually
+// carries, and a satellite (classifier) node's id has no turn of its own —
+// it must resolve through its trace_id to the client turn that spawned it,
+// exactly what SessionTurnForRequest does and what used to be impossible
+// because the old /admin/ui/requests destination no longer exists.
+func TestTranscriptIDOpensTheOwningTurn(t *testing.T) {
+	now := time.Now().UTC()
+	key := "sess-id-link"
+	events := []store.Event{
+		{TraceID: "tr-1", SessionKey: key, Kind: "client",
+			Provider: "p", Model: "m", StatusCode: 200, Ts: now, LatencyMs: 10},
+		// A classifier call nested under turn 2 by trace_id.
+		{TraceID: "tr-2", SessionKey: key, Kind: "classifier",
+			Provider: "openrouter", Model: "small", StatusCode: 200,
+			Ts: now.Add(500 * time.Millisecond), LatencyMs: 5},
+		{TraceID: "tr-2", SessionKey: key, Kind: "client",
+			Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now.Add(time.Second), LatencyMs: 10},
+	}
+	h, _ := newSeededHandler(t, events...)
+
+	rows, err := h.reader.ListRequests(context.Background(), store.RequestFilter{SessionKey: key, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	var turn1ID, satelliteID, turn2ID int64
+	for _, row := range rows {
+		switch {
+		case row.Kind == "classifier":
+			satelliteID = row.ID
+		case row.TraceID == "tr-1":
+			turn1ID = row.ID
+		case row.TraceID == "tr-2" && row.Kind == "client":
+			turn2ID = row.ID
+		}
+	}
+	if turn1ID == 0 || satelliteID == 0 || turn2ID == 0 {
+		t.Fatalf("did not find all three seeded rows: turn1=%d satellite=%d turn2=%d", turn1ID, satelliteID, turn2ID)
+	}
+
+	// ?id= of the turn-1 client row opens on turn 1.
+	body := serve(t, h, "GET", fmt.Sprintf("/admin/ui/session?key=%s&limit=2&id=%d", key, turn1ID), false).Body.String()
+	if got := selectedIDFromBody(t, body); got != turn1ID {
+		t.Errorf("?id=%d (turn 1 client row) selected %d, want itself", turn1ID, got)
+	}
+
+	// ?id= of the satellite must resolve through trace_id to turn 2 (its
+	// parent), land on the page containing turn 2, and select the
+	// SATELLITE's own id — not the parent's — so the child row (not the
+	// parent row) is what actually highlights.
+	body = serve(t, h, "GET", fmt.Sprintf("/admin/ui/session?key=%s&limit=2&id=%d", key, satelliteID), false).Body.String()
+	if got := selectedIDFromBody(t, body); got != satelliteID {
+		t.Errorf("?id=%d (satellite) selected %d, want the satellite's own id", satelliteID, got)
+	}
+	if !strings.Contains(body, "#2") {
+		t.Errorf("?id=%d (satellite) did not land on turn 2's page:\n%s", satelliteID, body)
+	}
+
+	// An id from a different session is a 404, not a cross-session leak.
+	rec := serve(t, h, "GET", "/admin/ui/session?key=other-session&id="+fmt.Sprint(turn1ID), false)
+	if rec.Code != 404 {
+		t.Errorf("?id= from a different session = %d, want 404", rec.Code)
+	}
+
+	// A non-numeric id is a bad request.
+	rec = serve(t, h, "GET", "/admin/ui/session?key="+key+"&id=abc", false)
+	if rec.Code != 400 {
+		t.Errorf("?id=abc = %d, want 400", rec.Code)
+	}
+
+	// An id that does not exist is a 404.
+	rec = serve(t, h, "GET", "/admin/ui/session?key="+key+"&id=999999", false)
+	if rec.Code != 404 {
+		t.Errorf("?id= for a nonexistent request = %d, want 404", rec.Code)
+	}
+}
+
+// selectedIDFromBody extracts window.TRANSCRIPT_SELECTED's numeric value
+// from a rendered session page. html/template's contextual JS auto-escaper
+// inserts protective whitespace around interpolated values inside a
+// <script> block (`= 1 ;` rather than `= 1;`), so an exact-string match on
+// the surrounding source is fragile; parsing the number out is not.
+func selectedIDFromBody(t *testing.T, body string) int64 {
+	t.Helper()
+	const marker = "TRANSCRIPT_SELECTED ="
+	i := strings.Index(body, marker)
+	if i < 0 {
+		t.Fatalf("TRANSCRIPT_SELECTED not found in body:\n%s", body)
+	}
+	rest := body[i+len(marker):]
+	end := strings.IndexAny(rest, ";")
+	if end < 0 {
+		t.Fatalf("TRANSCRIPT_SELECTED has no terminating ';':\n%s", rest)
+	}
+	var id int64
+	if _, err := fmt.Sscanf(strings.TrimSpace(rest[:end]), "%d", &id); err != nil {
+		t.Fatalf("TRANSCRIPT_SELECTED value %q did not parse as an int: %v", rest[:end], err)
+	}
+	return id
 }
 
 // A session key that names nothing is a plain answer, not a 500 or a blank

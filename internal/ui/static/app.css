@@ -422,11 +422,38 @@ footer.appfoot .spacer {
 .lane-row.selected { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 
 .lane-head { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; }
-.lane-head-left { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1 1 auto; }
+.lane-head-left {
+  display: flex; align-items: baseline; gap: 10px;
+  /* Fixed, never shrunk: the request/satellite/age stats must never be
+   * squeezed or truncated. flex:1 1 auto + min-width:0 here previously let
+   * the outer row shrink this box under space pressure — but .meta (below)
+   * has white-space:nowrap and no min-width override, so it refused to
+   * actually shrink and instead overflowed rightward, visually bleeding
+   * into the preview text sitting in .lane-head-right. All shrink pressure
+   * must land on the preview (right side) instead — see .lane-head-right. */
+  flex: 0 0 auto;
+}
 .lane-head-left .sid {
   font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent); padding: 2px 8px;
   border-radius: var(--radius-sm); flex: 0 0 auto;
+}
+/* .hot marks a lane whose session still has a live affinity pin — i.e. is
+ * within its prompt-cache TTL (store.ActiveSessionKeys; same definition as
+ * the nav bar's "N active" stat). A small dot rather than a badge/label:
+ * this is a courtesy annotation on top of the lane's own stats, not a
+ * fact worth competing with them for attention. The soft pulse is slow and
+ * low-amplitude on purpose — meant to read as "still alive" at a glance,
+ * not to flicker or demand the eye the way an alert would. */
+.hot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ok); flex: 0 0 auto;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 20%, transparent);
+  animation: lane-hot-pulse 2.4s ease-in-out infinite;
+}
+@keyframes lane-hot-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
 }
 .lane-head-left .meta { font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
 .lane-head-left .meta b { color: var(--text-dim); font-weight: 600; }
@@ -438,6 +465,11 @@ footer.appfoot .spacer {
 .lane-head-right .preview {
   font-size: 12.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; min-width: 0;
+  /* This is where all the row's shrink pressure lands, now that
+   * .lane-head-left is fixed-width: flex:1 1 auto + min-width:0 lets the
+   * excerpt shrink all the way down (ellipsis engaging) rather than push
+   * into the stats on the left or the cost figure on the right. */
+  flex: 1 1 auto;
 }
 .lane-head-right .preview.muted { color: var(--text-faint); font-style: italic; }
 .lane-head-right .cost { font-family: var(--mono); font-weight: 700; font-size: 13px; color: var(--text); flex: 0 0 auto; }
@@ -447,18 +479,38 @@ footer.appfoot .spacer {
   content: ""; position: absolute; left: 0; right: 12px; top: 50%; height: 2px;
   background: var(--border-strong); transform: translateY(-1px);
 }
-/* --node-scale compresses a lane's nodes to fit the track width instead of
- * ever letting the timeline scroll horizontally — laneTimeline.js measures
- * each .lane-timeline's natural (scale 1) width against its available space
- * and sets this custom property per-lane. Node diameter and inter-node
- * spacing both scale by it uniformly, so a dense lane's nodes shrink
- * together rather than the track overflowing; a sparse lane stays at its
- * natural (scale 1) size. See laneTimeline.js for the fit logic. */
+/* Node/pill sizes are always natural/fixed — never scaled down, so a
+ * stream-pill's count label stays legible regardless of lane density.
+ * laneTimeline.js is the only thing that ever changes spacing: it sets an
+ * explicit margin-right (px) on each node directly. Stage 1 shrinks every
+ * gap uniformly down to a small floor; only if that still doesn't fit does
+ * stage 2 kick in, overlapping consecutive plain/green client nodes only
+ * (see isPlainOk in laneTimeline.js) — a satellite, a stream pill, or an
+ * errored/warned/noted client node is never overlapped or resized, only
+ * ever pushed closer by a neighboring green node's margin shrinking. */
 .node { position: relative; z-index: 2; cursor: pointer; flex: 0 0 auto; border: 0; }
+/* Invisible, larger-than-the-node hit area so clicking near a marker (not
+ * exactly on its few-pixel-wide circle) still activates it. Absolutely
+ * positioned, so it doesn't affect layout/flex sizing of .node.stack's own
+ * centered content; painted with no visible fill, so it changes nothing
+ * about how a node LOOKS, only how forgiving it is to click. When two
+ * nodes' hit zones overlap (dense/overlapping lanes), normal paint order
+ * means the later (frontmost) node wins the click — matching what's
+ * visually on top.
+ *
+ * inset is measured from the padding box, which sits INSIDE the node's own
+ * border — a plain -5px inset on a 3px-bordered .node.client would only
+ * reach 2px past the visible edge, not 5px. Each subtype below sets its
+ * own inset as -(5px target reach + that subtype's own border-width), so
+ * every node gets the same actual 5px of extra reach past what's drawn. */
+.node::before { content: ""; position: absolute; z-index: 1; }
+.node.client::before { inset: -8px; }   /* 5px reach + 3px border */
+.node.sat::before { inset: -7px; }      /* 5px reach + 2px border */
+.node.stack::before { inset: -7px; }    /* 5px reach + 2px border */
 .node.client {
-  width: calc(18px * var(--node-scale, 1)); height: calc(18px * var(--node-scale, 1));
+  width: 18px; height: 18px;
   border-radius: 50%; background: var(--panel);
-  border: 3px solid var(--ok); margin-right: calc(38px * var(--node-scale, 1));
+  border: 3px solid var(--ok); margin-right: 38px;
 }
 .node.client.s-err { border-color: var(--err); }
 .node.client.s-warn { border-color: var(--warn); }
@@ -467,13 +519,13 @@ footer.appfoot .spacer {
 .node.client.s-err.is-selected { background: var(--err); }
 .node.client.s-warn.is-selected { background: var(--warn); }
 .node.sat {
-  width: calc(10px * var(--node-scale, 1)); height: calc(10px * var(--node-scale, 1));
-  margin-right: calc(26px * var(--node-scale, 1)); margin-top: calc(-24px * var(--node-scale, 1));
+  width: 10px; height: 10px;
+  margin-right: 26px; margin-top: -24px;
   border: 2px solid var(--text-faint); background: var(--panel);
 }
 .node.sat::after {
-  content: ""; position: absolute; left: 2px; top: calc(9px * var(--node-scale, 1));
-  width: 2px; height: calc(18px * var(--node-scale, 1));
+  content: ""; position: absolute; left: 2px; top: 9px;
+  width: 2px; height: 18px;
   background: var(--border-strong); opacity: 0.65;
 }
 .node.sat.classifier { border-color: var(--purple); }
@@ -481,10 +533,10 @@ footer.appfoot .spacer {
 .node.sat.subagent { border-color: var(--kind-subagent); }
 .node.sat.is-selected { background: currentColor; }
 .node.stack {
-  width: auto; min-width: calc(34px * var(--node-scale, 1)); height: calc(22px * var(--node-scale, 1));
-  padding: 0 calc(8px * var(--node-scale, 1)); border-radius: var(--radius-pill);
+  width: auto; min-width: 34px; height: 22px;
+  padding: 0 8px; border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--accent) 14%, var(--panel));
-  border: 2px solid var(--accent); margin-right: calc(34px * var(--node-scale, 1));
+  border: 2px solid var(--accent); margin-right: 34px;
   display: flex; align-items: center; justify-content: center;
 }
 .node.stack .stackn { font-family: var(--mono); font-size: 10.5px; font-weight: 700; color: var(--accent); }

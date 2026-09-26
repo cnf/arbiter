@@ -1,49 +1,113 @@
-// laneTimeline.js — compresses each lane's timeline nodes to fit the lane's
-// own width, so a session with many requests never scrolls the timeline
-// horizontally (the lane list only ever scrolls vertically — see
+// laneTimeline.js — compresses each lane's timeline SPACING to fit the
+// lane's own width, so a session with many requests never scrolls the
+// timeline horizontally (the lane list only ever scrolls vertically — see
 // #lane-list/.lane-scroll in app.css). A lane is exactly as wide as
 // .lanes-col; every node in it has to fit inside that, however many
 // requests the session had.
 //
-// The approach: every node's CSS size and right-margin are `calc(Npx *
-// var(--node-scale, 1))` (see app.css's .node.client/.sat/.stack rules).
-// This script measures a lane's timeline at scale 1 (its natural,
-// uncompressed width) against the track's available width and, if the
-// natural width would overflow, sets --node-scale on that one
-// .lane-timeline to the ratio that makes it fit exactly. A lane with few
-// nodes never gets a scale set at all — it stays at its natural size,
-// matching the mockup's normal case.
+// Unlike the first version of this file, node/pill SIZES never change —
+// only the GAP between them does. Shrinking a stream pill's box along with
+// everything else made its count label illegible exactly when it mattered
+// most (the densest lanes); a pill's text must stay the same size at any
+// density. So this sets an explicit `margin-right` (px) on each node
+// directly instead of a shared `--node-scale` custom property.
 //
-// Same lifecycle problem chart.js documents: htmx replaces #lane-list
-// wholesale on every filter change, so this re-measures on every
-// htmx:afterSettle (post-layout, so clientWidth is meaningful) in addition
-// to first load, and a ResizeObserver keeps it correct across window/panel
-// resizes without a resize listener.
+// Two stages, in order:
+//   1. Shrink every node's gap uniformly (by the same fraction of its own
+//      natural-to-floor range) until the lane fits or every gap has hit
+//      its floor — a satellite, a stream pill, and a client node all keep
+//      a minimum breathing gap, they just get closer together.
+//   2. If the lane still doesn't fit once every gap is at its floor, start
+//      pulling immediate neighbors on top of plain/"ok"-status client
+//      nodes only (negative margin = overlap) — never a satellite, a
+//      stream pill, or an errored/warned/noted client node. Capped so an
+//      overlapped node is never fully hidden. This is the "only overlap
+//      the green/normal ones, keep the rest the same" behavior.
+// A lane with few nodes never gets any of this — it stays at its natural
+// spacing, matching the mockup's normal case.
 (function () {
   "use strict";
+
+  // Must match the fixed margin-right values in app.css's
+  // .node.client/.sat/.stack rules (the "natural", scale-1 spacing).
+  var NATURAL_MARGIN = { client: 38, sat: 26, stack: 34 };
+  // Stage 1 never shrinks a gap below this — small enough to pack a lot
+  // in, large enough that adjacent nodes are still visibly separate.
+  var FLOOR_MARGIN = { client: 6, sat: 4, stack: 10 };
+  // Stage 2 cap: how far a plain-ok client node's margin can go negative
+  // (i.e., how much of its neighbor's leading edge can sit on top of it).
+  // Bounded well under the node's own 18px width so it's overlapped, never
+  // fully swallowed — there's always a sliver left to click or see.
+  var MAX_OVERLAP = 12;
+
+  function nodeType(node) {
+    if (node.classList.contains("sat")) return "sat";
+    if (node.classList.contains("stack")) return "stack";
+    return "client";
+  }
+
+  // A "plain/green/normal" node: a client request that came back ok. Any
+  // other status (err/warn/note) or a satellite/stream-pill is exempt from
+  // stage 2 — it keeps its floor gap no matter how dense the lane gets.
+  function isPlainOk(node) {
+    return node.classList.contains("client") && node.classList.contains("s-ok");
+  }
 
   function fit(row) {
     var timeline = row.querySelector(".lane-timeline");
     if (!timeline) return;
+    var nodes = timeline.querySelectorAll(".node");
+    if (!nodes.length) return;
 
-    // Reset to natural size before measuring — otherwise a previous fit's
-    // shrink would make the "does it overflow" check measure the already-
-    // compressed width and never re-expand after the lane gets wider.
-    timeline.style.removeProperty("--node-scale");
+    // Reset to natural spacing before measuring — otherwise a previous
+    // fit's compression would make the "does it overflow" check measure
+    // the already-compressed width and never re-expand after the lane
+    // gets wider.
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].style.marginRight = "";
+    }
 
-    // scrollWidth is the content's natural width regardless of the
-    // overflow:hidden clip on .lane-timeline (app.css) — exactly the
-    // "how wide would this be uncompressed" figure the fit needs.
-    var natural = timeline.scrollWidth;
     var available = timeline.clientWidth;
+    var natural = timeline.scrollWidth;
     if (available <= 0 || natural <= available) return;
 
-    // A small floor keeps very dense lanes (hundreds of nodes) from
-    // shrinking into illegible or zero-size dots; past this point the
-    // stack/run-collapsing the lane already does (see sessions.go's
-    // foldRequestLines) is the real answer, not further compression.
-    var scale = Math.max(available / natural, 0.28);
-    timeline.style.setProperty("--node-scale", String(scale));
+    var overflow = natural - available;
+
+    // Stage 1: how much combined slack does shrinking every gap to its
+    // floor give us? Take exactly the fraction of that needed to close
+    // `overflow` — shared uniformly, so every node loses the same
+    // proportion of its own natural-to-floor range.
+    var slack = 0;
+    for (var j = 0; j < nodes.length; j++) {
+      var t0 = nodeType(nodes[j]);
+      slack += NATURAL_MARGIN[t0] - FLOOR_MARGIN[t0];
+    }
+    var stage1Ratio = slack > 0 ? Math.min(overflow / slack, 1) : 1;
+    for (var k = 0; k < nodes.length; k++) {
+      var t1 = nodeType(nodes[k]);
+      var range = NATURAL_MARGIN[t1] - FLOOR_MARGIN[t1];
+      nodes[k].style.marginRight = (NATURAL_MARGIN[t1] - range * stage1Ratio) + "px";
+    }
+
+    if (stage1Ratio < 1) return; // stage 1 alone closed the gap
+
+    var remaining = overflow - slack;
+    if (remaining <= 0) return;
+
+    // Stage 2: every gap is already at its floor and the lane still
+    // overflows. Only plain-ok client nodes may give up more space now,
+    // by overlapping the node that follows them.
+    var eligible = [];
+    for (var m = 0; m < nodes.length; m++) {
+      if (isPlainOk(nodes[m])) eligible.push(nodes[m]);
+    }
+    if (!eligible.length) return; // nothing left that's allowed to shrink further
+
+    var overlapEach = Math.min(remaining / eligible.length, MAX_OVERLAP);
+    for (var n = 0; n < eligible.length; n++) {
+      var t2 = nodeType(eligible[n]); // always "client" here, kept for clarity
+      eligible[n].style.marginRight = (FLOOR_MARGIN[t2] - overlapEach) + "px";
+    }
   }
 
   function fitAll() {

@@ -56,9 +56,9 @@ func newSeededHandler(t *testing.T, events ...store.Event) (*Handler, *store.SQL
 func serve(t *testing.T, h *Handler, method, target string, hx bool) *httptest.ResponseRecorder {
 	t.Helper()
 	r := mux.NewRouter()
-	r.HandleFunc("/admin/ui/requests/tail", h.TailHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}/guardrail-diff", h.GuardrailDiffHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/sessions", h.SessionsHandler).Methods("GET")
+	r.HandleFunc("/admin/ui/sessions/tail", h.SessionsTailHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/session", h.SessionHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/overview", h.OverviewHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/overview/node", h.OverviewNodeHandler).Methods("GET")
@@ -79,12 +79,14 @@ func serve(t *testing.T, h *Handler, method, target string, hx bool) *httptest.R
 }
 
 // serveJSON drives a handler through the router and returns the status and body,
-// for the endpoints that answer JSON rather than HTML. The live tail is the only
-// one left: the old Overview's series.json went with the pivot explorer (#54).
+// for the endpoints that answer JSON rather than HTML. The Sessions live tail is
+// the only one left: the old flat-list tail (TailHandler, live.js) was removed
+// once the Sessions page grew its own (#56/#57), and the old Overview's
+// series.json went with the pivot explorer (#54).
 func serveJSON(t *testing.T, h *Handler, target string) (int, string) {
 	t.Helper()
 	r := mux.NewRouter()
-	r.HandleFunc("/admin/ui/requests/tail", h.TailHandler).Methods("GET")
+	r.HandleFunc("/admin/ui/sessions/tail", h.SessionsTailHandler).Methods("GET")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
 	return rec.Code, rec.Body.String()
@@ -179,7 +181,6 @@ var pageViews = map[string]viewEntry{
 // fragmentViews maps a fragment name to its own view shape. Fragments with no
 // entry are the nested ones exercised through their page.
 var fragmentViews = map[string]viewEntry{
-	"req-rows":       {view: func(h *Handler, n string) interface{} { return rowsView{} }},
 	"overview-body":  {view: func(h *Handler, n string) interface{} { return overviewView{} }},
 	"overview-node":  {view: func(h *Handler, n string) interface{} { return flowNodeDetail{} }},
 	"session-rows":   {view: func(h *Handler, n string) interface{} { return sessionsView{} }},
@@ -302,36 +303,6 @@ func firstLine(s string) string {
 	return s
 }
 
-// Malformed filters are 400s naming the parameter, never silently ignored: a
-// filter that quietly returns unfiltered data shows wrong numbers with no
-// indication anything was dropped.
-//
-// The requests page these were written against is gone (#54). The live tail
-// parses the same filter set for the rows it polls, so the assertions moved
-// there rather than being deleted — the parsing they cover is still reachable
-// and still has to refuse rather than clamp.
-func TestMalformedFiltersAreRejected(t *testing.T) {
-	h, _ := newSeededHandler(t)
-	for _, tc := range []struct{ q, want string }{
-		{"?status=abc", "status"},
-		{"?status=99", "status"},
-		{"?since=7d", "since"},
-		// The tail's cursor parameter is `cursor`, not the deleted list page's
-		// `after`, and it has no `limit` — its page size is fixed
-		// (store.MaxTailLimit) because a poll is not a paged read.
-		{"?cursor=!!!!", "cursor"},
-	} {
-		code, body := serveJSON(t, h, "/admin/ui/requests/tail"+tc.q)
-		if code != http.StatusBadRequest {
-			t.Errorf("%s = %d, want 400", tc.q, code)
-			continue
-		}
-		if !strings.Contains(body, tc.want) {
-			t.Errorf("%s: the 400 does not name %q", tc.q, tc.want)
-		}
-	}
-}
-
 // The request-detail page's 400/404 split went with that page (#54): the session
 // transcript replaced it, and the guardrail-diff fragment is the only per-request
 // endpoint left under /admin/ui/requests/. It keeps the same contract, so the
@@ -394,22 +365,6 @@ func TestCursorIsOpaqueAndRoundTrips(t *testing.T) {
 		if _, _, err := decodeCursor(bad); err == nil {
 			t.Errorf("decodeCursor(%q) accepted a malformed cursor", bad)
 		}
-	}
-}
-
-// A malformed cursor is a 400 naming it. The requests page that first carried
-// this parameter is gone (#54), but the live tail still takes a cursor, so the
-// assertion moved to the endpoint that still has one rather than being dropped —
-// a cursor that silently matches no row renders "no results" instead of an
-// error, which is exactly the failure shape this codebase refuses.
-func TestMalformedCursorIsRejected(t *testing.T) {
-	h, _ := newSeededHandler(t, store.Event{TraceID: "t", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1})
-	code, body := serveJSON(t, h, "/admin/ui/requests/tail?cursor=!!!!")
-	if code != http.StatusBadRequest {
-		t.Errorf("bad cursor = %d, want 400", code)
-	}
-	if !strings.Contains(body, "cursor") {
-		t.Error("the 400 does not name the offending parameter")
 	}
 }
 

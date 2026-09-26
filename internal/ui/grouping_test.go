@@ -28,19 +28,6 @@ func lineRow(id int64, mutate func(*store.RequestRow)) requestRowView {
 	return requestRowView{RequestRow: r, ShortSession: r.SessionKey}
 }
 
-// seededTurn is one streamed client request in a named session, which is the shape
-// a working conversation writes: same session, same provider/model, streamed.
-func seededTurn(trace, session string) store.Event {
-	return store.Event{
-		TraceID:    trace,
-		SessionKey: session,
-		Provider:   "p",
-		Model:      "m",
-		StatusCode: 200,
-		Stream:     true,
-	}
-}
-
 // TestFoldRequestsGroupsStreamedRuns is the feature: a run of streamed turns of
 // one conversation becomes one line with a count, and everything that makes a
 // request a *different event* starts a line of its own.
@@ -186,11 +173,11 @@ func TestFoldRequestsGroupsStreamedRuns(t *testing.T) {
 // wherever it sits on the page, so the run reads as one line with one count.
 func TestFoldRequestsGathersARunsRowsToOneLine(t *testing.T) {
 	rows := []requestRowView{
-		lineRow(5, nil),                                                              // A
-		lineRow(4, nil),                                                              // A
-		lineRow(3, func(r *store.RequestRow) { r.SessionKey = "s2" }),                // B
-		lineRow(2, nil),                                                              // A
-		lineRow(1, nil),                                                              // A
+		lineRow(5, nil), // A
+		lineRow(4, nil), // A
+		lineRow(3, func(r *store.RequestRow) { r.SessionKey = "s2" }), // B
+		lineRow(2, nil), // A
+		lineRow(1, nil), // A
 	}
 	lines := foldRequestLines(rows)
 	if len(lines) != 2 {
@@ -207,14 +194,18 @@ func TestFoldRequestsGathersARunsRowsToOneLine(t *testing.T) {
 // TestFoldRequestsOnlyRunsAreCollapsedAndKeyed is the boundary between a line that
 // stands for many requests and one that stands for itself.
 //
-// Two separate properties live here and they are easy to conflate. Run (and the
-// count badge and the open link) is about the *page*: only a group of streamed
-// repeats collapses into a summary line. The group key is about the *row*: a
-// streamed, session-pinned request carries it even when it is alone, because a
-// later poll's arrival needs to find it and join it. Gating the key on Run is the
-// defect this test now guards: it left every single-row line keyless, so the first
-// new turn of a conversation on screen could not join its line and was prepended
-// as a duplicate.
+// Two separate properties live here and they are easy to conflate. Run (the
+// count badge) is about the *page*: only a group of streamed repeats collapses
+// into a summary line. The group key is about the *row*: a streamed,
+// session-pinned request carries it even when it is alone, because a later
+// poll's arrival needs to find it and join it. Gating the key on Run is the
+// defect this test now guards: it left every single-row line keyless, so the
+// first new turn of a conversation on screen could not join its line and was
+// prepended as a duplicate.
+//
+// The open link itself (OpenHref) is no longer foldRequestLines' concern — it
+// is filled in by the caller (sessionNodeHref, see sessions_test.go) once the
+// line is placed on a page; folding only decides Run and the group key.
 func TestFoldRequestsOnlyRunsAreCollapsedAndKeyed(t *testing.T) {
 	lines := foldRequestLines([]requestRowView{
 		lineRow(3, nil),
@@ -224,23 +215,23 @@ func TestFoldRequestsOnlyRunsAreCollapsedAndKeyed(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("got %d lines, want 2", len(lines))
 	}
-	if !lines[0].Run || lines[0].OpenHref == "" {
-		t.Errorf("the folded run should be Run with an open link; got run=%v href=%q", lines[0].Run, lines[0].OpenHref)
+	if !lines[0].Run {
+		t.Errorf("the folded run should be Run; got run=%v", lines[0].Run)
 	}
-	if got := tailRowKey(lines[0].Head); got == "" {
+	if got := lineAttr(lines[0].Head); got == "" {
 		t.Error("a streamed row of a collapsed line travels with no group key, so the tail cannot find it")
 	}
-	if lines[1].Run || lines[1].OpenHref != "" {
-		t.Errorf("a single-row line must not be flagged as a run; got run=%v href=%q", lines[1].Run, lines[1].OpenHref)
+	if lines[1].Run {
+		t.Errorf("a single-row line must not be flagged as a run; got run=%v", lines[1].Run)
 	}
 	// The single streamed row is not a run, but it is still a request that belongs
 	// to a conversation: it must carry its group so a later arrival can join it.
-	if got := tailRowKey(lines[1].Head); got == "" {
+	if got := lineAttr(lines[1].Head); got == "" {
 		t.Error("a lone streamed request travels with no group key, so a new turn of its conversation cannot join its line")
 	}
-	if lines[1].Attr != tailRowKey(lines[1].Head) {
-		t.Errorf("the line's own markup key %q and the tail key %q differ; the client could never match the row to its line",
-			lines[1].Attr, tailRowKey(lines[1].Head))
+	if lines[1].Attr != lineAttr(lines[1].Head) {
+		t.Errorf("the line's own markup key %q and the row key %q differ; the client could never match the row to its line",
+			lines[1].Attr, lineAttr(lines[1].Head))
 	}
 }
 
@@ -251,10 +242,10 @@ func TestOnlyFoldableRowsCarryAKey(t *testing.T) {
 	nonStreamed := lineRow(3, func(r *store.RequestRow) { r.Stream = false })
 	unpinned := lineRow(4, func(r *store.RequestRow) { r.SessionKey = "" })
 
-	if got := tailRowKey(nonStreamed); got != "" {
+	if got := lineAttr(nonStreamed); got != "" {
 		t.Errorf("a non-streamed request carries group key %q; it cannot share a line", got)
 	}
-	if got := tailRowKey(unpinned); got != "" {
+	if got := lineAttr(unpinned); got != "" {
 		t.Errorf("an unpinned request carries group key %q; it has no demonstrated relationship to any line", got)
 	}
 }
@@ -390,6 +381,7 @@ func TestAttachTraceChildrenMatchesAnyTurnOfAFoldedRun(t *testing.T) {
 		t.Fatalf("the run's children = %+v, want the classifier tied to its older turn", lines[0].Children)
 	}
 }
+
 // titleRow builds a row for the title-nesting tests — a title-gen request:
 // still Kind="client" (a real HTTP call the client made), tagged
 // RequestKind="title", with its own session_key distinct from the session it

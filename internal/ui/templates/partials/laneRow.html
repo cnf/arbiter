@@ -13,7 +13,7 @@ same convention filters.html/req-rows.html use on the requests page — so a
 filter change updates the count and the window note together with the list,
 not just the rows. */}}
 {{define "session-rows"}}
-<div id="lane-list">
+<div id="lane-list" data-live-src="/admin/ui/sessions/tail">
   <form class="toolbar" hx-get="/admin/ui/sessions" hx-target="#lane-list" hx-swap="outerHTML"
         hx-push-url="true" hx-indicator="#lanesBusy" hx-trigger="submit, change">
     <input class="search" type="text" name="q" value="{{.Query}}"
@@ -26,6 +26,16 @@ not just the rows. */}}
     </label>
     <label class="chip{{if .ClientOnly}} on{{end}}">
       <input type="checkbox" name="client_only" value="1" {{if .ClientOnly}}checked{{end}} hidden> client only
+    </label>
+    <label class="chip{{if .LiveOnly}} on{{end}}" title="only sessions with a live, or recently expired, affinity pin — everything else is history rather than a conversation a next turn would still route to consistently">
+      <input type="checkbox" name="live_only" value="1" {{if .LiveOnly}}checked{{end}} hidden>
+      {{/* live_only defaults to on, unlike client_only — so an unchecked
+      box has to actively say "0" rather than just omit the param, or the
+      handler's q.Get("live_only") != "0" default-on check could never be
+      turned off. This hidden fallback always submits 0; the checkbox above
+      it submits 1 (and wins, since browsers submit same-name fields in
+      document order and q.Get takes the first) only while checked. */}}
+      <input type="hidden" name="live_only" value="0"> live only
     </label>
     <select name="since">
       <option value="24h"{{if eq .SinceRaw "24h"}} selected{{end}}>since 24h</option>
@@ -54,6 +64,7 @@ not just the rows. */}}
     <span><span class="dot classifier"></span>classifier</span>
     <span><span class="dot title"></span>title</span>
     <span><span class="dot subagent"></span>subagent</span>
+    <span><span class="hot" style="animation:none"></span>active — within cache TTL</span>
   </div>
 </div>
 {{end}}
@@ -65,6 +76,7 @@ sessions.laneRow. */}}
   <div class="lane-head">
     <div class="lane-head-left">
       <a class="sid" href="/admin/ui/session?key={{.Key}}" title="{{.Key}} — open transcript">{{.ShortKey}}</a>
+      {{if .Active}}<span class="hot" title="active — still within its cache TTL"></span>{{end}}
       <span class="meta"><b>{{.Turns}}</b> request{{if ne .Turns 1}}s{{end}}{{if gt .SatelliteCount 0}} · <b>{{.SatelliteCount}}</b> satellite{{if ne .SatelliteCount 1}}s{{end}}{{end}} · started {{ago .FirstSeen}}</span>
     </div>
     <div class="lane-head-right">
@@ -95,7 +107,7 @@ fetch — the data is already server-rendered, just not visible until clicked. *
      data-route="{{index .Head.RoutingChain 0}}" data-provider="{{.Head.Provider}}" data-kind="{{.Head.Kind}}"
      data-status="{{.Head.StatusCode}}" data-count="{{.Count}}" data-cost="{{usd .Head.CostUSD}}"
      data-latency="{{dur .Head.LatencyMs}}" data-trace="{{.Head.TraceID}}" data-open-href="{{.OpenHref}}"
-     data-rationale="{{.Count}}× streamed turns, same route, collapsed into one node — click to open the flat list of exactly these requests.">
+     data-rationale="{{.Count}}× streamed turns, same route, collapsed into one node — click to open its transcript.">
   <span class="tip">{{.Count}}× streamed turns · {{usd .Head.CostUSD}} total</span>
   <span class="stackn">{{.Count}}×</span>
 </div>
@@ -103,7 +115,7 @@ fetch — the data is already server-rendered, just not visible until clicked. *
 <div class="node client {{statusClass .Head.StatusCode}}" tabindex="0" role="button"
      data-route="{{index .Head.RoutingChain 0}}" data-provider="{{.Head.Provider}}" data-kind="{{.Head.Kind}}"
      data-status="{{.Head.StatusCode}}" data-cost="{{usd .Head.CostUSD}}" data-latency="{{dur .Head.LatencyMs}}"
-     data-trace="{{.Head.TraceID}}" data-request-id="{{.Head.ID}}"
+     data-trace="{{.Head.TraceID}}" data-open-href="{{.OpenHref}}"
      data-rationale="{{.Head.RoutingRationale}}">
   <span class="tip">{{index .Head.RoutingChain 0}} · {{dur .Head.LatencyMs}} · {{.Head.StatusCode}}</span>
 </div>
@@ -119,7 +131,7 @@ call), else Kind (a classifier call). */}}
      tabindex="0" role="button"
      data-route="{{index .Head.RoutingChain 0}}" data-provider="{{.Head.Provider}}" data-kind="{{.Head.Kind}}"
      data-status="{{.Head.StatusCode}}" data-cost="{{usd .Head.CostUSD}}" data-latency="{{dur .Head.LatencyMs}}"
-     data-trace="{{.Head.TraceID}}" data-request-id="{{.Head.ID}}"
+     data-trace="{{.Head.TraceID}}" data-open-href="{{.OpenHref}}"
      data-rationale="{{.Head.RoutingRationale}}">
   <span class="tip">{{index .Head.RoutingChain 0}} · {{dur .Head.LatencyMs}} · {{.Head.StatusCode}}</span>
 </div>

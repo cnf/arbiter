@@ -567,6 +567,82 @@ LIMIT 1 OFFSET ?`
 	return id, true, nil
 }
 
+// SessionTurnForRequest resolves the turn a request id belongs to, for the
+// Sessions lane list's "open in transcript" links: a client row's turn is its
+// own position; a non-client row (a classifier call, a title-gen call — see
+// requests.kind) has no position of its own and resolves through its
+// trace_id to the client row that spawned it, exactly as attachTraceChildren
+// nests it in the UI. ok is false when the request id does not exist, or
+// belongs to a session-less request, or (rare — a client row was never
+// written, e.g. a very old pre-#5 rejection) a non-client row whose trace has
+// no client row to resolve through.
+//
+// Returns the session key alongside the turn number because the caller (the
+// lane list) has the id but not necessarily the parent session's key at hand
+// for a satellite node — SessionHandler needs both to build ?key=&seq=.
+func (r *Reader) SessionTurnForRequest(ctx context.Context, id int64) (key string, turn int, ok bool, err error) {
+	var (
+		session sql.NullString
+		kind    string
+		traceID string
+	)
+	err = r.db.QueryRowContext(ctx,
+		`SELECT session_key, kind, trace_id FROM requests WHERE id = ?`, id,
+	).Scan(&session, &kind, &traceID)
+	if err == sql.ErrNoRows {
+		return "", 0, false, nil
+	}
+	if err != nil {
+		return "", 0, false, fmt.Errorf("session turn for request: %w", err)
+	}
+	if !session.Valid || session.String == "" {
+		return "", 0, false, nil
+	}
+	key = session.String
+
+	targetID := id
+	if kind != "client" {
+		if traceID == "" {
+			return "", 0, false, nil
+		}
+		var parentID int64
+		err = r.db.QueryRowContext(ctx,
+			`SELECT id FROM requests WHERE session_key = ? AND kind = 'client' AND trace_id = ?
+LIMIT 1`, key, traceID,
+		).Scan(&parentID)
+		if err == sql.ErrNoRows {
+			return "", 0, false, nil
+		}
+		if err != nil {
+			return "", 0, false, fmt.Errorf("session turn for request (parent lookup): %w", err)
+		}
+		targetID = parentID
+	}
+
+	// The turn is the target client row's rank among the session's client
+	// rows ordered (ts ASC, id ASC) — the same ordering SessionClientPage
+	// and SessionTurnAt use elsewhere in this file. The ts comparison stays
+	// inside a subquery rather than round-tripping the target's ts through
+	// Go as a string: modernc.org/sqlite scans a TIMESTAMP column back as
+	// RFC3339 but stores it in time.Time's default String() layout, so a
+	// value read out and compared back in via `WHERE ts = ?` silently
+	// mismatches format even though it's the same instant.
+	var n int
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM requests r2
+WHERE r2.session_key = ? AND r2.kind = 'client'
+  AND (r2.ts < (SELECT ts FROM requests WHERE id = ?)
+       OR (r2.ts = (SELECT ts FROM requests WHERE id = ?) AND r2.id <= ?))`,
+		key, targetID, targetID, targetID,
+	).Scan(&n); err != nil {
+		return "", 0, false, fmt.Errorf("session turn for request (count): %w", err)
+	}
+	if n == 0 {
+		return "", 0, false, nil
+	}
+	return key, n, true, nil
+}
+
 // SessionFirstClient returns the session's opening client request — the turn
 // that introduced the conversation, and therefore the one whose system
 // preamble the page's preamble modal inspects. ok is false for a session with
@@ -733,6 +809,51 @@ LIMIT ?`
 	return out, rows.Err()
 }
 
+// SessionSummaryFor is Sessions' per-row aggregate for exactly one session
+// key, over the same window shape (ts >= since, kind = 'client').
+//
+// It exists for the live-tail poller (see ui.SessionsTailHandler): Sessions
+// itself is a bulk, windowed group-by over every conversation, which is the
+// right query for a full page load but the wrong one for "refresh this one
+// lane whose pin just moved" — running the whole index every 5 seconds to
+// pick one row back out of it would scale with total session count instead
+// of with the (small, single-digit) number of currently-pinned sessions a
+// poll actually needs. ok is false when the session has no client rows in
+// the window at all (a pin can outlive the window that produced it, or name
+// a session whose only rows are non-client and therefore excluded here, same
+// as Sessions).
+func (r *Reader) SessionSummaryFor(ctx context.Context, key string, since time.Time) (SessionSummary, bool, error) {
+	const q = `
+SELECT session_key,
+    COUNT(*),
+    MIN(ts), MAX(ts),
+    CAST(COALESCE(SUM(input_tokens), 0)  AS INTEGER),
+    CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER),
+    COALESCE(SUM(cost_usd), 0),
+    CAST(COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS INTEGER),
+    COALESCE(group_concat(DISTINCT provider), ''),
+    COUNT(DISTINCT provider || '/' || model)
+FROM requests
+WHERE ts >= ? AND session_key = ? AND kind = 'client'
+GROUP BY session_key`
+
+	var (
+		s              SessionSummary
+		first, lastRaw interface{}
+	)
+	err := r.db.QueryRowContext(ctx, q, since, key).Scan(&s.Key, &s.Turns, &first, &lastRaw,
+		&s.InputTokens, &s.OutputTokens, &s.CostUSD, &s.Errors, &s.Providers, &s.Models)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SessionSummary{}, false, nil
+	}
+	if err != nil {
+		return SessionSummary{}, false, fmt.Errorf("session summary for %q: %w", key, err)
+	}
+	s.FirstSeen = formatTime(first)
+	s.LastSeen = formatTime(lastRaw)
+	return s, true, nil
+}
+
 // SessionlessRequestCount counts the requests in a window that have no session
 // key at all. It is what keeps those requests visible in the sessions index
 // rather than silently absent from it.
@@ -770,6 +891,44 @@ func (r *Reader) ActiveSessionCount(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("active session count: %w", err)
 	}
 	return n, nil
+}
+
+// SessionPinExpiry returns every session's pin expiry, for pins that expired
+// no earlier than since — i.e. still live, or expired but recently enough to
+// be within a caller-chosen grace window. It is the one query that answers
+// both "is this session still active" (expires_at in the result is >= now)
+// and "is this session still within its post-expiry grace window" (present
+// in the result at all), without a second round trip for each question.
+//
+// This is the Sessions lane list's data source for both the "hot" dot and
+// the "live only" filter: a lane whose key is absent from the result (its
+// pin expired earlier than since, or it was never pinned) drops out of the
+// filtered view entirely, while one still present but past its own expiry
+// lingers — see sessions.go's liveGraceWindow for why a session does not
+// vanish from the list the instant its pin expires.
+//
+// A store with no matching affinity_pins rows returns an empty, non-nil map
+// — the caller does not need to special-case "nothing is live" separately
+// from "the query failed".
+func (r *Reader) SessionPinExpiry(ctx context.Context, since time.Time) (map[string]time.Time, error) {
+	const q = `SELECT session_key, expires_at FROM affinity_pins WHERE expires_at >= ?`
+
+	rows, err := r.db.QueryContext(ctx, q, since.UTC())
+	if err != nil {
+		return nil, fmt.Errorf("session pin expiry: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var key string
+		var expiresAt time.Time
+		if err := rows.Scan(&key, &expiresAt); err != nil {
+			return nil, fmt.Errorf("scan session pin expiry: %w", err)
+		}
+		out[key] = expiresAt
+	}
+	return out, rows.Err()
 }
 
 // MaxSessionListLimit caps the sessions index. Higher than the request list's

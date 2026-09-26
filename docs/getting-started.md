@@ -304,9 +304,9 @@ material is in the README:
   [Event store](../README.md#event-store), [Admin surface and
   access](../README.md#admin-surface-and-access), [The live
   tail](../README.md#the-live-tail), [Discovery](../README.md#discovery-the-blocks-that-recur).
-- **Controlling what goes through** — `docs/guardrails.md` (planned). For now:
-  [Guardrails](../README.md#guardrails), [Prompt
-  rewriting](../README.md#prompt-rewriting-client-injected-prompts).
+- **Controlling what goes through** — **[docs/guardrails.md](guardrails.md)** —
+  system-prompt injection, rate limiting, and stripping client-injected preamble
+  text.
 - **Deciding where requests go** — `docs/routing.md` (planned). For now:
   [Routing](../README.md#routing), [LLM-backed
   classification](../README.md#llm-backed-classification).

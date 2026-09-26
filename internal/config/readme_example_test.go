@@ -27,8 +27,9 @@ func TestReadmeExampleConfigLoads(t *testing.T) {
 	loadReadmeFragment(t, example)
 }
 
-// TestReadmeGuardrailExamplesLoad checks the guardrail snippets in the Guardrails
-// and Prompt rewriting sections against the config schema.
+// TestDocGuardrailExamplesLoad checks the guardrail snippets in
+// docs/guardrails.md (the Guardrails and Prompt rewriting sections) against the
+// config schema.
 //
 // These are separate from the main example because they are *fragments*: they
 // show only the `guardrails:` block, which is what a reader adds to an existing
@@ -40,10 +41,11 @@ func TestReadmeExampleConfigLoads(t *testing.T) {
 // cmd/arbiter's buildGuardrail, not in config.Validate, so a doc block naming a
 // type that does not exist still passes here — which is exactly how the first
 // version of the Guardrails section came to document `prompt_replace`, a name
-// that never existed. The type table in the docs is checked by eye and by the
-// guardrail package's own tests; do not read this test as covering it.
-func TestReadmeGuardrailExamplesLoad(t *testing.T) {
+// that never existed. The type table is checked by
+// cmd/arbiter/guardrails_doc_test.go; do not read this test as covering it.
+func TestDocGuardrailExamplesLoad(t *testing.T) {
 	readme := readReadme(t)
+	guardrails := readDoc(t, "guardrails.md")
 
 	base := regexp.MustCompile("(?s)## Configuration.*?```yaml\n(.*?)```").FindSubmatch(readme)
 	if base == nil {
@@ -57,14 +59,18 @@ func TestReadmeGuardrailExamplesLoad(t *testing.T) {
 
 	for _, tc := range []struct {
 		name    string
-		section string // heading the fragment lives under
+		doc     []byte
+		section string // heading the fragment lives under, level-agnostic
 	}{
-		{"guardrails section", "## Guardrails"},
-		{"prompt rewriting section", "## Prompt rewriting"},
+		{"guardrails section", guardrails, "#+ Guardrails"},
+		{"prompt rewriting section", guardrails, "#+ Prompt rewriting"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			re := regexp.MustCompile("(?s)" + regexp.QuoteMeta(tc.section) + `.*?` + "```yaml\n(.*?)```")
-			m := re.FindSubmatch(readme)
+			// Level-agnostic: the section is a top-level heading in this doc,
+			// and pinning the number of '#' would make a heading-level edit
+			// look like a missing section.
+			re := regexp.MustCompile("(?s)" + tc.section + `.*?` + "```yaml\n(.*?)```")
+			m := re.FindSubmatch(tc.doc)
 			if m == nil {
 				t.Fatalf("no ```yaml block found under %q", tc.section)
 			}
@@ -154,6 +160,16 @@ func readReadme(t *testing.T) []byte {
 		t.Fatalf("read README: %v", err)
 	}
 	return readme
+}
+
+// readDoc reads a file out of the repo's docs/ directory.
+func readDoc(t *testing.T, name string) []byte {
+	t.Helper()
+	doc, err := os.ReadFile("../../docs/" + name)
+	if err != nil {
+		t.Fatalf("read docs/%s: %v", name, err)
+	}
+	return doc
 }
 
 // loadReadmeFragment writes a config and runs it through the real loader and

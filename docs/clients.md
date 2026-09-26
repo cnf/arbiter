@@ -63,7 +63,7 @@ Any OpenAI-compatible client needs only a base URL and a model name.
 
 The `apiKey` is required by most clients and ignored by Arbiter — it implements
 no authentication of its own (see [Admin surface and
-access](../README.md#admin-surface-and-access)).
+access](observability.md#admin-surface-and-access)).
 
 For an Anthropic-shaped client, point it at the same host and use the
 `/v1/messages` path.

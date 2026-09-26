@@ -8,19 +8,19 @@ import (
 	"testing"
 )
 
-// TestReadmeExampleConfigLoads keeps the README's configuration example honest.
-// The example is the first thing a reader copies, and config loading is strict
-// (unknown fields are an error), so a stale field name in the docs produces a
-// failure that looks like a code bug. This test extracts the example straight
-// from README.md and runs it through the real loader.
-func TestReadmeExampleConfigLoads(t *testing.T) {
-	readme := readReadme(t)
+// TestDocExampleConfigLoads keeps docs/configuration.md's base example
+// honest. It is the first thing a reader copies, and config loading is
+// strict (unknown fields are an error), so a stale field name in the docs
+// produces a failure that looks like a code bug. This test extracts the
+// example straight from the doc and runs it through the real loader.
+func TestDocExampleConfigLoads(t *testing.T) {
+	configDoc := readDoc(t, "configuration.md")
 
-	// The example is the first ```yaml block after "## Configuration".
-	re := regexp.MustCompile("(?s)## Configuration.*?```yaml\n(.*?)```")
-	m := re.FindSubmatch(readme)
+	// The example is the first ```yaml block after the "Configuration" title.
+	re := regexp.MustCompile("(?s)#+ Configuration.*?```yaml\n(.*?)```")
+	m := re.FindSubmatch(configDoc)
 	if m == nil {
-		t.Fatal("could not find the ```yaml example under '## Configuration' in README.md")
+		t.Fatal("could not find the ```yaml example under 'Configuration' in docs/configuration.md")
 	}
 	example := string(m[1])
 
@@ -44,12 +44,12 @@ func TestReadmeExampleConfigLoads(t *testing.T) {
 // that never existed. The type table is checked by
 // cmd/arbiter/guardrails_doc_test.go; do not read this test as covering it.
 func TestDocGuardrailExamplesLoad(t *testing.T) {
-	readme := readReadme(t)
+	configDoc := readDoc(t, "configuration.md")
 	guardrails := readDoc(t, "guardrails.md")
 
-	base := regexp.MustCompile("(?s)## Configuration.*?```yaml\n(.*?)```").FindSubmatch(readme)
+	base := regexp.MustCompile("(?s)#+ Configuration.*?```yaml\n(.*?)```").FindSubmatch(configDoc)
 	if base == nil {
-		t.Fatal("could not find the base example under '## Configuration'")
+		t.Fatal("could not find the base example under 'Configuration' in docs/configuration.md")
 	}
 	const emptyGuardrails = "guardrails:\n  pre: []                              # system_prompt, rate_limit, prompt_rewrite\n  post: []"
 	if !strings.Contains(string(base[1]), emptyGuardrails) {
@@ -80,7 +80,7 @@ func TestDocGuardrailExamplesLoad(t *testing.T) {
 	}
 }
 
-// TestReadmeDecisionsClassifierExampleLoads keeps the decisions classifier
+// TestDocDecisionsClassifierExampleLoads keeps the decisions classifier
 // section's config honest.
 //
 // It cannot use the fragment-grafting helper above: that helper replaces the
@@ -90,7 +90,7 @@ func TestDocGuardrailExamplesLoad(t *testing.T) {
 // grafting it would duplicate three top-level keys. It is loaded verbatim
 // instead, which still catches the failure that matters: a reader copying this
 // block and adding it to their config must not get a load error.
-func TestReadmeDecisionsClassifierExampleLoads(t *testing.T) {
+func TestDocDecisionsClassifierExampleLoads(t *testing.T) {
 	routing := readDoc(t, "routing.md")
 	re := regexp.MustCompile("(?s)#+ Decision-model classification.*?```yaml\\n(.*?)```")
 	m := re.FindSubmatch(routing)
@@ -100,7 +100,7 @@ func TestReadmeDecisionsClassifierExampleLoads(t *testing.T) {
 	loadReadmeFragment(t, string(m[1]))
 }
 
-// TestReadmeClassifierMatchExamplesLoad checks the `match` and `detect` snippets
+// TestDocClassifierMatchExamplesLoad checks the `match` and `detect` snippets
 // in docs/routing.md's classifier sections against the config schema.
 //
 // Like the guardrail fragments, these show only a `classifiers:` block, so each
@@ -113,13 +113,13 @@ func TestReadmeDecisionsClassifierExampleLoads(t *testing.T) {
 // untyped, so an unknown key *inside* it (a typo in `keywords:` or
 // `long_context_tokens:`) loads fine and is not caught here. Only top-level
 // ClassifierConfig fields are schema-checked.
-func TestReadmeClassifierMatchExamplesLoad(t *testing.T) {
-	readme := readReadme(t)
+func TestDocClassifierMatchExamplesLoad(t *testing.T) {
+	configDoc := readDoc(t, "configuration.md")
 	routing := readDoc(t, "routing.md")
 
-	base := regexp.MustCompile("(?s)## Configuration.*?```yaml\n(.*?)```").FindSubmatch(readme)
+	base := regexp.MustCompile("(?s)#+ Configuration.*?```yaml\n(.*?)```").FindSubmatch(configDoc)
 	if base == nil {
-		t.Fatal("could not find the base example under '## Configuration'")
+		t.Fatal("could not find the base example under 'Configuration' in docs/configuration.md")
 	}
 	// The base example's classifiers block, replaced wholesale by each fragment.
 	//
@@ -159,15 +159,6 @@ func TestReadmeClassifierMatchExamplesLoad(t *testing.T) {
 	}
 }
 
-func readReadme(t *testing.T) []byte {
-	t.Helper()
-	readme, err := os.ReadFile("../../README.md")
-	if err != nil {
-		t.Fatalf("read README: %v", err)
-	}
-	return readme
-}
-
 // readDoc reads a file out of the repo's docs/ directory.
 func readDoc(t *testing.T, name string) []byte {
 	t.Helper()
@@ -181,6 +172,9 @@ func readDoc(t *testing.T, name string) []byte {
 // loadReadmeFragment writes a config and runs it through the real loader and
 // validator. Placeholders like ${ANTHROPIC_API_KEY} must resolve to something,
 // and no fragment may depend on a real secret to load.
+//
+// Named for its origin (this test file used to read only README.md); it now
+// loads fragments sourced from docs/*.md just the same.
 func loadReadmeFragment(t *testing.T, config string) {
 	t.Helper()
 	for _, v := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "LITELLM_URL", "LITELLM_API_KEY", "OPENROUTER_API_KEY"} {
@@ -194,9 +188,9 @@ func loadReadmeFragment(t *testing.T, config string) {
 
 	cfg, err := Load(path)
 	if err != nil {
-		t.Fatalf("the README's example config does not load (a reader copying it gets an error):\n%v", err)
+		t.Fatalf("the doc's example config does not load (a reader copying it gets an error):\n%v", err)
 	}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("the README's example config fails validation:\n%v", err)
+		t.Fatalf("the doc's example config fails validation:\n%v", err)
 	}
 }

@@ -100,7 +100,7 @@ devenv shell --no-tui -- bash -c 'http --ignore-stdin -S GET :8080/health'
 
 Two flags matter here: `--port` (default `8080`) and `--bind` (default
 `127.0.0.1`). The loopback default is not an accident — see [Admin surface and
-access](../README.md#admin-surface-and-access) for why, and do not change `--bind`
+access](observability.md#admin-surface-and-access) for why, and do not change `--bind`
 without putting something in front of it.
 
 `--socket <path>` serves on a unix socket instead, and overrides both.
@@ -294,16 +294,10 @@ upstream error — not at load time. Set the variable, or write the literal valu
 
 ## Next
 
-The sections below are the ones being written next. Until they exist, the same
-material is in the README:
-
-- **Pointing a client at it** — `docs/clients.md` (planned). For now:
-  [Endpoints](../README.md#endpoints) and [Session
-  affinity](../README.md#session-affinity).
-- **Reading what it recorded** — `docs/observability.md` (planned). For now:
-  [Event store](../README.md#event-store), [Admin surface and
-  access](../README.md#admin-surface-and-access), [The live
-  tail](../README.md#the-live-tail), [Discovery](../README.md#discovery-the-blocks-that-recur).
+- **Pointing a client at it** — **[docs/clients.md](clients.md)** — endpoints,
+  streaming, attachments, session affinity, prompt caching.
+- **Reading what it recorded** — **[docs/observability.md](observability.md)** —
+  the event store, the admin UI, the live tail, grouping, discovery.
 - **Controlling what goes through** — **[docs/guardrails.md](guardrails.md)** —
   system-prompt injection, rate limiting, and stripping client-injected preamble
   text.

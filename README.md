@@ -100,17 +100,14 @@ reader does not discover them as surprises.
 
 - **New to this?** **[docs/getting-started.md](docs/getting-started.md)** — build
   it, give it a provider, send a request, see the row it left.
-
-The rest of the documentation is being lifted out of this file into `docs/` a
-section at a time. Until a section has moved, it is still below — this is the
-current table of contents, not the target one:
-
 - **Pointing a client at it:** **[docs/clients.md](docs/clients.md)** — endpoints,
   streaming, attachments, session affinity, prompt caching.
 - **Deciding where requests go:** **[docs/routing.md](docs/routing.md)** —
   the `model` precedence, group selection, capability-aware rules, and the
   three ways a request gets classified.
-- **Every config key:** [Configuration](#configuration)
+- **Every config key:** **[docs/configuration.md](docs/configuration.md)** —
+  the complete loadable example, and where each subsystem's docs pick up from
+  there.
 - **Reading what it recorded:** **[docs/observability.md](docs/observability.md)** —
   the event store, the admin UI, the live tail, grouping, discovery.
 - **Controlling what goes through:** **[docs/guardrails.md](docs/guardrails.md)** —
@@ -147,8 +144,8 @@ shell`; secrets access requires a reason (`SECRETSPEC_REASON="..."` or
 
 Two flags control where arbiter listens: `--bind` (default `127.0.0.1`) and
 `--port` (default `8080`), or `--socket <path>` for a unix socket, which
-overrides both. Loopback is the default on purpose — see
-[Admin surface and access](#admin-surface-and-access).
+overrides both. Loopback is the default on purpose — see [Admin surface and
+access](docs/observability.md#admin-surface-and-access).
 
 ## Endpoints
 
@@ -186,10 +183,6 @@ arbiter/
 └── go.mod
 ```
 
-## Event store
-
-See **[docs/observability.md](docs/observability.md#event-store)**.
-
 ## Architecture
 
 Hub-and-spoke: every wire format converts to/from a `NormalizedRequest` /
@@ -202,204 +195,10 @@ last being OpenAI-compatible transport, preserving provider identity).
 
 ## Configuration
 
-`arbiter.yaml` (path configurable via `--config`). Environment variables expand
-into values as `${VAR_NAME}`. Unknown fields are a config error, not silently
-ignored.
-
-The file is hot-reloaded: edits are picked up without a restart. A reload
-rebuilds the whole pipeline (providers, routers, classifiers, guardrails) and
-swaps it in atomically; requests already in flight finish on the old config,
-and a reload that fails to load, validate, or build is rejected with a logged
-error while the previous config keeps serving.
-
-The example below is a complete, loadable config (a test asserts exactly that,
-so it cannot rot): every provider it references is defined here.
-
-```yaml
-providers:
-  claude:
-    type: "anthropic"                  # anthropic | openai | ollama
-    endpoint: "https://api.anthropic.com"
-    key: "${ANTHROPIC_API_KEY}"
-    models: ["claude-3-opus-20250219", "claude-3-haiku-20250307"]
-  gpt4:
-    type: "openai"
-    endpoint: "https://api.openai.com/v1"
-    key: "${OPENAI_API_KEY}"
-    models: ["gpt-4o"]
-  litellm:
-    type: "openai"
-    endpoint: "${LITELLM_URL}"
-    key: "${LITELLM_API_KEY}"
-    models: ["openrouter/free"]
-  local:
-    type: "ollama"                     # OpenAI-compatible transport, own identity
-    endpoint: "http://localhost:11434/v1"
-    models: ["llama2"]
-
-classifiers:
-  - name: "domain"
-    type: "heuristic"
-    axis: "domain"                     # domain | effort | cost_class | capabilities
-    config:
-      keywords: { code_generation: ["write", "refactor"] }
-  - name: "effort"
-    type: "heuristic"
-    axis: "effort"                     # a second instance, same type, own axis
-    config:
-      keywords: { easy: ["quick"], hard: ["architecture"] }
-
-aliases:
-  auto:                                # full auto: force nothing, classify + rules
-    force: {}
-  coding:
-    force: { domain: ["code_generation"] }
-  cheap-claude:                        # pinned: one concrete provider/model
-    type: "pinned"
-    provider: "claude"
-    model: "claude-3-haiku-20250307"
-  free-search:                         # group: ordered candidates + fallback chain
-    type: "group"
-    select: "random"                   # random | cheapest_input | cheapest_output | fastest
-    members:
-      - { provider: "litellm", model: "openrouter/free" }
-      - { provider: "local", model: "llama2" }
-
-model_catalog:                         # feeds the cost/latency select strategies
-  - provider: "litellm"
-    model: "openrouter/free"
-    input_cost_per_mtok: 0
-    output_cost_per_mtok: 0
-    latency_ms_p50: 2500
-  - provider: "claude"
-    model: "claude-3-haiku-20250307"
-    input_cost_per_mtok: 0.25
-    output_cost_per_mtok: 1.25
-    latency_ms_p50: 900
-    input_modalities: ["text", "image"]   # what the model accepts
-    max_input_tokens: 200000
-    metadata:                             # free-form, forwarded to /models
-      function_calling: true
-
-routers:
-  - name: "policy"
-    type: "policy"
-    config:
-      rules:
-        - when: { domain: "code_generation", effort: "hard" }
-          target: "cheap-claude"       # a rule target may name an alias
-        - when: { capabilities: ["vision"] }
-          provider: "gpt4"             # ...or a literal provider/model
-        - when: { requires_input_modalities: ["image"] }
-          provider: "claude"           # skipped unless claude accepts images
-        - when: { request_kind: "title" }  # who's asking, not what it's about
-          target: "cheap-claude"       # title-gen traffic never needs a big model
-        - when: {}                     # catch-all
-          provider: "claude"
-        - when: { domain: "unmatched" }  # or refuse instead of degrading:
-          target:                        #   target: {stop: {error, message}}
-            stop:
-              error: 406
-              message: "requests in this domain are not supported"
-  - name: "primary"
-    type: "simple"                     # chained after policy: last-resort default
-    config:
-      default_provider: "claude"
-      # fallback_provider: "gpt4"
-
-guardrails:
-  pre: []                              # system_prompt, rate_limit, prompt_rewrite
-  post: []
-
-routing:
-  fallback_providers: ["gpt4"]         # tried in order on 429/5xx
-
-session_affinity:
-  header: "X-Session-Id"               # inbound header carrying a session id
-  default_ttl: "25h"                   # idle TTL for a pinned conversation
-
-storage:                               # omit the whole block for no persistence
-  path: "arbiter.db"
-  capture_content: true                # store prompt/response bodies (see below)
-  content_ttl: "72h"                   # empty means never expire
-
-logging:
-  level: "info"
-  format: "json"
-  output: "stdout"
-```
-
-### Routing
-
-See **[docs/routing.md](docs/routing.md#precedence-how-model-selects-a-route)**.
-
-### Session affinity
-
-Session affinity — how a conversation is pinned to a provider, and the two ways
-its key is derived — is documented in
-**[docs/clients.md](docs/clients.md#session-affinity)**.
-
-### What survives a config reload
-
-Which runtime state survives a reload or a restart (session pins, rate-limit
-counters, provider cooldowns) is documented in
-**[docs/clients.md](docs/clients.md#what-survives-a-config-reload)**.
-
-### Group selection strategies
-
-See **[docs/routing.md](docs/routing.md#group-selection-strategies)**.
-
-### Routing on what a model can do
-
-See **[docs/routing.md](docs/routing.md#routing-on-what-a-model-can-do)**.
-
-### LLM-backed classification
-
-See **[docs/routing.md](docs/routing.md#llm-backed-classification)**.
-
-### Decision-model classification (`type: "decisions"`)
-
-See **[docs/routing.md](docs/routing.md#decision-model-classification-type-decisions)**.
-
-### What a classifier reads, and how much of it
-
-See **[docs/routing.md](docs/routing.md#what-a-classifier-reads-and-how-much-of-it)**.
-
-### Matching a request's own text (`match`)
-
-See **[docs/routing.md](docs/routing.md#matching-a-requests-own-text-match)**.
-
-### Structural capability detection (`detect`)
-
-See **[docs/routing.md](docs/routing.md#structural-capability-detection-detect)**.
-
-### Admin surface and access
-
-See **[docs/observability.md](docs/observability.md#admin-surface-and-access)**.
-
-### Admin web UI
-
-See **[docs/observability.md](docs/observability.md#admin-web-ui)**.
-
-## The live tail
-
-See **[docs/observability.md](docs/observability.md#the-live-tail)**.
-
-## Grouping: a run of streamed turns is one line
-
-See **[docs/observability.md](docs/observability.md#grouping-a-run-of-streamed-turns-is-one-line)**.
-
-## Discovery: the blocks that recur
-
-See **[docs/observability.md](docs/observability.md#discovery-the-blocks-that-recur)**.
-
-## Guardrails
-
-Guardrails — prompt injection, rate limiting, and stripping client-injected
-preamble text — are documented in **[docs/guardrails.md](docs/guardrails.md)**.
-
-They are one mechanism, not three: composable pre/post hooks, where a new
-behaviour is a new type rather than a branch in the pipeline.
+`arbiter.yaml` (path configurable via `--config`), hot-reloaded, strict on
+unknown fields, and documented in full — every key, the complete loadable
+example, and where each subsystem's docs pick up from there — in
+**[docs/configuration.md](docs/configuration.md)**.
 
 ## Testing
 

@@ -313,10 +313,18 @@ func TestConfigEpochsCollapsesEditorSaveBursts(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		events = append(events, withEpoch(base.Add(8*time.Minute+time.Duration(i)*time.Second), "settled"))
 	}
-	// A genuinely separate change, hours later.
+	// A genuinely separate change, hours later. Its first request lands BEFORE
+	// the settled config's last one: requests already in flight when Arbiter
+	// reloads are recorded under the old epoch after the new one has begun
+	// serving, so consecutive epochs overlap. This is not a contrived case —
+	// it is what the live store looks like at every reload boundary, and a
+	// burst-collapse keyed on the end-to-start gap sees a negative gap here,
+	// reads it as a burst, and wrongly merges two real changes.
 	for i := 0; i < 5; i++ {
 		events = append(events, withEpoch(base.Add(6*time.Hour+time.Duration(i)*time.Second), "later"))
 	}
+	// The straggler under the *old* epoch, after "later" already started.
+	events = append(events, withEpoch(base.Add(6*time.Hour+30*time.Second), "settled"))
 	r := openSeeded(t, events...)
 
 	anchors, err := r.ConfigEpochs(context.Background(), Window{Since: base.Add(-time.Hour)}, 40)
@@ -344,9 +352,11 @@ func TestConfigEpochsCollapsesEditorSaveBursts(t *testing.T) {
 	if settled.Merged != 3 {
 		t.Errorf("burst anchor merged %d epochs, want 3 (two saves + the settled one)", settled.Merged)
 	}
-	// The absorbed saves' requests are accounted for, not discarded.
-	if settled.Requests != 22 {
-		t.Errorf("burst anchor covers %d requests, want 22 (20 settled + 2 absorbed)", settled.Requests)
+	// The absorbed saves' requests are accounted for, not discarded. 20 under
+	// the settled epoch itself, 2 from the absorbed saves, plus the one
+	// in-flight straggler recorded under the settled epoch after "later" began.
+	if settled.Requests != 23 {
+		t.Errorf("burst anchor covers %d requests, want 23 (20 settled + 2 absorbed + 1 straggler)", settled.Requests)
 	}
 	// Started is the settled epoch's own start, which is what a compare pivots
 	// on — an absorbed save must not drag the anchor earlier.

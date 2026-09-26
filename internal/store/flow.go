@@ -295,17 +295,29 @@ ORDER BY MIN(ts) DESC`
 		a.Ended = parseStoredTs(endRaw)
 		a.Merged = 1
 
-		// Fold into the previous anchor when this epoch ended just before that
-		// anchor started — the gap between a save and the next save, not
-		// between two real changes. Compared end-to-start rather than
-		// start-to-start so a long-lived config is never absorbed by a burst
-		// that happened to follow it.
-		if n := len(out); n > 0 && !a.Ended.IsZero() && !out[n-1].Started.IsZero() &&
-			out[n-1].Started.Sub(a.Ended) < epochBurstGap {
+		// Fold into the current anchor when this epoch *started* within the
+		// burst gap of the anchor's own start — one editing session's saves,
+		// not two deliberate changes.
+		//
+		// Start-to-start, and against the anchor rather than the previous
+		// member, for a reason live data exposed: consecutive epochs overlap.
+		// Requests already in flight when the config reloads are recorded under
+		// the old epoch after the new one has begun serving (observed on the
+		// live store: an epoch's last request landed three minutes after its
+		// successor's first). An end-to-start gap is therefore *negative* across
+		// every such boundary and reads as a burst, which made a long-lived
+		// config absorb its predecessor — the settled end of a real burst got
+		// swallowed by the next day's config, leaving the burst's two throwaway
+		// saves behind as the anchor. Comparing starts is immune to the overlap,
+		// and comparing against the anchor (not the previous member) keeps a
+		// long run of saves from chaining into one ever-growing anchor.
+		if n := len(out); n > 0 && !a.Started.IsZero() && !out[n-1].Started.IsZero() &&
+			out[n-1].Started.Sub(a.Started) < epochBurstGap {
 			out[n-1].Merged += a.Merged
 			out[n-1].Requests += a.Requests
-			// The anchor keeps the settled epoch's Started; only its lower
-			// edge moves back to cover the burst it absorbed.
+			// The anchor keeps the settled epoch's Started: that is the instant
+			// the config that actually served traffic took effect, which is
+			// what a before/after comparison pivots on.
 			continue
 		}
 		out = append(out, a)

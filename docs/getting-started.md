@@ -307,8 +307,8 @@ material is in the README:
 - **Controlling what goes through** — **[docs/guardrails.md](guardrails.md)** —
   system-prompt injection, rate limiting, and stripping client-injected preamble
   text.
-- **Deciding where requests go** — `docs/routing.md` (planned). For now:
-  [Routing](../README.md#routing), [LLM-backed
-  classification](../README.md#llm-backed-classification).
+- **Deciding where requests go** — **[docs/routing.md](routing.md)** —
+  the `model` precedence, group selection, capability-aware rules, and the
+  three ways a request gets classified.
 - **Every config key** — [Configuration](../README.md#configuration) in the
   README, and the annotated `arbiter.yaml` at the repository root.

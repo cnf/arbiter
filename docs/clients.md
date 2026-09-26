@@ -74,7 +74,8 @@ Agentic clients make calls the user never sees: title generation, summarisation,
 compaction, sub-agent turns. These arrive at Arbiter as ordinary requests and are
 recorded as ordinary requests — a client's title call is still a request that
 happened. Arbiter can identify a title-generation call from its system prompt
-(see [Routing](../README.md#routing)) and route it somewhere cheap, and it
+(see [Matching a request's own text](routing.md#matching-a-requests-own-text-match))
+and route it somewhere cheap, and it
 nests such a call under the conversation it named in the Sessions view.
 
 Nothing is hidden from the store. If a call was made, there is a row.

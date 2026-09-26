@@ -91,25 +91,31 @@ func TestDocGuardrailExamplesLoad(t *testing.T) {
 // instead, which still catches the failure that matters: a reader copying this
 // block and adding it to their config must not get a load error.
 func TestReadmeDecisionsClassifierExampleLoads(t *testing.T) {
-	readme := readReadme(t)
-	re := regexp.MustCompile("(?s)### Decision-model classification.*?```yaml\\n(.*?)```")
-	m := re.FindSubmatch(readme)
+	routing := readDoc(t, "routing.md")
+	re := regexp.MustCompile("(?s)#+ Decision-model classification.*?```yaml\\n(.*?)```")
+	m := re.FindSubmatch(routing)
 	if m == nil {
-		t.Fatal("could not find the ```yaml example under '### Decision-model classification' in README.md")
+		t.Fatal("could not find the ```yaml example under 'Decision-model classification' in docs/routing.md")
 	}
 	loadReadmeFragment(t, string(m[1]))
 }
 
 // TestReadmeClassifierMatchExamplesLoad checks the `match` and `detect` snippets
-// in the classifier sections against the config schema.
+// in docs/routing.md's classifier sections against the config schema.
 //
 // Like the guardrail fragments, these show only a `classifiers:` block, so each
 // is grafted onto the base example (replacing its classifiers block). Without
-// this the section could document a key the loader rejects — which is exactly
-// how the Guardrails section once came to document a guardrail type that never
-// existed.
+// this the section could document a top-level classifier key the loader
+// rejects — which is exactly how the Guardrails section once came to document
+// a guardrail type that never existed.
+//
+// Same caveat as the guardrail fragments: each classifier's `config:` map is
+// untyped, so an unknown key *inside* it (a typo in `keywords:` or
+// `long_context_tokens:`) loads fine and is not caught here. Only top-level
+// ClassifierConfig fields are schema-checked.
 func TestReadmeClassifierMatchExamplesLoad(t *testing.T) {
 	readme := readReadme(t)
+	routing := readDoc(t, "routing.md")
 
 	base := regexp.MustCompile("(?s)## Configuration.*?```yaml\n(.*?)```").FindSubmatch(readme)
 	if base == nil {
@@ -136,16 +142,16 @@ func TestReadmeClassifierMatchExamplesLoad(t *testing.T) {
 
 	for _, tc := range []struct {
 		name    string
-		section string
+		section string // heading the fragment lives under, level-agnostic
 	}{
-		{"match section", "### Matching a request's own text"},
-		{"detect section", "### Structural capability detection"},
+		{"match section", "#+ Matching a request's own text"},
+		{"detect section", "#+ Structural capability detection"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			re := regexp.MustCompile("(?s)" + regexp.QuoteMeta(tc.section) + `.*?` + "```yaml\n(.*?)```")
-			m := re.FindSubmatch(readme)
+			re := regexp.MustCompile("(?s)" + tc.section + `.*?` + "```yaml\n(.*?)```")
+			m := re.FindSubmatch(routing)
 			if m == nil {
-				t.Fatalf("no ```yaml block found under %q", tc.section)
+				t.Fatalf("no ```yaml block found under %q in docs/routing.md", tc.section)
 			}
 			grafted := strings.Replace(string(base[1]), classifiersBlock, strings.TrimRight(string(m[1]), "\n")+"\n", 1)
 			loadReadmeFragment(t, grafted)

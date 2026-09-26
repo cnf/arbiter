@@ -54,7 +54,7 @@ func TestAdminUIRoutesAreGated(t *testing.T) {
 
 	for _, target := range []string{
 		"/admin/ui/",
-		"/admin/ui/requests/tail",
+		"/admin/ui/sessions/tail",
 		"/admin/ui/requests/1/guardrail-diff",
 		"/admin/ui/sessions",
 		"/admin/ui/session?key=abc",

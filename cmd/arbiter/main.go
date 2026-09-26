@@ -247,16 +247,6 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	r.HandleFunc("/admin/ui/", arbiterhttp.Gate(forwardAuthHeader, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
 		stdhttp.Redirect(w, req, "/admin/ui/overview", stdhttp.StatusFound)
 	})).Methods("GET")
-	// The live tail's poll endpoint. Polled by live.js rather than by htmx, for
-	// the reasons in that file; it returns JSON carrying a rendered row fragment,
-	// so the cursor stays an opaque token and the row markup has one definition.
-	//
-	// It survives the #54 rip-out that removed the rest of /admin/ui/requests/*:
-	// the Sessions page consumes it, and the path is kept because the rows it
-	// returns are still requests. The old list/detail handlers under that prefix
-	// are gone — the merged Sessions page (#52) replaced them, and leaving
-	// routes pointing at deleted templates would 500 rather than 404.
-	r.HandleFunc("/admin/ui/requests/tail", arbiterhttp.Gate(forwardAuthHeader, adminUI.TailHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}/guardrail-diff", arbiterhttp.Gate(forwardAuthHeader, adminUI.GuardrailDiffHandler)).Methods("GET")
 
 	// Conversations. The key is a query parameter, not a path segment: session

@@ -2,13 +2,14 @@
 // store.RequestRow into something a page can render.
 //
 // The standalone requests *page* was deleted in #54's rip-out — the merged
-// Sessions page (#52) replaced it, and the newui rebuild is greenfield. What
-// survives here is the view-model machinery that page introduced and that the
-// pages which shipped after it consume: foldRequestLines/attachTraceChildren
-// (Sessions' lane timelines), requestRowView/RoutingChain (Sessions, Discovery's
-// drill-down, the live tail), the keyset cursor codec (the live tail), and the
-// guardrail-diff fragment (the session transcript). Deleting the file wholesale
-// to "finish the rip-out" would break all four.
+// Sessions page (#52) replaced it, and the newui rebuild is greenfield. The
+// old flat-list live tail (TailHandler, live.js) followed it into the rip-out
+// once the Sessions page grew its own tail (#52/laneLive.js) — see #56/#57.
+// What survives here is the view-model machinery Sessions and Discovery still
+// consume: foldRequestLines/attachTraceChildren (Sessions' lane timelines),
+// requestRowView/RoutingChain (Sessions, Discovery's drill-down), the keyset
+// cursor codec, and the guardrail-diff fragment (the session transcript).
+// Deleting the file wholesale to "finish the rip-out" would break all four.
 package ui
 
 import (
@@ -17,7 +18,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -25,59 +25,6 @@ import (
 
 	"github.com/cnf/arbiter/internal/store"
 )
-
-// requestKindFilter turns the optional ?kind= query parameter into a
-// store.RequestFilter.Kind value. Absent and the literal "all" both mean no
-// filter — the default view is everything, client traffic and Arbiter's own
-// internal requests (classifier calls today; title-gen/subagent calls later)
-// alike, since #8's nesting (see attachTraceChildren) is what makes a
-// classifier row legible next to the request that spawned it rather than
-// something to hide by default. Anything else is used verbatim as an exact
-// match, so ?kind=client still narrows to real traffic only.
-func requestKindFilter(raw string) string {
-	switch raw {
-	case "", "all":
-		return ""
-	default:
-		return raw
-	}
-}
-
-// requestFilterView is the filter form's state. Raw strings are kept for the
-// fields the operator types, so an invalid value is echoed back into the form
-// beside the error instead of being silently normalised away.
-type requestFilterView struct {
-	SinceRaw       string
-	Provider       string
-	Alias          string
-	StatusRaw      string
-	SessionKey     string
-	SessionKeyless bool
-	ErrorsOnly     bool
-	LimitRaw       string
-
-	// KindRaw is the query param exactly as given ("" for the default
-	// "everything" view, "all" (the same thing spelled out), or an explicit
-	// kind) — not the resolved filter value, which collapses "" and "all" to
-	// the same "no filter" meaning and would make the form unable to tell
-	// them apart when re-rendering which option is selected.
-	KindRaw string
-
-	// ReqKindRaw is ?request_kind= as typed: what the request IS ("title",
-	// later "subagent"), which is a different question from KindRaw's who
-	// sent it. Free text rather than a fixed list, because the set of kinds
-	// is open — a new one is a config edit, not a code change.
-	ReqKindRaw string
-
-	// Flat is ?flat=1: render one row per request instead of collapsing runs
-	// of streamed turns. It is part of the filter form's state because it is
-	// part of what the reader is looking at, and the form re-renders from it.
-	Flat bool
-
-	// Any records whether any filter is set, so the empty state can offer
-	// "widen" only when there is something to widen.
-	Any bool
-}
 
 // maxRequestRows is the page size for the two readers that need every row the
 // store will give them: Flat mode, and a kind selection where the grouping is
@@ -379,9 +326,6 @@ func foldRequestLines(rows []requestRowView) []requestLineView {
 	for i := range lines {
 		lines[i].Count = len(lines[i].Rows)
 		lines[i].Run = lines[i].Count > 1 && allStreamed(lines[i].Rows)
-		if lines[i].Run {
-			lines[i].OpenHref = flatLineHref(lines[i].Head)
-		}
 	}
 
 	// A group that does not fold expands back into one line per row, in page
@@ -560,122 +504,6 @@ func allStreamed(rows []requestRowView) bool {
 		}
 	}
 	return true
-}
-
-// flatLineHref is the flat view of one line's requests: the same list with
-// grouping off, narrowed to the group's own routing facts.
-//
-// It filters on the parameters the list actually supports. `model` is not one of
-// them, so a conversation that switched model inside one line opens slightly
-// wider than the line — the alternative is a link that fetches nothing, and a
-// link that over-shows while the reader can see the model column is the honest
-// error of the two. The count is only ever a link target, never a claim about
-// exactly what will appear.
-func flatLineHref(head requestRowView) string {
-	q := url.Values{}
-	q.Set("flat", "1")
-	if head.SessionKey != "" {
-		q.Set("session", head.SessionKey)
-	} else {
-		// No session to narrow by: the flat list is the only view that can
-		// show an unpinned row at all.
-		q.Set("no_session", "1")
-	}
-	if head.Provider != "" {
-		q.Set("provider", head.Provider)
-	}
-	if head.AliasUsed != "" {
-		q.Set("alias", head.AliasUsed)
-	}
-	if head.StatusCode != 0 {
-		q.Set("status", strconv.FormatInt(head.StatusCode, 10))
-	}
-	if head.RequestKind != "" {
-		q.Set("request_kind", head.RequestKind)
-	}
-	return "/admin/ui/requests?" + q.Encode()
-}
-
-// rowsView is what the request table renders. It is carried by the page and by
-// the htmx fragment alike, so a swapped table and a loaded page cannot
-// disagree about the rows, the pager, or the filter state.
-type rowsView struct {
-	// Rows is the page's rows as the store returned them, newest first, one
-	// per request. It is what Flat mode renders and what the live tail's
-	// template keeps its `data-id` on — a request is a row there.
-	Rows []requestRowView
-
-	// Lines is the same rows collapsed into one line per "same event happening
-	// again" — see foldRequestLines. It is what the default view renders.
-	Lines []requestLineView
-
-	// Flat turns grouping off: every request gets its own row, exactly as the
-	// list rendered before grouping existed. It is a real query parameter
-	// (?flat=1) rather than a client-side toggle, so the view is shareable and
-	// the count's own link can open the constituents in place.
-	Flat bool
-
-	// FlatHref and GroupedHref are the two halves of that switch, carrying the
-	// current filters so flipping it keeps the window.
-	FlatHref    string
-	GroupedHref string
-
-	// RunsOnPage counts the collapsed lines, so the page can state what it
-	// folded rather than leaving the reader to wonder where rows went.
-	RunsOnPage int
-
-	More    bool
-	MoreURL string
-	F       requestFilterView
-
-	// Tail is the live view's state. It rides on rowsView rather than
-	// requestsView because the tail is about these rows — it appends to the table
-	// the fragment renders — and keeping it here is what lets the same struct
-	// serve both the page and the fragment.
-	Tail tailView
-}
-
-// tailView is the live tail's initial state, rendered into data attributes.
-//
-// The cursor is the *newest* row already on screen, so starting the tail shows
-// what arrives next rather than replaying what is already there — and because it
-// comes from the rows themselves it is the stored `ts` text, which is the only
-// form that compares correctly against the column.
-type tailView struct {
-	// Enabled is false when the store is disabled or the list is not the newest
-	// page, in which case there is nothing sensible to follow.
-	Enabled bool
-
-	// Src is the tail endpoint, with the current window as a parameter. The rest
-	// of the filters are passed separately so the fragment's own query string is
-	// built in one place (see tailFilterQuery).
-	Src string
-
-	// Cursor is the opaque token for "everything after what you are showing".
-	Cursor string
-
-	// FilterQuery is the current filter set as a query string. It is kept opaque
-	// and appended verbatim so the tail follows exactly the list it sits under.
-	FilterQuery string
-}
-
-// tailFilterQuery renders the filter set the tail should follow, excluding the
-// paging cursor — the tail is watching the list, not a page of it — and including
-// the window so the tail's `since` does not drift away from the list's.
-//
-// `flat` is included because it is not a filter but a *rendering mode*, and the
-// tail has to follow the mode of the table it appends to: in a grouped list the
-// client places a polled row into an existing line, and in a flat one it prepends
-// a row. A tail that assumed the wrong mode would either duplicate a line or
-// scatter rows.
-func tailFilterQuery(q url.Values) string {
-	out := url.Values{}
-	for _, k := range []string{"since", "provider", "alias", "status", "session", "no_session", "errors", "kind", "flat"} {
-		if v := q.Get(k); v != "" || (k == "errors" || k == "no_session") && q.Has(k) {
-			out.Set(k, v)
-		}
-	}
-	return out.Encode()
 }
 
 // blockView pairs a captured block with the request it belongs to, so the

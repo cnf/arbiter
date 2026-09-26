@@ -2,10 +2,34 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// writeJSON writes a JSON body, and writeJSONError is the failure half of the
+// same contract.
+//
+// These live here because the Sessions tail is their only consumer: they
+// arrived with the old Overview's chart endpoint (series.json) and the old
+// flat-request tail, both deleted in the #54/#56/#57 rip-outs. The tail is
+// fetched by script rather than by htmx, so both its successes and its
+// failures must be JSON while every page's are HTML.
+func (h *Handler) writeJSON(w http.ResponseWriter, r *http.Request, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		h.logger.LogError(r.Context(), "warn", err,
+			map[string]interface{}{"phase": "admin_ui_tail_encode"})
+	}
+}
+
+func writeJSONError(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
 
 // sessionTailLane is one lane in a tail response: its session key (so the
 // client can find the .lane-row to replace) and its freshly rendered markup.
@@ -16,11 +40,10 @@ type sessionTailLane struct {
 
 // sessionTailResponse is what SessionsTailHandler returns.
 //
-// It carries no cursor, unlike the request list's tail (see live.go):  a
-// lane's "newness" is not what a poll is answering here, the request list's
-// tail literally is. A pinned session's own recency (its own MAX(ts))
-// already appears inside its re-rendered lane, so there is nothing this
-// response needs to remember between polls.
+// It carries no cursor, unlike a request-list tail would: a lane's
+// "newness" is not what a poll is answering here. A pinned session's own
+// recency (its own MAX(ts)) already appears inside its re-rendered lane, so
+// there is nothing this response needs to remember between polls.
 type sessionTailResponse struct {
 	// Lanes is every currently-*active* session's freshly rendered lane —
 	// see SessionsTailHandler for what "active" means here and why an
@@ -37,9 +60,9 @@ type sessionTailResponse struct {
 	ActiveCount int64 `json:"active_count"`
 
 	// Error carries a query failure in the body rather than as an HTTP
-	// status, for the same reason TailHandler does: a poll fails, retries a
-	// few seconds later, and a 500 per poll would spam the console without
-	// telling the page anything a body field does not.
+	// status: a poll fails, retries a few seconds later, and a 500 per
+	// poll would spam the console without telling the page anything a
+	// body field does not.
 	Error string `json:"error,omitempty"`
 }
 

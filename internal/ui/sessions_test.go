@@ -85,6 +85,41 @@ func TestSessionsLanePreviewNoteWhenCaptureOff(t *testing.T) {
 	}
 }
 
+// Every lane node's "open" link (data-open-href) must point at the session's
+// own transcript page — the old destination (a flat, filtered requests list)
+// was removed along with the requests page (#54); a node whose href still
+// pointed there would be a dead link with no way to reach the request it
+// names. This covers all three node shapes: a plain client node, a
+// classifier satellite nested under it, and (implicitly, via the same code
+// path) a folded stack — sessionNodeHref does not special-case any of them.
+func TestSessionsLaneNodeOpenHrefPointsAtTranscript(t *testing.T) {
+	now := time.Now().UTC()
+	mk := func(kind, traceID, sessionKey, provider string, status int, offset time.Duration) store.Event {
+		return store.Event{
+			TraceID: traceID, SessionKey: sessionKey, Kind: kind,
+			Provider: provider, Model: "m", StatusCode: status,
+			Ts: now.Add(offset), LatencyMs: 100,
+		}
+	}
+	events := []store.Event{
+		mk("classifier", "tr-1", "sess-one", "openrouter-decisions", 200, 0),
+		mk("client", "tr-1", "sess-one", "anthropic", 200, 1*time.Second),
+	}
+	h, _ := newSeededHandler(t, events...)
+
+	body := serve(t, h, "GET", "/admin/ui/sessions?live_only=0", false).Body.String()
+
+	if strings.Contains(body, "/admin/ui/requests") {
+		t.Errorf("a lane node still links to the removed requests page:\n%s", body)
+	}
+	if n := strings.Count(body, "data-open-href=\"/admin/ui/session?"); n != 2 {
+		t.Errorf("got %d nodes linking to /admin/ui/session, want 2 (the client node and its satellite)\n%s", n, body)
+	}
+	if !strings.Contains(body, "key=sess-one") {
+		t.Errorf("a node's open href does not carry the session key:\n%s", body)
+	}
+}
+
 // The toolbar's "all"/"errors only" radio pair must round-trip both ways:
 // selecting "all" (?errors=, empty value) has to actually clear the filter,
 // and "errors only" (?errors=1) has to be reversible by going back to "all".

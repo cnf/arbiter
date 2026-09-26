@@ -107,7 +107,7 @@ fetch — the data is already server-rendered, just not visible until clicked. *
      data-route="{{index .Head.RoutingChain 0}}" data-provider="{{.Head.Provider}}" data-kind="{{.Head.Kind}}"
      data-status="{{.Head.StatusCode}}" data-count="{{.Count}}" data-cost="{{usd .Head.CostUSD}}"
      data-latency="{{dur .Head.LatencyMs}}" data-trace="{{.Head.TraceID}}" data-open-href="{{.OpenHref}}"
-     data-rationale="{{.Count}}× streamed turns, same route, collapsed into one node — click to open the flat list of exactly these requests.">
+     data-rationale="{{.Count}}× streamed turns, same route, collapsed into one node — click to open its transcript.">
   <span class="tip">{{.Count}}× streamed turns · {{usd .Head.CostUSD}} total</span>
   <span class="stackn">{{.Count}}×</span>
 </div>
@@ -115,7 +115,7 @@ fetch — the data is already server-rendered, just not visible until clicked. *
 <div class="node client {{statusClass .Head.StatusCode}}" tabindex="0" role="button"
      data-route="{{index .Head.RoutingChain 0}}" data-provider="{{.Head.Provider}}" data-kind="{{.Head.Kind}}"
      data-status="{{.Head.StatusCode}}" data-cost="{{usd .Head.CostUSD}}" data-latency="{{dur .Head.LatencyMs}}"
-     data-trace="{{.Head.TraceID}}" data-request-id="{{.Head.ID}}"
+     data-trace="{{.Head.TraceID}}" data-open-href="{{.OpenHref}}"
      data-rationale="{{.Head.RoutingRationale}}">
   <span class="tip">{{index .Head.RoutingChain 0}} · {{dur .Head.LatencyMs}} · {{.Head.StatusCode}}</span>
 </div>
@@ -131,7 +131,7 @@ call), else Kind (a classifier call). */}}
      tabindex="0" role="button"
      data-route="{{index .Head.RoutingChain 0}}" data-provider="{{.Head.Provider}}" data-kind="{{.Head.Kind}}"
      data-status="{{.Head.StatusCode}}" data-cost="{{usd .Head.CostUSD}}" data-latency="{{dur .Head.LatencyMs}}"
-     data-trace="{{.Head.TraceID}}" data-request-id="{{.Head.ID}}"
+     data-trace="{{.Head.TraceID}}" data-open-href="{{.OpenHref}}"
      data-rationale="{{.Head.RoutingRationale}}">
   <span class="tip">{{index .Head.RoutingChain 0}} · {{dur .Head.LatencyMs}} · {{.Head.StatusCode}}</span>
 </div>

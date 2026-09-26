@@ -418,3 +418,104 @@ func TestReaderCoexistsWithActiveWriter(t *testing.T) {
 		}
 	}
 }
+
+// SessionTurnForRequest must resolve both a client row (its own position)
+// and a non-client row tied to it by trace_id (its parent's position) to
+// the same turn number — that equivalence is the whole point: a satellite
+// node on the Sessions lane list has to open the transcript at the turn it
+// belongs to, not fail because it has no position of its own.
+func TestSessionTurnForRequestResolvesClientAndSatelliteRows(t *testing.T) {
+	r, db := newTestReader(t)
+	base := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+
+	insertRow(t, db, Event{TraceID: "t1", SessionKey: "sess-a", Kind: "client", Ts: base})
+	insertRow(t, db, Event{TraceID: "t1", SessionKey: "sess-a", Kind: "classifier", Ts: base.Add(time.Second)})
+	insertRow(t, db, Event{TraceID: "t2", SessionKey: "sess-a", Kind: "client", Ts: base.Add(time.Minute)})
+
+	// Find the ids SQLite actually assigned, in insertion order (id is the
+	// rowid — see schema.sql's own comment on why it is not trace_id).
+	rows, err := db.QueryContext(context.Background(), `SELECT id, kind FROM requests ORDER BY id ASC`)
+	if err != nil {
+		t.Fatalf("query ids: %v", err)
+	}
+	var clientTurn1ID, satelliteID, clientTurn2ID int64
+	seq := 0
+	for rows.Next() {
+		var id int64
+		var kind string
+		if err := rows.Scan(&id, &kind); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		switch seq {
+		case 0:
+			clientTurn1ID = id
+		case 1:
+			satelliteID = id
+		case 2:
+			clientTurn2ID = id
+		}
+		seq++
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close rows: %v", err)
+	}
+
+	// The turn-1 client row resolves to itself, turn 1.
+	key, turn, ok, err := r.SessionTurnForRequest(context.Background(), clientTurn1ID)
+	if err != nil || !ok {
+		t.Fatalf("SessionTurnForRequest(client turn 1) = key=%q turn=%d ok=%v err=%v, want ok", key, turn, ok, err)
+	}
+	if key != "sess-a" || turn != 1 {
+		t.Errorf("SessionTurnForRequest(client turn 1) = %q, %d, want sess-a, 1", key, turn)
+	}
+
+	// The classifier satellite, sharing trace_id t1 with the turn-1 client
+	// row, must resolve to that SAME turn — not its own (nonexistent)
+	// position, and not turn 2.
+	key, turn, ok, err = r.SessionTurnForRequest(context.Background(), satelliteID)
+	if err != nil || !ok {
+		t.Fatalf("SessionTurnForRequest(satellite) = key=%q turn=%d ok=%v err=%v, want ok", key, turn, ok, err)
+	}
+	if key != "sess-a" || turn != 1 {
+		t.Errorf("SessionTurnForRequest(satellite) = %q, %d, want sess-a, 1 (its parent's turn)", key, turn)
+	}
+
+	// The turn-2 client row resolves to turn 2.
+	key, turn, ok, err = r.SessionTurnForRequest(context.Background(), clientTurn2ID)
+	if err != nil || !ok {
+		t.Fatalf("SessionTurnForRequest(client turn 2) = key=%q turn=%d ok=%v err=%v, want ok", key, turn, ok, err)
+	}
+	if key != "sess-a" || turn != 2 {
+		t.Errorf("SessionTurnForRequest(client turn 2) = %q, %d, want sess-a, 2", key, turn)
+	}
+
+	// An id that does not exist must report ok=false, not an error — a
+	// stale link (the request aged out of retention) is an ordinary miss.
+	_, _, ok, err = r.SessionTurnForRequest(context.Background(), 999999)
+	if err != nil {
+		t.Fatalf("SessionTurnForRequest(missing id): %v", err)
+	}
+	if ok {
+		t.Errorf("SessionTurnForRequest(missing id) reported ok, want false")
+	}
+}
+
+// A request with no session key (SessionKeyless traffic) has nowhere to
+// open a transcript to, so it must report ok=false rather than a bogus turn.
+func TestSessionTurnForRequestNoSessionKey(t *testing.T) {
+	r, db := newTestReader(t)
+	insertRow(t, db, Event{TraceID: "t1", SessionKey: "", Kind: "client"})
+
+	var id int64
+	if err := db.QueryRowContext(context.Background(), `SELECT id FROM requests LIMIT 1`).Scan(&id); err != nil {
+		t.Fatalf("find id: %v", err)
+	}
+
+	_, _, ok, err := r.SessionTurnForRequest(context.Background(), id)
+	if err != nil {
+		t.Fatalf("SessionTurnForRequest(no session key): %v", err)
+	}
+	if ok {
+		t.Errorf("SessionTurnForRequest(no session key) reported ok, want false")
+	}
+}

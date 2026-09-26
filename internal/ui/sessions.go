@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,6 +59,28 @@ func shortSessionKey(key string) string {
 // shows — a one-line preview, not a transcript excerpt (the full text is a
 // click away, on the session's own transcript page).
 const previewBytes = 200
+
+// sessionNodeHref is a lane node's "open" link: every node — a plain client
+// request, a satellite (classifier/title) call, or a folded stack of
+// streamed turns — opens the SAME destination, the session's own transcript
+// page, landed on the turn that node belongs to. There used to be a second
+// destination (a flat, filtered requests list) for a folded run's node; that
+// page was removed in #54, so this is now the only "open" link any node has
+// — see SessionHandler's ?id= handling and store.SessionTurnForRequest,
+// which resolves a satellite's own id to its parent client turn.
+//
+// head.ID is the newest row of a folded/nested group (requestLineView.Head),
+// which is a real, resolvable request id in every case: a satellite's Head
+// is its own row (folding only merges same-identity streamed repeats, and a
+// satellite line is never a Run), and a stack's Head is one of the streamed
+// requests it stands for, which SessionTurnForRequest resolves like any
+// other client row.
+func sessionNodeHref(sessionKey string, head requestRowView) string {
+	q := url.Values{}
+	q.Set("key", sessionKey)
+	q.Set("id", strconv.FormatInt(head.ID, 10))
+	return "/admin/ui/session?" + q.Encode()
+}
 
 // noClientBodyPreview stands in for a session whose earliest client row has
 // no captured request body — a pre-guardrail rejection with content capture
@@ -261,6 +284,12 @@ func (h *Handler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 				views = append(views, requestRowView{RequestRow: row, ShortSession: lane.ShortKey})
 			}
 			lane.Lines = attachTraceChildren(foldRequestLines(views))
+			for i := range lane.Lines {
+				lane.Lines[i].OpenHref = sessionNodeHref(s.Key, lane.Lines[i].Head)
+				for j := range lane.Lines[i].Children {
+					lane.Lines[i].Children[j].OpenHref = sessionNodeHref(s.Key, lane.Lines[i].Children[j].Head)
+				}
+			}
 			for _, line := range lane.Lines {
 				lane.SatelliteCount += len(line.Children)
 			}

@@ -249,6 +249,35 @@ func (h *Handler) SessionHandler(w http.ResponseWriter, r *http.Request) {
 			offset = ((n - 1) / limit) * limit
 			view.Offset = offset
 			view.SelectedID = id
+		} else if raw := q.Get("id"); raw != "" {
+			// ?id=<request id> is how a link from outside the transcript
+			// (a Sessions lane node, a satellite/child call included) names
+			// its target: an id has no turn number of its own to page by, so
+			// it is resolved to the turn its owning client row falls on —
+			// SessionTurnForRequest does the client-vs-satellite distinction
+			// laneRow.OpenHref itself doesn't need to know about. The turn
+			// only decides which page to load; SelectedID stays the id that
+			// was asked for, so a satellite child is what actually gets
+			// selected — select() in transcript.js already matches
+			// .child-row by its own data-id, not just .row.
+			id, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil {
+				h.fail(w, r, http.StatusBadRequest, "id must be an integer (a request id)")
+				return
+			}
+			turnKey, n, ok, err := h.reader.SessionTurnForRequest(r.Context(), id)
+			if err != nil {
+				h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
+				return
+			}
+			if !ok || turnKey != key {
+				h.fail(w, r, http.StatusNotFound,
+					fmt.Sprintf("session %s has no request #%d", shortSessionKey(key), id))
+				return
+			}
+			offset = ((n - 1) / limit) * limit
+			view.Offset = offset
+			view.SelectedID = id
 		}
 
 		if err := h.fillTranscript(r, &view); err != nil {

@@ -567,6 +567,82 @@ LIMIT 1 OFFSET ?`
 	return id, true, nil
 }
 
+// SessionTurnForRequest resolves the turn a request id belongs to, for the
+// Sessions lane list's "open in transcript" links: a client row's turn is its
+// own position; a non-client row (a classifier call, a title-gen call — see
+// requests.kind) has no position of its own and resolves through its
+// trace_id to the client row that spawned it, exactly as attachTraceChildren
+// nests it in the UI. ok is false when the request id does not exist, or
+// belongs to a session-less request, or (rare — a client row was never
+// written, e.g. a very old pre-#5 rejection) a non-client row whose trace has
+// no client row to resolve through.
+//
+// Returns the session key alongside the turn number because the caller (the
+// lane list) has the id but not necessarily the parent session's key at hand
+// for a satellite node — SessionHandler needs both to build ?key=&seq=.
+func (r *Reader) SessionTurnForRequest(ctx context.Context, id int64) (key string, turn int, ok bool, err error) {
+	var (
+		session sql.NullString
+		kind    string
+		traceID string
+	)
+	err = r.db.QueryRowContext(ctx,
+		`SELECT session_key, kind, trace_id FROM requests WHERE id = ?`, id,
+	).Scan(&session, &kind, &traceID)
+	if err == sql.ErrNoRows {
+		return "", 0, false, nil
+	}
+	if err != nil {
+		return "", 0, false, fmt.Errorf("session turn for request: %w", err)
+	}
+	if !session.Valid || session.String == "" {
+		return "", 0, false, nil
+	}
+	key = session.String
+
+	targetID := id
+	if kind != "client" {
+		if traceID == "" {
+			return "", 0, false, nil
+		}
+		var parentID int64
+		err = r.db.QueryRowContext(ctx,
+			`SELECT id FROM requests WHERE session_key = ? AND kind = 'client' AND trace_id = ?
+LIMIT 1`, key, traceID,
+		).Scan(&parentID)
+		if err == sql.ErrNoRows {
+			return "", 0, false, nil
+		}
+		if err != nil {
+			return "", 0, false, fmt.Errorf("session turn for request (parent lookup): %w", err)
+		}
+		targetID = parentID
+	}
+
+	// The turn is the target client row's rank among the session's client
+	// rows ordered (ts ASC, id ASC) — the same ordering SessionClientPage
+	// and SessionTurnAt use elsewhere in this file. The ts comparison stays
+	// inside a subquery rather than round-tripping the target's ts through
+	// Go as a string: modernc.org/sqlite scans a TIMESTAMP column back as
+	// RFC3339 but stores it in time.Time's default String() layout, so a
+	// value read out and compared back in via `WHERE ts = ?` silently
+	// mismatches format even though it's the same instant.
+	var n int
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM requests r2
+WHERE r2.session_key = ? AND r2.kind = 'client'
+  AND (r2.ts < (SELECT ts FROM requests WHERE id = ?)
+       OR (r2.ts = (SELECT ts FROM requests WHERE id = ?) AND r2.id <= ?))`,
+		key, targetID, targetID, targetID,
+	).Scan(&n); err != nil {
+		return "", 0, false, fmt.Errorf("session turn for request (count): %w", err)
+	}
+	if n == 0 {
+		return "", 0, false, nil
+	}
+	return key, n, true, nil
+}
+
 // SessionFirstClient returns the session's opening client request — the turn
 // that introduced the conversation, and therefore the one whose system
 // preamble the page's preamble modal inspects. ok is false for a session with

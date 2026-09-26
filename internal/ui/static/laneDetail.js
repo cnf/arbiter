@@ -46,12 +46,7 @@
       .join("");
     var openLink = "";
     if (d.openHref) {
-      openLink = '<a class="open-link" href="' + esc(d.openHref) + '">open flat list →</a>';
-    } else if (d.requestId) {
-      openLink =
-        '<a class="open-link" href="/admin/ui/requests?highlight=' +
-        encodeURIComponent(d.requestId) +
-        '">open in requests →</a>';
+      openLink = '<a class="open-link" href="' + esc(d.openHref) + '">open in transcript →</a>';
     }
     document.getElementById("detailCol").innerHTML =
       '<div class="node-panel">' +

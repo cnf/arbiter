@@ -6,6 +6,102 @@ import (
 	"time"
 )
 
+// Measures is the counter set the Overview page measures anything by — one
+// route, or a whole window — together with the derived rates.
+//
+// It exists as its own type so the formulas have exactly one definition. The
+// KPI strip summarises a window and the drawer summarises a single route; if
+// each computed cache-hit or cost-per-1M from raw columns itself, the strip and
+// the drawer could disagree about what those words mean, which is precisely the
+// bug a page whose purpose is spotting a bad cache rate cannot afford. Both
+// embed this instead.
+type Measures struct {
+	Requests int64   `json:"requests"`
+	CostUSD  float64 `json:"cost_usd"`
+
+	// Tokens counts input+output+cache_read+cache_write — every token moved,
+	// which is the denominator the cost-per-1M metric divides by. Cache tokens
+	// are inside it deliberately: the provider reports them disjointly from
+	// input_tokens, so excluding them would understate the volume by roughly an
+	// order of magnitude on a cache-heavy route and turn cost-per-1M into a
+	// number that tracks nothing real.
+	Tokens int64 `json:"tokens"`
+
+	InputTokens      int64 `json:"input_tokens"`
+	OutputTokens     int64 `json:"output_tokens"`
+	CacheReadTokens  int64 `json:"cache_read_tokens"`
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
+
+	Errors       int64 `json:"errors"`
+	AvgLatencyMs int64 `json:"avg_latency_ms"`
+}
+
+// CostPer1MTokens is the rate metric.
+//
+// Cost per *request* is deliberately not offered anywhere: request sizes on
+// this traffic fluctuate by orders of magnitude, so a per-request average
+// tracks how big the calls happened to be rather than how expensive the route
+// is. Per-token is the comparable one.
+//
+// Zero tokens yields zero rather than a division by zero — a route that
+// errored on every call has real requests, real latency, and no tokens, and
+// must still render.
+func (m Measures) CostPer1MTokens() float64 {
+	if m.Tokens == 0 {
+		return 0
+	}
+	return m.CostUSD / (float64(m.Tokens) / 1_000_000)
+}
+
+// CacheHitRate is the share of *prompt* tokens that were served from the
+// provider's cache, in [0,1].
+//
+// The denominator is cache_read + input_tokens, not the full token count: only
+// prompt tokens are cacheable, so folding output tokens in would dilute the
+// rate with volume that was never eligible and make a well-cached route look
+// mediocre. Cache *writes* are excluded from the denominator too — a write is
+// the cost of populating the cache, not a missed read.
+//
+// Zero cacheable tokens yields zero, and callers that must distinguish "0%
+// cache hit" from "nothing cacheable happened" should test Cacheable first —
+// the page does, and renders no gauge at all in the second case rather than an
+// empty one implying a miss.
+func (m Measures) CacheHitRate() float64 {
+	cacheable := m.CacheReadTokens + m.InputTokens
+	if cacheable == 0 {
+		return 0
+	}
+	return float64(m.CacheReadTokens) / float64(cacheable)
+}
+
+// Cacheable reports whether any prompt tokens moved at all, so a caller can
+// tell a real 0% cache hit from nothing having been cacheable.
+func (m Measures) Cacheable() bool { return m.CacheReadTokens+m.InputTokens > 0 }
+
+// ErrorRate is the share of requests that failed, in [0,1].
+func (m Measures) ErrorRate() float64 {
+	if m.Requests == 0 {
+		return 0
+	}
+	return float64(m.Errors) / float64(m.Requests)
+}
+
+// add accumulates another counter set into this one. Latency is deliberately
+// left alone: averaging two averages weights a 1-request group the same as a
+// 1000-request one, so callers that fold rows together handle latency
+// explicitly (RoutingFlow's remainder bucket sums it weighted by request count
+// and divides once at the end).
+func (m *Measures) add(o Measures) {
+	m.Requests += o.Requests
+	m.CostUSD += o.CostUSD
+	m.Tokens += o.Tokens
+	m.InputTokens += o.InputTokens
+	m.OutputTokens += o.OutputTokens
+	m.CacheReadTokens += o.CacheReadTokens
+	m.CacheWriteTokens += o.CacheWriteTokens
+	m.Errors += o.Errors
+}
+
 // RoutingEdge is one alias→model route over a window: what a client asked for
 // on the left, what it actually reached on the right, and everything the
 // Overview page measures that route by.
@@ -25,24 +121,7 @@ type RoutingEdge struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 
-	Requests int64   `json:"requests"`
-	CostUSD  float64 `json:"cost_usd"`
-
-	// Tokens counts input+output+cache_read+cache_write — every token the
-	// window moved, which is the denominator the cost-per-1M metric divides
-	// by. Cache tokens are inside it deliberately: the provider reports them
-	// disjointly from input_tokens, so excluding them would understate the
-	// volume by roughly an order of magnitude on a cache-heavy route and turn
-	// cost-per-1M into a number that tracks nothing real.
-	Tokens int64 `json:"tokens"`
-
-	InputTokens      int64 `json:"input_tokens"`
-	OutputTokens     int64 `json:"output_tokens"`
-	CacheReadTokens  int64 `json:"cache_read_tokens"`
-	CacheWriteTokens int64 `json:"cache_write_tokens"`
-
-	Errors       int64 `json:"errors"`
-	AvgLatencyMs int64 `json:"avg_latency_ms"`
+	Measures
 
 	// FoldedRoutes is how many real routes this edge stands for. It is 0 on
 	// every genuine route and >0 only on the single remainder edge RoutingFlow
@@ -57,56 +136,6 @@ type RoutingEdge struct {
 // fields: an empty Alias is also a legitimate route (a client that named a
 // concrete model), so the fields alone cannot tell a bucket from a bypass.
 func (e RoutingEdge) IsRemainder() bool { return e.FoldedRoutes > 0 }
-
-// CostPer1MTokens is the window's rate metric for this route.
-//
-// Cost per *request* is deliberately not offered anywhere: request sizes on
-// this traffic fluctuate by orders of magnitude, so a per-request average
-// tracks how big the calls happened to be rather than how expensive the route
-// is. Per-token is the comparable one.
-//
-// Zero tokens yields zero rather than a division by zero — a route that
-// errored on every call has real requests, real latency, and no tokens, and
-// must still render.
-func (e RoutingEdge) CostPer1MTokens() float64 {
-	if e.Tokens == 0 {
-		return 0
-	}
-	return e.CostUSD / (float64(e.Tokens) / 1_000_000)
-}
-
-// CacheHitRate is the share of this route's *prompt* tokens that were served
-// from the provider's cache, in [0,1].
-//
-// The denominator is cache_read + input_tokens, not the full token count: only
-// prompt tokens are cacheable, so folding output tokens in would dilute the
-// rate with volume that was never eligible and make a well-cached route look
-// mediocre. Cache *writes* are excluded from the denominator too — a write is
-// the cost of populating the cache, not a missed read.
-//
-// Zero cacheable tokens yields zero, and callers that must distinguish "0%
-// cache hit" from "nothing cacheable happened" should test Cacheable first —
-// the page does, and renders no gauge at all in the second case rather than an
-// empty one implying a miss.
-func (e RoutingEdge) CacheHitRate() float64 {
-	cacheable := e.CacheReadTokens + e.InputTokens
-	if cacheable == 0 {
-		return 0
-	}
-	return float64(e.CacheReadTokens) / float64(cacheable)
-}
-
-// Cacheable reports whether this route moved any prompt tokens at all, so a
-// caller can tell a real 0% cache hit from a route with nothing to cache.
-func (e RoutingEdge) Cacheable() bool { return e.CacheReadTokens+e.InputTokens > 0 }
-
-// ErrorRate is the share of this route's requests that failed, in [0,1].
-func (e RoutingEdge) ErrorRate() float64 {
-	if e.Requests == 0 {
-		return 0
-	}
-	return float64(e.Errors) / float64(e.Requests)
-}
 
 // MaxRoutingEdges caps how many routes RoutingFlow returns individually.
 //
@@ -186,17 +215,10 @@ ORDER BY COUNT(*) DESC, COALESCE(SUM(cost_usd), 0) DESC`
 		// Past the cap: fold into the remainder. Latency is summed weighted by
 		// request count here and averaged once at the end — averaging an
 		// average would weight a 1-request route the same as a 1000-request
-		// one.
+		// one, which is why Measures.add leaves latency to the caller.
 		folded++
-		remainder.Requests += e.Requests
-		remainder.CostUSD += e.CostUSD
-		remainder.Tokens += e.Tokens
-		remainder.InputTokens += e.InputTokens
-		remainder.OutputTokens += e.OutputTokens
-		remainder.CacheReadTokens += e.CacheReadTokens
-		remainder.CacheWriteTokens += e.CacheWriteTokens
-		remainder.Errors += e.Errors
 		remainder.AvgLatencyMs += e.AvgLatencyMs * e.Requests
+		remainder.add(e.Measures)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("routing flow rows: %w", err)

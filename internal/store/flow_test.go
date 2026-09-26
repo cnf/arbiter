@@ -249,13 +249,13 @@ func TestWindowUntilIsExclusiveAndTiles(t *testing.T) {
 // cost-per-1M divides by every token moved, and cache-hit is measured against
 // cacheable (prompt) tokens only.
 func TestEdgeRateMetrics(t *testing.T) {
-	e := RoutingEdge{
+	e := RoutingEdge{Measures: Measures{
 		CostUSD:          10,
 		InputTokens:      100_000,
 		OutputTokens:     100_000,
 		CacheReadTokens:  700_000,
 		CacheWriteTokens: 100_000,
-	}
+	}}
 	e.Tokens = e.InputTokens + e.OutputTokens + e.CacheReadTokens + e.CacheWriteTokens
 
 	// 1M tokens total, $10 → $10/1M.
@@ -274,7 +274,7 @@ func TestEdgeRateMetrics(t *testing.T) {
 	// A route that only ever errored: real requests, no tokens. Must render as
 	// zero rather than dividing by zero, and must report "nothing cacheable"
 	// rather than a 0% hit rate.
-	broken := RoutingEdge{Requests: 23, Errors: 23}
+	broken := RoutingEdge{Measures: Measures{Requests: 23, Errors: 23}}
 	if got := broken.CostPer1MTokens(); got != 0 {
 		t.Errorf("cost/1M on a token-less edge = %v, want 0", got)
 	}

@@ -17,4 +17,11 @@ licence file is included because the source distribution ships it, not because
 it is required.
 
 Files were fetched once, at implementation time, from the versions named above.
-`internal/ui/static/app.css` and any future `chart.js` are ours, not vendored.
+Everything else under `internal/ui/static/` is ours, not vendored — `app.css`
+and the small per-page scripts (`discovery.js`, `laneTimeline.js`, …).
+
+uPlot was vendored here until #54: the old Overview was a pivot table with a
+uPlot time-series chart, and the newui rebuild replaced that page with a
+server-rendered SVG sankey. The chart, its data endpoint and the library were
+deleted together — the current Overview computes its geometry in Go, so the UI
+now carries no charting dependency at all.

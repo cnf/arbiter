@@ -245,20 +245,18 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	// set gets an unstyled 401 on everything including the CSS — see the
 	// README's admin section.
 	r.HandleFunc("/admin/ui/", arbiterhttp.Gate(forwardAuthHeader, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-		stdhttp.Redirect(w, req, "/admin/ui/sessions", stdhttp.StatusFound)
+		stdhttp.Redirect(w, req, "/admin/ui/overview", stdhttp.StatusFound)
 	})).Methods("GET")
-	r.HandleFunc("/admin/ui/requests", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestsHandler)).Methods("GET")
 	// The live tail's poll endpoint. Polled by live.js rather than by htmx, for
 	// the reasons in that file; it returns JSON carrying a rendered row fragment,
 	// so the cursor stays an opaque token and the row markup has one definition.
 	//
-	// It is registered *before* /requests/{id} because gorilla/mux matches in
-	// registration order, and {id} happily matches the literal "tail" — so the
-	// other order routes every poll into the detail handler, which then refuses
-	// "tail" as a request id and answers 400.
+	// It survives the #54 rip-out that removed the rest of /admin/ui/requests/*:
+	// the Sessions page consumes it, and the path is kept because the rows it
+	// returns are still requests. The old list/detail handlers under that prefix
+	// are gone — the merged Sessions page (#52) replaced them, and leaving
+	// routes pointing at deleted templates would 500 rather than 404.
 	r.HandleFunc("/admin/ui/requests/tail", arbiterhttp.Gate(forwardAuthHeader, adminUI.TailHandler)).Methods("GET")
-	r.HandleFunc("/admin/ui/requests/{id}", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestHandler)).Methods("GET")
-	r.HandleFunc("/admin/ui/requests/{id}/content", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestContentHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/requests/{id}/guardrail-diff", arbiterhttp.Gate(forwardAuthHeader, adminUI.GuardrailDiffHandler)).Methods("GET")
 
 	// Conversations. The key is a query parameter, not a path segment: session
@@ -267,14 +265,15 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	r.HandleFunc("/admin/ui/sessions", arbiterhttp.Gate(forwardAuthHeader, adminUI.SessionsHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/session", arbiterhttp.Gate(forwardAuthHeader, adminUI.SessionHandler)).Methods("GET")
 
-	// The pivot explorer. No /series.json yet: 7b-3a is the table, and the chart
-	// endpoint arrives with the chart (and with a query that does not exist).
+	// Overview (#54): the routing-flow page. The old pivot explorer and its
+	// series.json chart endpoint were deleted with it — the rebuild is
+	// greenfield, so nothing of that page survives to route to.
 	r.HandleFunc("/admin/ui/overview", arbiterhttp.Gate(forwardAuthHeader, adminUI.OverviewHandler)).Methods("GET")
-
-	// The chart's data. UI-internal and explicitly unstable: the shape can change
-	// with the chart, which is why it is not under /admin/stats/* with the
-	// documented read surface. Under the same gate as everything else.
-	r.HandleFunc("/admin/ui/overview/series.json", arbiterhttp.Gate(forwardAuthHeader, adminUI.SeriesHandler)).Methods("GET")
+	// The per-node drawer, fetched on click. Registered before nothing in
+	// particular, but kept adjacent to its page: it is a fragment-only endpoint
+	// and has no full-page form.
+	r.HandleFunc("/admin/ui/overview/node", arbiterhttp.Gate(forwardAuthHeader, adminUI.OverviewNodeHandler)).Methods("GET")
+	r.HandleFunc("/admin/ui/overview/node/close", arbiterhttp.Gate(forwardAuthHeader, adminUI.OverviewNodeCloseHandler)).Methods("GET")
 
 	// Discovery: the blocks that recur across requests, and the drill-down from
 	// one block to the requests containing it. The block page takes ?hash= rather

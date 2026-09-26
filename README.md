@@ -51,16 +51,13 @@ overrides both. Loopback is the default on purpose — see
 | `GET /admin/stats/session?key=` | one session's trajectory      |
 | `GET /admin/stats/tools` | tool-name usage counts            |
 | `GET /admin/requests` | request list, newest first           |
-| `GET /admin/ui/requests/{id}/content` | one request's captured content |
 | `GET /admin/ui/requests/tail` | the live tail's poll endpoint (UI-internal, unstable) |
 | `GET /admin/content/repeated` | blocks recurring across requests |
-| `GET /admin/ui/` | the admin web UI (302 to `/requests`)   |
-| `GET /admin/ui/requests` | request list + filters, as a page    |
-| `GET /admin/ui/requests/{id}` | request detail, as a page        |
+| `GET /admin/ui/` | the admin web UI (302 to `/overview`)   |
+| `GET /admin/ui/overview` | routing flow, cost/cache KPIs, config-change compare |
+| `GET /admin/ui/overview/node?id=` | one flow node's detail drawer (fragment) |
 | `GET /admin/ui/sessions` | conversations, one row each          |
 | `GET /admin/ui/session?key=` | one conversation, turn by turn  |
-| `GET /admin/ui/overview` | pivot: group by a dimension, rank by a metric |
-| `GET /admin/ui/overview/series.json` | the chart's data (UI-internal, unstable) |
 | `GET /admin/ui/content/repeated` | blocks of content that recur across requests |
 | `GET /admin/ui/content/block?hash=…` | the requests containing one block |
 
@@ -1546,57 +1543,66 @@ truncated to 10 with the full value in the tooltip and in every link. The
 truncation is display-only — a shortened key in an href would fetch the wrong
 conversation.
 
-**`/admin/ui/overview`** is the adjustable pivot: pick a window, a dimension to
-group by and a metric to rank by, and it renders one ranked table with the
-headline numbers above it. `?dim=` takes `provider`, `model`, `alias`, `epoch`,
-`domain`, `effort`, `status` or `format`; `?metric=` takes `requests`, `cost`,
-`tokens`, `latency` or `error_rate`.
+**`/admin/ui/overview`** answers two questions: where do requests actually go,
+and did the last config change make that better or worse.
 
-Two things about its shape are deliberate:
+The page is a **routing-flow diagram** — aliases on the left, the models they
+reached on the right, ribbon width proportional to request share — above a KPI
+strip (requests, sessions, cost, cost per 1M tokens, cache hit, error rate).
+Clicking any node opens a drawer with that node's rate/efficiency numbers, a
+cache-hit gauge, and the individual routes behind it.
 
-- **Every row carries every metric; the metric only decides the ordering.** So a
-  table shows cost, cost-per-request, tokens, latency, errors and error rate
-  together and still answers "who is slowest". The trade is that the row *set* is
-  limited by the ranking metric — top-N by a different metric is a different
-  request, not a client-side re-sort. For a single local user that is the right
-  way round; the alternative is an unbounded result.
-- **A dimension with one value in the window is explained, not presented as a
-  finding.** On this deployment `domain`, `effort` and `alias` are empty for
-  everything, because a request naming a concrete model is routed directly and
-  the classifiers never run. A pivot over one of those is one row reading
-  `(unclassified)`, which is correct and looks broken. The page names the
-  single-valued axes and says why, rather than leaving it to be diagnosed.
+`?since=` takes a Go duration for the trailing window (default `24h`).
+`?mode=compare` switches to the before/after view and needs `?anchor=`, an
+RFC3339 timestamp; `?span=to_now` (default) measures the anchor to now against
+an equal span before it, and `?span=fixed` uses one `since`-long window on each
+side. An unparseable parameter is a 400 naming it, never a silent fallback —
+this page exists to attribute a change to a cause, so quietly answering a
+different question is worse than an error.
 
-The pivot's dimension and metric are map *keys* in `internal/store/pivot.go`; the
-map *values* are the only strings ever concatenated into SQL, and an unknown axis
-is a 400 that lists the valid ones — never a silent fallback, since grouping by
-something other than what was asked answers a question nobody put.
+Four things about its numbers are deliberate, and are also the reasons the page
+looks the way it does:
 
-**The overview also draws a chart**, over the same window and grouping as the
-table, so the two always describe one selection. `chart.js` fetches
-`/admin/ui/overview/series.json` and draws it with vendored uPlot; the page itself
-carries only a *URL* in a data attribute. That is deliberate: putting
-store-derived strings (model names, alias names, epoch hashes) into an inline
-`<script>` would mean either escaping them into a JS context — which the server
-cannot verify, since it does not parse what it emits — or marking them safe. A
-URL is something `html/template`'s contextual escaper already handles, and JSON
-parsed in the browser is data rather than code.
+- **Cost per 1M tokens, never cost per request.** Request sizes on this traffic
+  vary by orders of magnitude, so a per-request average tracks how big the calls
+  happened to be rather than how expensive a route is. The per-token rate is also
+  what makes compare mode meaningful: a config change that halves the price while
+  traffic doubles shows up as a raw cost *increase*, and only the rate answers
+  "did this help?".
+- **Cache hit is measured against cacheable tokens only** —
+  `cache_read / (cache_read + input)`. Only prompt tokens can be cached, so
+  folding output tokens into the denominator would dilute a well-cached route
+  with volume that was never eligible. A route that moved no prompt tokens shows
+  `—`, not `0%`: "nothing was cacheable" and "every read missed" look identical
+  as a number and mean opposite things.
+- **Estimated and metered cost are never summed into one labelled total.** The
+  claude figures are API-equivalent pricing for comparison — the actual billing is
+  a flat monthly plan with a rolling quota — while openrouter's are really
+  metered. The KPI cell says `(partly est.)` and the page footnote spells it out.
+- **A delta's colour comes from the metric, not the sign.** `store.DirectionOf`
+  holds the per-metric direction, so a cache-hit rise is green, a cost rise is
+  red, and request volume moving gets no colour at all: more traffic is neither
+  good nor bad news.
 
-Three details of the chart are worth knowing:
+The **config-change picker** is built from `requests.config_epoch`, so the
+anchors offered are real changes rather than guessed timestamps. Arbiter reloads
+on config file change, so a single editing session lands in the store as a burst
+of epochs seconds apart; `store.ConfigEpochs` collapses each burst to the config
+that actually served traffic, which is why an entry can read
+`settled after 3 saves`. Free-form anchors still work — the list is a
+convenience, not the only way in.
 
-- **Time buckets are sliced, not parsed.** The `ts` column is TEXT in Go's
-  `time.Time.String()` layout, which SQLite's date functions cannot parse, so a
-  bucket is `substr(ts, 1, 15) || '0:00'` rather than a `strftime` call. The
-  granularity follows the window: 10-minute up to 6h, hourly up to 4 days, daily
-  beyond.
-- **The axis is UTC, like everything else.** uPlot renders its time axis in the
-  browser's zone by default, which would make the chart the one thing on the page
-  disagreeing with every timestamp beside it. The tick labels are formatted
-  explicitly instead, with the day in the axis title rather than repeated on each
-  tick.
-- **A gap is null, not zero.** A bucket a group had no traffic in is a break in
-  the line, not a claim that the group was idle by design — which matters for a
-  cost or latency metric.
+**The diagram's geometry is computed in Go** (`internal/ui/sankey.go`) and
+emitted as SVG, not laid out in the browser: it is the one piece of real
+arithmetic on the page, so it belongs somewhere `go test` can reach. Two limits
+in it come from live data rather than taste — the route cap
+(`store.MaxRoutingEdges`) folds everything past the busiest dozen into one
+`other` band, and a node too short for its label draws a bar only, with its
+identity in the hover title and the drawer. Both exist because a real 7-day
+window has 23 routes whose long tail otherwise renders as overlapping labels.
+
+There is no charting library: uPlot went with the old pivot-table Overview it
+was vendored for.
 
 Provider notes:
 

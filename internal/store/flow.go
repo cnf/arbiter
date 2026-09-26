@@ -86,12 +86,16 @@ func (m Measures) ErrorRate() float64 {
 	return float64(m.Errors) / float64(m.Requests)
 }
 
-// add accumulates another counter set into this one. Latency is deliberately
+// Add accumulates another counter set into this one. Latency is deliberately
 // left alone: averaging two averages weights a 1-request group the same as a
 // 1000-request one, so callers that fold rows together handle latency
 // explicitly (RoutingFlow's remainder bucket sums it weighted by request count
 // and divides once at the end).
-func (m *Measures) add(o Measures) {
+//
+// Exported because the presentation layer aggregates edges too — a node's
+// drawer sums the routes behind it — and re-summing those fields by hand in
+// another package is exactly how the two would drift apart.
+func (m *Measures) Add(o Measures) {
 	m.Requests += o.Requests
 	m.CostUSD += o.CostUSD
 	m.Tokens += o.Tokens
@@ -144,7 +148,14 @@ func (e RoutingEdge) IsRemainder() bool { return e.FoldedRoutes > 0 }
 // stops answering "where does traffic go" and starts obscuring it. The routes
 // beyond the cap are not dropped — RoutingFlow folds them into one remainder
 // edge so the totals still add up, which is the whole reason the cap is safe.
-const MaxRoutingEdges = 24
+//
+// 12 rather than 24: measured against the live store, a 7-day window produces
+// 23 distinct routes, and the smallest dozen occupy so little vertical share
+// that their labels land ~9px apart — two lines of 12px type each, i.e. an
+// illegible pile. The diagram's job is the shape of the traffic, and the tail
+// is one "other" band plus a drawer; the tail's detail lives in that drawer,
+// not in overlapping labels nobody can read.
+const MaxRoutingEdges = 12
 
 // RoutingFlow returns a window's alias→model routes, busiest first, capped at
 // limit individually with everything past the cap folded into a single
@@ -218,7 +229,7 @@ ORDER BY COUNT(*) DESC, COALESCE(SUM(cost_usd), 0) DESC`
 		// one, which is why Measures.add leaves latency to the caller.
 		folded++
 		remainder.AvgLatencyMs += e.AvgLatencyMs * e.Requests
-		remainder.add(e.Measures)
+		remainder.Add(e.Measures)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("routing flow rows: %w", err)

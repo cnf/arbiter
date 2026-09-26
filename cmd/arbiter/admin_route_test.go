@@ -54,13 +54,20 @@ func TestAdminUIRoutesAreGated(t *testing.T) {
 
 	for _, target := range []string{
 		"/admin/ui/",
-		"/admin/ui/requests",
-		"/admin/ui/requests/1",
-		"/admin/ui/requests/1/content",
+		"/admin/ui/requests/tail",
+		"/admin/ui/requests/1/guardrail-diff",
 		"/admin/ui/sessions",
 		"/admin/ui/session?key=abc",
 		"/admin/ui/overview",
-		"/admin/ui/overview/series.json",
+		// #54's new fragment endpoints. They are listed for the same reason
+		// every other route is: the gate is per-route, so a route added without
+		// one is silently open, and the deleted requests-page/series.json
+		// entries used to be this test's proof of that.
+		"/admin/ui/overview/node?id=alias:x",
+		"/admin/ui/overview/node/close",
+		"/admin/ui/content/repeated",
+		"/admin/ui/content/block?hash=abc",
+		"/admin/ui/content/block/body?hash=abc",
 		"/admin/ui/static/htmx.min.js",
 		"/admin/ui/static/app.css",
 	} {

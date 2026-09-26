@@ -1,3 +1,14 @@
+// The request view-model layer: the row/line/fold/tree helpers that turn
+// store.RequestRow into something a page can render.
+//
+// The standalone requests *page* was deleted in #54's rip-out — the merged
+// Sessions page (#52) replaced it, and the newui rebuild is greenfield. What
+// survives here is the view-model machinery that page introduced and that the
+// pages which shipped after it consume: foldRequestLines/attachTraceChildren
+// (Sessions' lane timelines), requestRowView/RoutingChain (Sessions, Discovery's
+// drill-down, the live tail), the keyset cursor codec (the live tail), and the
+// guardrail-diff fragment (the session transcript). Deleting the file wholesale
+// to "finish the rip-out" would break all four.
 package ui
 
 import (
@@ -9,18 +20,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gorilla/mux"
 
 	"github.com/cnf/arbiter/internal/store"
 )
-
-// defaultListLimit is the UI's own default page size. It is *below* the
-// reader's cap (maxRequestListLimit, 500) deliberately: paging in 100-row
-// steps means the cap is rarely reached, so the "list is capped" note is an
-// exception rather than the normal case.
-const defaultListLimit = 100
 
 // requestKindFilter turns the optional ?kind= query parameter into a
 // store.RequestFilter.Kind value. Absent and the literal "all" both mean no
@@ -592,30 +596,6 @@ func flatLineHref(head requestRowView) string {
 	return "/admin/ui/requests?" + q.Encode()
 }
 
-// flatToggleHref is the "every request" / "grouped" switch: the current filter
-// set with grouping flipped, so turning it on keeps the window the reader was
-// looking at. It is a plain URL for the same reason every other filter is —
-// the view a reader is looking at is the address bar, so it can be reloaded,
-// bookmarked and shared.
-func flatToggleHref(q url.Values, flat bool) string {
-	out := url.Values{}
-	for k, vs := range q {
-		if k == "flat" || k == "after" {
-			continue
-		}
-		for _, v := range vs {
-			out.Add(k, v)
-		}
-	}
-	if !flat {
-		out.Set("flat", "1")
-	}
-	if len(out) == 0 {
-		return "/admin/ui/requests"
-	}
-	return "/admin/ui/requests?" + out.Encode()
-}
-
 // rowsView is what the request table renders. It is carried by the page and by
 // the htmx fragment alike, so a swapped table and a loaded page cannot
 // disagree about the rows, the pager, or the filter state.
@@ -679,186 +659,6 @@ type tailView struct {
 	FilterQuery string
 }
 
-// requestsView is the full page: the table view plus the chrome.
-type requestsView struct {
-	viewBase
-	rowsView
-}
-
-// RequestsHandler handles GET /admin/ui/requests: the request list, newest
-// first, with the 7a filters as a real form.
-//
-// Query parameters mirror the JSON endpoint's (since, provider, session,
-// alias, status, errors, limit) plus no_session and the keyset cursor
-// (before_ts/before_id). A malformed value is a 400 naming the parameter, never
-// a silently ignored filter: a filter that quietly returns unfiltered data
-// shows wrong numbers with no indication anything was dropped.
-func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
-	if disabled := h.storeDisabled(w, r); disabled && fragmentsRequested(r) {
-		return
-	}
-	q := r.URL.Query()
-	fv := requestFilterView{
-		SinceRaw:   q.Get("since"),
-		Provider:   q.Get("provider"),
-		Alias:      q.Get("alias"),
-		StatusRaw:  q.Get("status"),
-		SessionKey: q.Get("session"),
-		LimitRaw:   q.Get("limit"),
-		KindRaw:    q.Get("kind"),
-		ReqKindRaw: q.Get("request_kind"),
-		Flat:       q.Has("flat"),
-	}
-
-	f := store.RequestFilter{
-		Provider:       fv.Provider,
-		Alias:          fv.Alias,
-		SessionKey:     fv.SessionKey,
-		SessionKeyless: q.Has("no_session"),
-		ErrorsOnly:     q.Has("errors"),
-		Limit:          defaultListLimit,
-		Kind:           requestKindFilter(q.Get("kind")),
-		RequestKind:    fv.ReqKindRaw,
-	}
-	// since: a Go duration, matching the JSON surface's own parameter so the
-	// two read surfaces describe one window the same way.
-	if raw := q.Get("since"); raw != "" {
-		d, err := time.ParseDuration(raw)
-		if err != nil || d <= 0 {
-			h.fail(w, r, http.StatusBadRequest,
-				`since must be a positive Go duration, e.g. "24h" or "168h"`)
-			return
-		}
-		f.Since = time.Now().UTC().Add(-d)
-	}
-	if raw := q.Get("status"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 100 || n > 599 {
-			h.fail(w, r, http.StatusBadRequest, "status must be an HTTP status code (100-599)")
-			return
-		}
-		f.StatusCode = n
-	}
-	if raw := q.Get("limit"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 {
-			h.fail(w, r, http.StatusBadRequest, "limit must be a positive integer")
-			return
-		}
-		f.Limit = n
-	}
-	// The keyset cursor, as one opaque token (see encodeCursor).
-	if raw := q.Get("after"); raw != "" {
-		ts, id, err := decodeCursor(raw)
-		if err != nil {
-			h.fail(w, r, http.StatusBadRequest, "after is not a valid cursor: "+err.Error())
-			return
-		}
-		f.BeforeTs, f.BeforeID = ts, id
-	}
-
-	// The cursor is not part of the filter form's own state, so the form never
-	// shows it; but it *is* part of "is anything filtered", because a cursor
-	// means this is a later page rather than the first.
-	fv.Any = f.Provider != "" || f.Alias != "" || f.SessionKey != "" || f.StatusCode != 0 ||
-		f.ErrorsOnly || f.SessionKeyless || !f.Since.IsZero() || fv.KindRaw != "" || fv.ReqKindRaw != ""
-
-	view := requestsView{viewBase: h.base(r.Context(), "Requests"), rowsView: rowsView{F: fv}}
-
-	// Default-list read: the page renders Lines, which fold Rows. Two readers
-	// need the full five-hundred, so they keep the plain fetch:
-	//
-	//   - ?flat=1, which renders one row per request and would otherwise be a
-	//     lie about the store ("every completed request") the moment a page
-	//     needed more rows than were fetched to fill its lines;
-	//   - an explicit single-kind selection (e.g. kind=classifier), where a
-	//     line's count is itself the thing being studied. The default view
-	//     (blank, or the equivalent "all") is a normal paged browse of mixed
-	//     kinds and keeps defaultListLimit — only a narrow, specific kind
-	//     widens.
-	if h.reader != nil {
-		if fv.Flat || (fv.KindRaw != "" && fv.KindRaw != "all") {
-			f.Limit = maxRequestRows
-		}
-		rows, err := h.reader.ListRequests(r.Context(), f)
-		if err != nil {
-			h.logger.LogError(r.Context(), "error", err,
-				map[string]interface{}{"phase": "admin_ui_requests"})
-			h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
-			return
-		}
-		for _, row := range rows {
-			view.Rows = append(view.Rows, requestRowView{
-				RequestRow:   row,
-				ShortSession: shortSessionKey(row.SessionKey),
-			})
-		}
-		// moreURL needs the stored rows (it reads the cursor off the last one),
-		// not the view rows.
-		view.MoreURL = moreURL(q, rows, f.Limit)
-		view.More = view.MoreURL != ""
-		view.Tail = tailFor(q, rows)
-	}
-
-	// Grouping is applied after the tail's state, not before: the tail follows
-	// the *rows*, and a poll's payload is rows (see TailHandler). A grouped view
-	// therefore shows half of what its live control reports until the tail grows
-	// the same folding — stated in the README and in the button's own title
-	// rather than left for the reader to work out.
-	view.FlatHref = flatToggleHref(q, true)
-	view.GroupedHref = flatToggleHref(q, false)
-	// The render mode travels with the rows it describes. Leaving this unset made
-	// Flat mode render the *lines* template with no lines — an empty table that
-	// looked like a store with no traffic.
-	view.Flat = fv.Flat
-	if !fv.Flat {
-		view.Lines = foldRequestLines(view.Rows)
-		if h.reader != nil {
-			ctx := r.Context()
-			view.Lines = attachTitleChildren(view.Lines, h.captureContent.Load(), func(id int64) (string, bool) {
-				p, ok, err := h.reader.ParentSessionForTitle(ctx, id)
-				if err != nil || !ok {
-					return "", false
-				}
-				return p.SessionKey, true
-			})
-		}
-		for _, line := range view.Lines {
-			if line.Run {
-				view.RunsOnPage++
-			}
-		}
-	}
-
-	h.render(w, r, "requests", "req-rows", view)
-}
-
-// tailFor builds the live tail's initial state from the rows on the page.
-//
-// It returns a disabled state when the page is not the newest one. A tail only
-// makes sense on the first page: on a later page the newest row is not on screen,
-// so "everything after what you are showing" would mean starting the view from
-// the middle of history — the tail would then show traffic newer than a page the
-// reader scrolled to, which is not what a live view means. Refusing it is the
-// honest answer; the query-string cursor is what makes the page a later one, and
-// it is not part of the filter form.
-func tailFor(q url.Values, rows []store.RequestRow) tailView {
-	src := "/admin/ui/requests/tail"
-	if q.Get("after") != "" || len(rows) == 0 {
-		return tailView{Src: src, FilterQuery: tailFilterQuery(q)}
-	}
-	ts, id, ok := store.NewestCursor(rows)
-	if !ok {
-		return tailView{Src: src, FilterQuery: tailFilterQuery(q)}
-	}
-	return tailView{
-		Enabled:     true,
-		Src:         src,
-		Cursor:      encodeCursor(ts, id),
-		FilterQuery: tailFilterQuery(q),
-	}
-}
-
 // tailFilterQuery renders the filter set the tail should follow, excluding the
 // paging cursor — the tail is watching the list, not a page of it — and including
 // the window so the tail's `since` does not drift away from the list's.
@@ -876,36 +676,6 @@ func tailFilterQuery(q url.Values) string {
 		}
 	}
 	return out.Encode()
-}
-
-// moreURL builds the keyset continuation link: the current filter set plus the
-// cursor from the last row rendered. It returns "" when the list is complete.
-//
-// "Complete" is decided by the page size, not by a COUNT: the reader clamps the
-// limit itself, so a short page is the only signal available without a second
-// query, and an empty page is the definitive end. A full page may therefore
-// offer one more page that turns out to be empty — a harmless extra click,
-// where the alternative (a COUNT over the same filter) costs a query on every
-// page view.
-func moreURL(q url.Values, rows []store.RequestRow, limit int) string {
-	if len(rows) == 0 || len(rows) < limit || limit <= 0 {
-		return ""
-	}
-	last := rows[len(rows)-1]
-	if last.TsRaw == "" {
-		return ""
-	}
-	next := url.Values{}
-	for _, k := range []string{"since", "provider", "alias", "status", "session", "errors", "limit"} {
-		if v := q.Get(k); v != "" || (k == "errors" && q.Has(k)) {
-			next.Set(k, v)
-		}
-	}
-	if q.Has("no_session") {
-		next.Set("no_session", "1")
-	}
-	next.Set("after", encodeCursor(last.TsRaw, last.ID))
-	return "/admin/ui/requests?" + next.Encode()
 }
 
 // blockView pairs a captured block with the request it belongs to, so the
@@ -952,142 +722,11 @@ func decodeCursor(raw string) (string, int64, error) {
 	return parts[0], id, nil
 }
 
-// detailView is the request detail page: metadata, the conversation path
-// through the session, and the captured content when it was asked for.
-type detailView struct {
-	viewBase
-	D store.RequestDetail
-
-	// Turns is the session's requests up to and including this one, so the
-	// page can show where this request sits in a conversation and link to any
-	// other point in it. Empty for a request with no session key, which is not
-	// a conversation.
-	Turns  []store.SessionRequest
-	Blocks []blockView
-
-	// ContentLoaded distinguishes "the content fragment was requested" from
-	// "this request has no captured content" — capture off and nothing
-	// captured are different answers.
-	ContentLoaded bool
-
-	// ShowingAsSent is true when the client's original, pre-guardrail text is
-	// being displayed instead of the default post-guardrail view (see #13).
-	// The template uses it to render the toggle link's other state.
-	ShowingAsSent bool
-
-	// HasGuardrailedVariant is true when this request has a distinct
-	// pre-guardrail capture at all, i.e. a pre-guardrail actually ran. When
-	// false the toggle link is pointless — there is only one version of the
-	// request — and the template omits it.
-	HasGuardrailedVariant bool
-}
-
-// RequestHandler handles GET /admin/ui/requests/{id}.
-func (h *Handler) RequestHandler(w http.ResponseWriter, r *http.Request) {
-	if disabled := h.storeDisabled(w, r); disabled && fragmentsRequested(r) {
-		return
-	}
-	id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
-	if err != nil || id < 1 {
-		h.fail(w, r, http.StatusBadRequest, "request id must be a positive integer")
-		return
-	}
-	view := detailView{viewBase: h.base(r.Context(), "Requests")}
-
-	if h.reader != nil {
-		detail, ok, err := h.reader.GetRequest(r.Context(), id)
-		if err != nil {
-			h.logger.LogError(r.Context(), "error", err,
-				map[string]interface{}{"phase": "admin_ui_request"})
-			h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
-			return
-		}
-		if !ok {
-			h.fail(w, r, http.StatusNotFound, "no request with that id")
-			return
-		}
-		view.D = detail
-		view.Turns = h.turnsFor(r, detail)
-	}
-	view.Title = "request " + strconv.FormatInt(id, 10)
-
-	h.render(w, r, "request", "request-content", view)
-}
-
-// turnsFor returns the session's requests in order, truncated at d. It gives
-// the detail page a position in a conversation, which is what makes "which
-// turn was this" answerable; a request with no session key has no such
-// position and gets none. An error here degrades the page rather than failing
-// it — the request's own metadata is already loaded and remains correct.
-func (h *Handler) turnsFor(r *http.Request, d store.RequestDetail) []store.SessionRequest {
-	if d.SessionKey == "" {
-		return nil
-	}
-	rows, err := h.reader.Session(r.Context(), d.SessionKey, 500)
-	if err != nil {
-		h.logger.LogError(r.Context(), "warn", err,
-			map[string]interface{}{"phase": "admin_ui_request_session"})
-		return nil
-	}
-	for i, row := range rows {
-		if row.ID == d.ID {
-			return rows[:i+1]
-		}
-	}
-	return nil
-}
-
-// wrapBlocks attaches the owning request id to each block.
-func wrapBlocks(id int64, blocks []store.ContentBlock) []blockView {
-	out := make([]blockView, 0, len(blocks))
-	for _, b := range blocks {
-		out = append(out, blockView{ContentBlock: b, OwnerID: id})
-	}
-	return out
-}
-
-// RequestContentHandler handles GET /admin/ui/requests/{id}/content: the
-// captured blocks, as an htmx fragment loaded lazily so a multi-megabyte
-// prompt never delays the metadata view.
-//
-// It is also the "pull one point out" path: ?turn=N returns the conversation
-// from its start up to turn N, so any earlier point in a session can be read
-// on its own without scrolling a full transcript.
-func (h *Handler) RequestContentHandler(w http.ResponseWriter, r *http.Request) {
-	if disabled := h.storeDisabled(w, r); disabled && fragmentsRequested(r) {
-		return
-	}
-	id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
-	if err != nil || id < 1 {
-		h.fail(w, r, http.StatusBadRequest, "request id must be a positive integer")
-		return
-	}
-	showAsSent := r.URL.Query().Get("as_sent") == "1"
-	view := detailView{viewBase: h.base(r.Context(), "Requests"), ContentLoaded: true, ShowingAsSent: showAsSent}
-
-	if h.reader != nil {
-		blocks, hasGuardrailedVariant, err := h.reader.ContentForRequest(r.Context(), id, showAsSent)
-		if err != nil {
-			h.logger.LogError(r.Context(), "error", err,
-				map[string]interface{}{"phase": "admin_ui_request_content"})
-			h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
-			return
-		}
-		view.Blocks = wrapBlocks(id, blocks)
-		view.ContentLoaded = true
-		view.HasGuardrailedVariant = hasGuardrailedVariant
-		if _, ok, err := h.reader.GetRequest(r.Context(), id); err == nil && ok {
-			view.D.ID = id
-		}
-	}
-	h.render(w, r, "request", "request-content", view)
-}
-
 // guardrailDiffView is the diff fragment: one block's before/after text,
-// rendered as a unified line diff. Requested on demand (see #48's
-// "guardrail touch" chip) rather than computed eagerly for every block —
-// almost every request has at most one touched block (the system preamble),
-// so this is cheap even though the mechanism itself is general.
+// rendered as a unified line diff. Requested on demand (see #48's "guardrail
+// touch" chip) rather than computed eagerly for every block — almost every
+// request has at most one touched block (the system preamble), so this is cheap
+// even though the mechanism itself is general.
 type guardrailDiffView struct {
 	OK  bool
 	Ops []store.DiffOp

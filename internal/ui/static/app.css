@@ -998,3 +998,178 @@ footer.appfoot .spacer {
 .diff-fragment { margin-top: 6px; }
 .diff-fragment .body-text { max-height: 260px; }
 .diff-fragment .diff-view { max-height: 260px; overflow-y: auto; font-family: var(--mono); font-size: 12px; border: 1px solid var(--border-soft); border-radius: 6px; padding: 6px 0; background: var(--panel); }
+
+/* ----------------------------------------------------------------------- */
+/* Overview (#54): routing-flow sankey + KPI strip + per-node drawer.
+ * Ported from design/overview-mockups/f3-overview-styled.html — the mockup's
+ * own rules, rewritten against this file's canonical token set (#55) rather
+ * than its inline :root block. Nothing of the old pivot-table Overview
+ * survives; the rebuild is greenfield.
+ *
+ * Unlike sessions.html/discovery.html this page scrolls as one column rather
+ * than splitting into a list + persistent side panel: a sankey needs the full
+ * page width to be traceable by eye, which is why the mockup puts the drawer
+ * *under* the diagram instead of beside it. So .main.overview overrides the
+ * shared .main's `overflow: hidden` row layout with a single scrolling block. */
+.main.overview { display: block; overflow-y: auto; min-height: 0; }
+.overview-body { display: flex; flex-direction: column; min-height: 0; }
+
+/* ---- toolbar: mode switch, window, config-change anchor ---- */
+.overview .toolbar { flex-wrap: wrap; row-gap: 10px; }
+.overview .tb-field { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.overview .tb-field > span {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-faint); white-space: nowrap;
+}
+/* The anchor select carries long labels ("Sep 24 07:05 · 1b7f47df · 4.8k req ·
+ * settled after 3 saves"), so it gets room to breathe and truncates rather
+ * than pushing the range pill off the toolbar. */
+.overview .tb-field.anchor select { max-width: 330px; }
+.overview .tb-apply {
+  all: unset; cursor: pointer; font: 700 11px var(--sans); color: var(--on-primary);
+  background: var(--primary); padding: 6px 14px; border-radius: var(--radius-md);
+}
+.overview .tb-apply:hover { filter: brightness(1.08); }
+.overview .seg {
+  display: flex; background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius-md); overflow: hidden;
+}
+.overview .seg button {
+  all: unset; cursor: pointer; font: 600 12px var(--sans); color: var(--text-faint);
+  padding: 6px 13px;
+}
+.overview .seg button.active { background: var(--accent-dim); color: var(--text); }
+.overview .seg button:disabled { cursor: not-allowed; opacity: 0.45; }
+.overview .vs-text { color: var(--text-faint); font-size: 12px; }
+.overview .vs-pill {
+  font-family: var(--mono); font-size: 11.5px; color: var(--text-dim);
+  background: var(--panel); border: 1px dashed var(--border);
+  padding: 5px 10px; border-radius: var(--radius-md);
+}
+.overview .range-pill {
+  font-size: 12px; color: var(--text-dim); background: var(--panel);
+  border: 1px solid var(--border); padding: 6px 12px;
+  border-radius: var(--radius-md); font-family: var(--mono);
+}
+.overview .range-pill.accent { border-color: var(--accent-strong); color: var(--text); }
+
+.overview .page-body { padding: 1.2rem 1.6rem 3rem; }
+
+/* ---- KPI strip ---- */
+.kpi-strip {
+  display: flex; gap: 0; margin-bottom: 1.1rem; background: var(--panel);
+  border: 1px solid var(--border-soft); border-radius: var(--radius-lg); overflow: hidden;
+}
+.kpi { flex: 1; padding: 12px 18px; border-right: 1px solid var(--border-soft); min-width: 0; }
+.kpi:last-child { border-right: none; }
+.kpi .l {
+  font-size: 10px; color: var(--text-faint); text-transform: uppercase;
+  letter-spacing: 0.05em; margin-bottom: 5px; font-weight: 700; white-space: nowrap;
+}
+.kpi .l .qual { color: var(--text-faint); font-weight: 400; text-transform: none; letter-spacing: 0; }
+.kpi .v { font-size: 16px; font-family: var(--mono); font-weight: 700; color: var(--text); }
+/* The delta's colour comes from store.DirectionOf's verdict, not from the sign:
+ * v1 = better, v-1 = worse, v0 = no verdict (request volume moving is neither
+ * good nor bad news, and must not render as either). */
+.kpi .v .delta { font-size: 11px; font-weight: 400; margin-left: 6px; font-family: var(--sans); }
+.kpi .v .delta.v1 { color: var(--ok); }
+.kpi .v .delta.v-1 { color: var(--err); }
+.kpi .v .delta.v0 { color: var(--text-faint); }
+
+/* ---- the flow card ---- */
+.overview .card {
+  background: var(--panel); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg); padding: 20px 24px; margin-bottom: 1rem;
+}
+.flow-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px; gap: 16px; }
+.flow-head h2 { font-size: 13px; margin: 0; font-weight: 600; color: var(--text); }
+.flow-head .hint { font-size: 11px; color: var(--text-faint); font-family: var(--mono); }
+.col-labels {
+  display: flex; justify-content: space-between; font-size: 9.5px; color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; padding: 0 4px 6px;
+}
+.flow-svg { display: block; width: 100%; height: auto; }
+.flow-svg .nlabel { font-size: 12px; font-weight: 600; fill: var(--text); }
+.flow-svg .nsub { font-size: 9.5px; fill: var(--text-faint); font-family: var(--mono); }
+/* Alias labels sit to the LEFT of their bar, so they end where the bar starts. */
+.flow-svg .nlabel.end, .flow-svg .nsub.end { text-anchor: end; }
+.flow-svg .node-hit { fill: transparent; cursor: pointer; }
+.flow-svg .node-group { cursor: pointer; }
+.flow-svg .node-group:hover rect.nbar { filter: brightness(1.3); }
+.flow-svg .node-group:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.flow-svg .node-group.selected rect.nbar { stroke: var(--text); stroke-width: 1.5; }
+/* A node whose every request failed is misconfiguration debris (an alias whose
+ * target is the alias name itself — present in the real data). It is marked
+ * rather than hidden: that it renders at all is the finding. */
+.flow-svg .node-group.all-errored .nlabel { fill: var(--err); }
+.flow-svg .ribbon { pointer-events: none; }
+
+.overview .legend {
+  display: flex; gap: 16px; font-size: 10.5px; color: var(--text-dim);
+  margin-top: 12px; align-items: center; flex-wrap: wrap; padding: 0;
+}
+.overview .legend .swatch {
+  display: inline-block; width: 8px; height: 8px;
+  border-radius: 2px; margin-right: 5px;
+}
+.overview .legend .hint { color: var(--text-faint); margin-left: auto; font-style: italic; }
+
+/* ---- the per-node drawer (htmx fragment target) ---- */
+.overview .drawer {
+  background: var(--panel-2); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg); padding: 18px 24px; margin-bottom: 1rem;
+}
+.overview .drawer-empty { color: var(--text-faint); font-size: 12.5px; font-style: italic; }
+.overview .drawer-head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.overview .drawer-head .dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.overview .drawer-head .title { font-size: 14px; font-weight: 600; color: var(--text); }
+.overview .drawer-head .sub { font-size: 11.5px; color: var(--text-faint); font-family: var(--mono); }
+.overview .drawer-head .close {
+  all: unset; margin-left: auto; font-size: 11px; color: var(--text-faint); cursor: pointer;
+  padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.overview .drawer-head .close:hover { color: var(--text); border-color: var(--text-faint); }
+.overview .drawer-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.4fr) minmax(0,1fr); gap: 22px; }
+.overview .dcol { min-width: 0; }
+.overview .dcol .l {
+  font-size: 10px; color: var(--text-faint); text-transform: uppercase;
+  letter-spacing: 0.05em; margin-bottom: 8px; font-weight: 700;
+}
+.overview .dcol .l .qual { font-weight: 400; text-transform: none; letter-spacing: 0; }
+.overview .mstat {
+  display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px;
+  padding: 6px 0; border-bottom: 1px solid var(--border-soft);
+}
+.overview .mstat:last-child { border-bottom: none; }
+.overview .mstat .k { color: var(--text-dim); }
+.overview .mstat .v { font-family: var(--mono); font-weight: 600; color: var(--text); }
+.overview .mstat .v.warn { color: var(--warn); }
+.overview .mstat .v.bad { color: var(--err); }
+.overview .mstat .v.good { color: var(--ok); }
+
+.overview .gauge-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+.overview .gauge-row .lbl { font-size: 11.5px; color: var(--text-dim); width: 78px; flex-shrink: 0; }
+.overview .gauge-bg { flex: 1; height: 8px; background: var(--panel-3); border-radius: 4px; overflow: hidden; }
+.overview .gauge-fill { height: 100%; border-radius: 4px; background: var(--text-faint); }
+.overview .gauge-fill.ok { background: var(--ok); }
+.overview .gauge-fill.warn { background: var(--warn); }
+.overview .gauge-fill.err { background: var(--err); }
+.overview .gauge-val { font-size: 11.5px; font-family: var(--mono); width: 44px; text-align: right; flex-shrink: 0; }
+
+.overview table.routes { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.overview table.routes th {
+  text-align: left; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-faint); font-weight: 700; padding: 0 8px 5px 0; white-space: nowrap;
+}
+.overview table.routes td { padding: 4px 8px 4px 0; border-top: 1px solid var(--border-soft); }
+.overview table.routes td.mono { font-family: var(--mono); color: var(--text-dim); word-break: break-all; }
+.overview table.routes td.num { font-family: var(--mono); text-align: right; white-space: nowrap; }
+.overview table.routes tr.bad td { color: var(--err); }
+
+.overview .placeholder { color: var(--text-faint); font-size: 12px; font-style: italic; line-height: 1.6; }
+.overview .footnote {
+  font-size: 10.5px; color: var(--text-faint); line-height: 1.6;
+  font-family: var(--mono); max-width: 110ch;
+}
+.overview .footnote b { color: var(--text-dim); }
+.overview .capped { padding: 8px 0 0; }

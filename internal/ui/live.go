@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -82,6 +83,29 @@ type tailResponse struct {
 	// and a 500 per poll would spam the console without telling the operator
 	// anything the page does not.
 	Error string `json:"error,omitempty"`
+}
+
+// writeJSON writes a JSON body, and writeJSONError is the failure half of the
+// same contract.
+//
+// These live here rather than in a page's own file because the live tail is now
+// their only consumer: they arrived with the old Overview's chart endpoint
+// (series.json), which #54's rebuild deleted along with the rest of the pivot
+// explorer. The tail is fetched by script rather than by htmx, so both its
+// successes and its failures must be JSON while every page's are HTML.
+func (h *Handler) writeJSON(w http.ResponseWriter, r *http.Request, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		h.logger.LogError(r.Context(), "warn", err,
+			map[string]interface{}{"phase": "admin_ui_tail_encode"})
+	}
+}
+
+func writeJSONError(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 // TailHandler serves GET /admin/ui/requests/tail: the requests written since a

@@ -1,0 +1,185 @@
+{{/* overview.html — the Overview page (#54): where requests go, and whether a
+config change made that better or worse.
+
+Ported from design/overview-mockups/f3-overview-styled.html, which is this
+page's spec. The previous Overview (a dimension x metric pivot table plus a
+uPlot chart) is gone entirely — the rebuild is greenfield, so none of its
+structure or metric choices carry over.
+
+Four stacked sections inside one scrolling column, per the mockup: the toolbar
+(mode + window + anchor), the KPI strip, the routing-flow card, and the drawer.
+The drawer sits below the diagram rather than to the side because a sankey needs
+the full page width to be readable — this is the mockup's own resolution of the
+same tension sessions.html solves with a side panel.
+
+The SVG geometry is computed in Go (internal/ui/sankey.go), not here and not in
+JS: it is the one piece of real arithmetic on this page, so it belongs somewhere
+`go test` can reach. The template only places what it was handed. */}}
+{{define "content"}}
+<div class="main overview">
+  {{template "overview-body" .}}
+</div>
+{{end}}
+
+{{define "overview-body"}}
+<div id="overview-body" class="overview-body{{if eq .Mode "compare"}} compare-on{{end}}">
+  <form class="toolbar" method="get" action="/admin/ui/overview">
+    {{/* The mode switch is two submit buttons rather than JS: each is a real
+    GET with its own parameters, so a compared view is a URL you can keep. */}}
+    <div class="seg">
+      <button type="submit" name="mode" value="single"
+              class="{{if eq .Mode "single"}}active{{end}}">Single window</button>
+      <button type="submit" name="mode" value="compare"
+              class="{{if eq .Mode "compare"}}active{{end}}"
+              {{if not .Epochs}}{{if not .AnchorRaw}}disabled
+              title="no config changes recorded to compare against"{{end}}{{end}}>Compare</button>
+    </div>
+
+    <label class="tb-field">
+      <span>window</span>
+      <select name="since">
+        {{$active := activeSince .SinceRaw}}
+        {{range sinceChoices}}<option value="{{.}}"{{if eq . $active}} selected{{end}}>{{sinceLabel .}}</option>{{end}}
+      </select>
+    </label>
+
+    {{/* The anchor picker: real config-change boundaries, newest first. Arbiter
+    reloads on config file change, so consecutive editor saves land as a burst
+    of epochs seconds apart — store.ConfigEpochs collapses each burst to the
+    config that actually served traffic, which is why an entry can say
+    "settled after N saves". */}}
+    <label class="tb-field anchor">
+      <span>config change</span>
+      <select name="anchor">
+        <option value="">— pick a change —</option>
+        {{range .Epochs}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+      </select>
+    </label>
+
+    <label class="tb-field">
+      <span>compare</span>
+      <select name="span">
+        <option value="to_now"{{if eq .Span "to_now"}} selected{{end}}>since the change, vs. the same span before</option>
+        <option value="fixed"{{if eq .Span "fixed"}} selected{{end}}>one window each side of the change</option>
+      </select>
+    </label>
+
+    <div class="spacer"></div>
+
+    {{if eq .Mode "compare"}}
+      <span class="vs-pill" title="the earlier window">{{.BeforeLabel}}</span>
+      <span class="vs-text">vs</span>
+      <span class="range-pill accent" title="the later window">{{.AfterLabel}}</span>
+    {{else}}
+      <span class="range-pill accent">{{.SinceLabel}} → {{.UntilLabel}}</span>
+    {{end}}
+    <button class="tb-apply" type="submit">apply</button>
+  </form>
+
+  {{if .StoreDisabled}}
+    <p class="empty">{{.StoreDisabledReason}}</p>
+  {{else}}
+
+  <div class="page-body">
+    <div class="kpi-strip">
+      {{range .KPIs}}
+      <div class="kpi">
+        <div class="l">{{.Label}}{{with .Note}} <span class="qual">{{.}}</span>{{end}}</div>
+        <div class="v">{{.Value}}{{if .HasDelta}}<span class="delta v{{.Verdict}}">{{.Delta}}</span>{{end}}</div>
+      </div>
+      {{end}}
+    </div>
+
+    <div class="card flow-card">
+      <div class="flow-head">
+        <h2>Routing flow</h2>
+        <div class="hint">alias used → model reached · width = share of requests · click a node for detail</div>
+      </div>
+
+      {{if .Flow.Empty}}
+        <p class="empty">No client traffic in this window.</p>
+      {{else}}
+      <div class="col-labels"><span>ALIAS</span><span>MODEL</span></div>
+      <svg class="flow-svg" viewBox="0 0 {{.Flow.Width}} {{.Flow.Height}}"
+           width="100%" height="{{.Flow.Height}}" role="img"
+           aria-label="routing flow from aliases to models">
+        <defs>
+          {{/* Ribbons fade from neutral on the alias side to the provider's
+          colour on the model side, so the eye follows traffic left to right. */}}
+          <linearGradient id="gF-claude" x1="0" x2="1">
+            <stop offset="0" stop-color="#4a5568"/><stop offset="1" stop-color="#a996ff"/>
+          </linearGradient>
+          <linearGradient id="gF-other" x1="0" x2="1">
+            <stop offset="0" stop-color="#4a5568"/><stop offset="1" stop-color="#46b4ff"/>
+          </linearGradient>
+          <linearGradient id="gF-none" x1="0" x2="1">
+            <stop offset="0" stop-color="#4a5568"/><stop offset="1" stop-color="#5a6474"/>
+          </linearGradient>
+        </defs>
+
+        {{range .Flow.Ribbons}}
+        <path class="ribbon" d="{{.Path}}" fill="{{.Fill}}" opacity="{{.Opacity}}"
+              data-from="{{.From}}" data-to="{{.To}}"><title>{{.Title}}</title></path>
+        {{end}}
+
+        {{$since := .SinceRaw}}{{$anchor := .AnchorRaw}}{{$span := .SpanRaw}}
+        {{range .Flow.Nodes}}
+        <g class="node-group{{if .Errored}} all-errored{{end}}" data-node="{{.ID}}"
+           tabindex="0" role="button" aria-label="{{.Label}} — {{.SubLine}}"
+           hx-get="{{nodeURL .ID $since $anchor $span}}"
+           hx-target="#flow-drawer" hx-swap="innerHTML" hx-trigger="click, keyup[key=='Enter']">
+          {{/* The title is the hover tooltip, and it is on every node including
+          the ones too short to carry a visible label — that is what keeps a
+          thin band identifiable instead of anonymous. */}}
+          <title>{{.Label}} · {{.SubLine}}</title>
+          <rect class="nbar" x="{{.X}}" y="{{.Y}}" width="{{.Width}}" height="{{.Height}}"
+                rx="3" fill="{{.Color}}"/>
+          <rect class="node-hit" x="{{.HitX}}" y="{{.Y}}" width="{{.HitWidth}}" height="{{.Height}}"/>
+          {{/* Labels are drawn only where the band has room for them (see
+          sankeyNode.ShowLabel): two lines of type in a 9px band collide with the
+          neighbour below, which is how a long tail of small routes turns into an
+          illegible pile. */}}
+          {{if .ShowLabel}}
+            {{if eq .Side "model"}}
+              <text class="nlabel" x="{{.LabelX}}" y="{{.TextY}}">{{.Label}}</text>
+              {{if .ShowSub}}<text class="nsub" x="{{.LabelX}}" y="{{.SubY}}">{{.SubLine}}</text>{{end}}
+            {{else}}
+              <text class="nlabel end" x="{{.LabelX}}" y="{{.TextY}}">{{.Label}}</text>
+              {{if .ShowSub}}<text class="nsub end" x="{{.LabelX}}" y="{{.SubY}}">{{.SubLine}}</text>{{end}}
+            {{end}}
+          {{end}}
+        </g>
+        {{end}}
+      </svg>
+
+      <div class="legend">
+        <div><span class="swatch" style="background:#a996ff"></span>claude</div>
+        <div><span class="swatch" style="background:#46b4ff"></span>other providers</div>
+        <div><span class="swatch" style="background:#5a6474"></span>no alias / folded</div>
+        <div class="hint">chips show cache hit per model — a low rate on a hot route is wasted spend</div>
+      </div>
+      {{if .FoldedRoutes}}
+      <p class="capped">showing {{.EdgeCount}} routes; the smallest {{.FoldedRoutes}} are folded into “other”.</p>
+      {{end}}
+      {{end}}
+    </div>
+
+    {{/* The drawer starts as a prompt and is replaced wholesale by the
+    node fragment on click — server-rendered, so the numbers are formatted in
+    exactly one place (the same reason Discovery's workspace pane fetches). */}}
+    <div class="drawer" id="flow-drawer">
+      {{template "overview-node-empty" .}}
+    </div>
+
+    <div class="footnote">
+      <b>On cost:</b> claude figures are API-equivalent pricing for comparison — actual billing is a
+      flat monthly plan with a rolling quota, not metered. Treat claude $ as a relative usage signal;
+      openrouter figures are real metered cost. The two are never summed into one labelled total.
+      <b>On rates:</b> cost per 1M tokens counts every token moved, including cache reads and writes;
+      cache hit is measured against cacheable (prompt) tokens only. Cost per <i>request</i> is
+      deliberately not shown — request sizes here vary too much for it to mean anything.
+    </div>
+  </div>
+  {{end}}
+</div>
+{{end}}

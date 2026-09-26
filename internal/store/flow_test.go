@@ -8,6 +8,13 @@ import (
 	"github.com/cnf/arbiter/pkg/types"
 )
 
+// usageOf builds a usage record with the three fields most aggregates read. It
+// lived in pivot_test.go until #54 deleted the pivot explorer; kind_test.go
+// still uses it, so it moved here rather than being deleted with its old home.
+func usageOf(in, out int64, cost float64) types.Usage {
+	return types.Usage{InputTokens: int(in), OutputTokens: int(out), CostUSD: cost}
+}
+
 // flowEvent builds a client request on one alias→provider/model route, with the
 // four token counters the flow aggregate sums.
 func flowEvent(ts time.Time, alias, provider, model string, in, out, cacheRead, cacheWrite int64, cost float64) Event {

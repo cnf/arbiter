@@ -37,10 +37,17 @@ var funcs = stdhtml.FuncMap{
 	// rather than a precomputed field because it is used with a key that is
 	// already in the view model, in two different templates.
 	"requestsForSession": requestsForSession,
-	"pivotLimit":         pivotLimitNote,
-	"seriesURL":          seriesURL,
 	"trace8":             fmtTrace,
-	"singleValuedHint":   func() string { return singleValuedHint },
+	// Overview (#54). cacheClass/pctWidth exist so the drawer's gauge can be
+	// coloured and sized without the template doing arithmetic or holding the
+	// thresholds; overviewURL/nodeURL keep query-string assembly out of the
+	// template, same reason requestsForBlock does.
+	"cacheClass":   cacheGaugeClass,
+	"pctWidth":     pctWidth,
+	"overviewURL":  overviewURL,
+	"nodeURL":      nodeURL,
+	"sinceChoices": sinceChoices,
+	"activeSince":  activeSince,
 	// requestsForBlock builds the drill-down link from a repeated block to the
 	// requests containing it. A func rather than an inline expression because a
 	// template must not be assembling a query string by hand.
@@ -133,6 +140,37 @@ func fmtUSD(v float64) string {
 
 // fmtPct renders a 0–1 ratio as a percentage.
 func fmtPct(v float64) string { return fmt.Sprintf("%.1f%%", v*100) }
+
+// cacheGaugeClass grades a cache-hit rate for the Overview drawer's gauge.
+//
+// The thresholds are a judgement about this deployment's traffic, not styling,
+// which is why they live in Go: on the live store a well-cached route sits above
+// 95% and the deepseek routes sit near 48%, so "good" starts high deliberately —
+// a 60% cache hit on a hot route is real money left on the table, and colouring
+// it green would defeat the point of showing the number.
+func cacheGaugeClass(rate float64) string {
+	switch {
+	case rate >= 0.7:
+		return "ok"
+	case rate >= 0.35:
+		return "warn"
+	default:
+		return "err"
+	}
+}
+
+// pctWidth renders a 0–1 ratio as a CSS width, clamped so a rounding artefact
+// cannot push a gauge fill past its track.
+func pctWidth(v float64) string {
+	switch {
+	case v <= 0:
+		return "0%"
+	case v >= 1:
+		return "100%"
+	default:
+		return fmt.Sprintf("%.1f%%", v*100)
+	}
+}
 
 // fmtTokens abbreviates a token count: exact below 10k, then 12.3k / 1.2M.
 // Exactness matters at the low end (a 300-token request is a different animal

@@ -145,11 +145,12 @@ func versionOf(fsys fs.FS) string {
 // HTML/CSS/JS was ripped out and is being rebuilt page by page, not ported
 // incrementally. "sessions" landed first (#52); "session" (the transcript,
 // #53) next; "discovery"/"block" (DiscoveryHandler, BlockRequestsHandler)
-// landed in #50. "requests", "request", "overview" still hit h.exec's "no
-// template set named …" 500 until their own ticket (#54) adds a replacement
-// page here. This is expected — PICKUP.md carries the pointer so the next
-// session isn't surprised by it.
-var pageFiles = []string{"sessions", "session", "discovery", "block"}
+// landed in #50; "overview" landed in #54.
+//
+// "requests"/"request" have no template and no longer have handlers either —
+// the merged Sessions page (#52) replaced that split, and #54's rip-out removed
+// the dead handlers rather than leaving them to 500.
+var pageFiles = []string{"sessions", "session", "discovery", "block", "overview"}
 
 // parseTemplates builds one template set per page, each from the layout, every
 // partial, and that one page. Go's html/template cannot redefine a block name
@@ -331,12 +332,11 @@ type navItem struct {
 // shell mockups (transcript-D-merged.html, f3-overview-styled.html). Sessions
 // already covers what used to be a separate Requests page (#52).
 //
-// The Sessions nav item's stat is a real query (ActiveSessionCount, over the
-// last 24h) rather than the header's other "fake live" literals — user,
-// verbatim: "that was intentional placeholder during the mockup. now that is
-// for this session. not the entire bar. JUST the sessions count." Overview's
-// $18/24h and Discovery's 2 gaps stay the documented placeholder
-// (design/REDESIGN.md §8 item 5) until they get the same treatment.
+// Both stats are real queries as of #54: Sessions' active count and Overview's
+// 24h spend. The mockup's "$18/24h" and "2 gaps" were placeholders, and the
+// user's rule for them is that a number on screen is either real or absent —
+// each degrades to a dash rather than showing an invented figure. Discovery's
+// stat is still absent for that reason: it has no query yet.
 func (h *Handler) base(ctx context.Context, active string) viewBase {
 	sessionsStat := "—"
 	if h.reader != nil {
@@ -347,11 +347,15 @@ func (h *Handler) base(ctx context.Context, active string) viewBase {
 			sessionsStat = strconv.FormatInt(n, 10)
 		}
 	}
+	overviewStat, overviewUnit := "—", ""
+	if cost, ok := h.overviewCostFor24h(ctx); ok {
+		overviewStat, overviewUnit = cost, "/24h"
+	}
 	return viewBase{
 		Nav: []navItem{
-			{Name: "Overview", Href: "/admin/ui/overview", Stat: "$18", Unit: "/24h"},
+			{Name: "Overview", Href: "/admin/ui/overview", Stat: overviewStat, Unit: overviewUnit},
 			{Name: "Sessions", Href: "/admin/ui/sessions", Stat: sessionsStat, Unit: "active"},
-			{Name: "Discovery", Href: "/admin/ui/content/repeated", Stat: "", Unit: "", ErrVal: true},
+			{Name: "Discovery", Href: "/admin/ui/content/repeated", Stat: "", Unit: ""},
 		},
 		Active:        active,
 		AssetVersion:  h.assetVersion,

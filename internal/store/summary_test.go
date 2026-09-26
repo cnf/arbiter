@@ -32,7 +32,7 @@ func TestSummarizeWindowTotalsMatchTheFlowEdges(t *testing.T) {
 
 	var edgeTotals Measures
 	for _, e := range edges {
-		edgeTotals.add(e.Measures)
+		edgeTotals.Add(e.Measures)
 	}
 
 	if sum.Requests != edgeTotals.Requests {

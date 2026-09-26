@@ -422,7 +422,17 @@ footer.appfoot .spacer {
 .lane-row.selected { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 
 .lane-head { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; }
-.lane-head-left { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1 1 auto; }
+.lane-head-left {
+  display: flex; align-items: baseline; gap: 10px;
+  /* Fixed, never shrunk: the request/satellite/age stats must never be
+   * squeezed or truncated. flex:1 1 auto + min-width:0 here previously let
+   * the outer row shrink this box under space pressure — but .meta (below)
+   * has white-space:nowrap and no min-width override, so it refused to
+   * actually shrink and instead overflowed rightward, visually bleeding
+   * into the preview text sitting in .lane-head-right. All shrink pressure
+   * must land on the preview (right side) instead — see .lane-head-right. */
+  flex: 0 0 auto;
+}
 .lane-head-left .sid {
   font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent); padding: 2px 8px;
@@ -438,6 +448,11 @@ footer.appfoot .spacer {
 .lane-head-right .preview {
   font-size: 12.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; min-width: 0;
+  /* This is where all the row's shrink pressure lands, now that
+   * .lane-head-left is fixed-width: flex:1 1 auto + min-width:0 lets the
+   * excerpt shrink all the way down (ellipsis engaging) rather than push
+   * into the stats on the left or the cost figure on the right. */
+  flex: 1 1 auto;
 }
 .lane-head-right .preview.muted { color: var(--text-faint); font-style: italic; }
 .lane-head-right .cost { font-family: var(--mono); font-weight: 700; font-size: 13px; color: var(--text); flex: 0 0 auto; }

@@ -2,6 +2,130 @@
 
 An LLM proxy/gateway with transparent routing decisions, composable classification axes, and independent observability.
 
+Arbiter sits between LLM clients (Hermes, opencode, Claude Code, anything that
+speaks the OpenAI or Anthropic API) and the providers behind them. It routes
+each request wherever you have decided it should go, and it records every
+request — including the ones Arbiter itself made — so what happened is
+inspectable afterwards rather than reconstructed from logs.
+
+## What Arbiter is for
+
+Its job, in one line: **see what is actually happening.** A proxy that hides its
+decisions is worse than no proxy, so nothing here is invisible by design. A
+request that failed to route, a request a guardrail refused, a call Arbiter made
+to a model to classify something — all of them are requests, and all of them
+leave a row you can look at. `?errors` on the request list, the Discovery page,
+and a session's turn-by-turn transcript are three views onto the same store.
+
+Concretely, it gives you:
+
+- **Every request recorded, with the reason it was routed that way.** Each row
+  carries a one-line rationale (`policy router "policy": domain="code_generation"
+  effort="" capabilities=[] cost_class="" -> alias "cheap-claude" -> claude/haiku`),
+  so a routing decision never has to be guessed from the response.
+- **Routing you write in config, not in code.** Classifiers turn a request into
+  independent axes (`domain`, `effort`, `cost_class`, `capabilities`); aliases
+  name a target; policy rules match on the axes. Stacked conditions, not a
+  bag of `if` statements.
+- **One endpoint in front of many providers.** OpenAI-shaped and Anthropic-shaped
+  requests both come in; either wire format can go out, to any mix of cloud
+  providers and local runtimes.
+- **Cross-format translation.** A Hermes conversation (OpenAI wire) can be served
+  by Claude (Anthropic wire) and vice versa. Attachments survive the trip.
+- **Guardrails as composable hooks.** System-prompt injection, rate limiting, and
+  stripping client-injected preamble text are three instances of one mechanism.
+- **A spend and latency record.** Cost, token counts, cache reads, and per-request
+  latency are stored per request, aggregatable by provider, model, epoch, and
+  session.
+
+## What Arbiter deliberately is not
+
+These are design decisions, not a backlog. Re-proposing them is re-litigating
+something already settled.
+
+- **Not multi-user.** It is built for one operator: a single-user deployment,
+  single-digit concurrency at worst, about one client at a time. Machinery sized
+  for multi-tenant traffic — sharding, collision guardrails, per-tenant quotas —
+  is deliberately absent.
+- **No authentication inside the app.** Access control belongs to the
+  deployment: a tailnet plus a reverse proxy doing `forward_auth`. The one
+  in-app affordance is a presence-only header check on `/admin/*` so your proxy
+  can gate it. The admin surface binds to loopback by default for the same
+  reason.
+- **Not a router for arbitrary client metadata.** Routing keys on the request
+  itself, not on client identity. Session affinity prefers a header the client
+  actually sends (`X-Session-Id` by default); when there isn't one, Arbiter
+  derives a stable key by hashing the conversation's own prefix — system prompt
+  plus the first text-bearing user turn — rather than inventing an identifier.
+  When that prefix is too short to be distinctive (a bare `"hi"` and nothing
+  else) it declines to pin at all, because merging two unrelated conversations
+  is worse than not grouping them.
+- **Not an embedded platform.** Memory, search, and MCP hosting stay external
+  services reached over HTTP. Arbiter proxies and observes; it does not become
+  the thing being observed.
+- **Currently out of scope:** `/v1/audio/*` (multipart file uploads — a
+  different ingress shape from this pipeline's JSON-in → JSON/SSE-out) and
+  `/v1/embeddings`. Neither is called by the clients in use today. These are
+  "not now" rather than "never" — they would each be a new ingress shape, not a
+  variation on an existing one.
+
+## Not built yet
+
+Real gaps, tracked on the issue board rather than silently dropped. Listed so a
+reader does not discover them as surprises.
+
+- **`/v1/responses`** (the OpenAI Responses API). Codex CLI v0.116+ uses it
+  *exclusively* and no longer calls `/chat/completions`, so Codex cannot use
+  Arbiter as a backend today. HTTP/SSE is sufficient — no WebSocket server is
+  needed — but it is a real protocol adapter (its own `input` request shape, its
+  own typed event stream, `previous_response_id` continuity), not an alias.
+- **Anthropic client-facing parsing of attachments.** Images and documents
+  arriving on the Anthropic endpoint are dropped by the translator today. The
+  Anthropic *upstream* direction works; this is the inbound client direction.
+- **Cache counters on the wire.** The store records cache-read and cache-write
+  tokens, but neither outbound usage object carries a cache breakdown back to
+  the client, and the inbound Anthropic *streaming* parser does not read the
+  cache counters (the non-streaming one does). So a streamed Claude reply is
+  recorded with zero cache tokens, and a client cannot see caching working.
+- **Empirical cost and latency.** Provider-*reported* cost is captured; latency
+  is recorded per request. The interface for an empirical cost/latency lookup
+  exists and is the seam a measured implementation would fill.
+- **Sub-agent attribution.** Linking a child request to the parent that spawned
+  it needs a schema column whose shape isn't known until a multi-agent client is
+  instrumented. Deferred rather than half-designed.
+- **`score` and `min_confidence`** on the decision-model classifier: the
+  scoring primitive and the confidence gate.
+
+## Where to start
+
+- **New to this?** **[docs/getting-started.md](docs/getting-started.md)** — build
+  it, give it a provider, send a request, see the row it left.
+
+The rest of the documentation is being lifted out of this file into `docs/` a
+section at a time. Until a section has moved, it is still below — this is the
+current table of contents, not the target one:
+
+- **Pointing a client at it:** [Endpoints](#endpoints), [Attachments](#attachments-images-pdfs-documents),
+  [What a stream relays](#what-a-stream-relays), [Prompt caching on the
+  Anthropic path](#prompt-caching-on-the-anthropic-path), [Session
+  affinity](#session-affinity)
+- **Deciding where requests go:** [Routing](#routing), [Group selection
+  strategies](#group-selection-strategies), [LLM-backed
+  classification](#llm-backed-classification), [Decision-model
+  classification](#decision-model-classification-type-decisions),
+  [Matching a request's own text](#matching-a-requests-own-text-match),
+  [Structural capability detection](#structural-capability-detection-detect)
+- **Every config key:** [Configuration](#configuration)
+- **Reading what it recorded:** [Event store](#event-store), [Admin surface and
+  access](#admin-surface-and-access), [The live tail](#the-live-tail),
+  [Grouping](#grouping-a-run-of-streamed-turns-is-one-line),
+  [Discovery](#discovery-the-blocks-that-recur)
+- **Controlling what goes through:** [Guardrails](#guardrails), [Rate
+  limiting](#rate-limiting), [Prompt
+  rewriting](#prompt-rewriting-client-injected-prompts)
+
+---
+
 ## Building
 
 All development happens in devenv (the host is not expected to have a Go

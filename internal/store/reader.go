@@ -38,15 +38,53 @@ func OpenReader(path string) (*Reader, error) {
 // Close releases the reader's database handle.
 func (r *Reader) Close() error { return r.db.Close() }
 
-// Window is a time range for a query. Since is the inclusive lower bound.
+// Window is a time range for a query. Since is the inclusive lower bound;
+// Until is the *exclusive* upper bound, and a zero Until means "open ended" —
+// every row at or after Since, which is what every caller predating the
+// Overview page's compare mode wants and gets without saying so.
+//
+// The half-open shape [Since, Until) is deliberate: it makes two adjacent
+// windows tile without double-counting the row that sits exactly on the
+// boundary, which is precisely what compare mode does (an anchor's before-side
+// ends where its after-side begins). A closed upper bound would count that row
+// twice and quietly inflate both sides of every delta.
+//
+// Both bounds bind as time.Time. The ts column is TEXT holding Go's
+// time.Time.String() layout, and the sqlite driver binds a time.Time to that
+// same layout, so string comparison and chronological order agree — verified
+// against the live store before Until was added (a bound at a known instant
+// partitions the table exactly: the >= and < counts sum to the total).
 type Window struct {
 	Since time.Time
+	Until time.Time
 }
 
 // WindowFrom turns an operator-friendly duration ("24h", "7d" handled by the
-// caller) into a window ending now.
+// caller) into a window ending now. The upper bound is left zero rather than
+// set to time.Now(): "now" moves between the call and the query, and an
+// open-ended window is both cheaper and exactly what a trailing window means.
 func WindowFrom(d time.Duration) Window {
 	return Window{Since: time.Now().UTC().Add(-d)}
+}
+
+// Bounded reports whether the window has an upper bound at all, so a query
+// builder can skip the clause instead of binding a zero time that would match
+// nothing.
+func (w Window) Bounded() bool { return !w.Until.IsZero() }
+
+// tsClause renders the window's own SQL predicate against a ts column, plus
+// the args to bind for it. The column is named by the caller because some
+// queries join and must qualify it (`r.ts`) while most do not.
+//
+// It exists so the half-open convention above is written once. Every query
+// that grew an upper bound got it by calling this rather than by hand-editing
+// its WHERE, which is what keeps "exclusive upper bound" a property of the
+// type instead of a habit each query might break.
+func (w Window) tsClause(col string) (string, []interface{}) {
+	if !w.Bounded() {
+		return col + " >= ?", []interface{}{w.Since}
+	}
+	return col + " >= ? AND " + col + " < ?", []interface{}{w.Since, w.Until}
 }
 
 // OverallStats is the headline over a window.

@@ -42,12 +42,13 @@ var funcs = stdhtml.FuncMap{
 	// coloured and sized without the template doing arithmetic or holding the
 	// thresholds; overviewURL/nodeURL keep query-string assembly out of the
 	// template, same reason requestsForBlock does.
-	"cacheClass":   cacheGaugeClass,
-	"pctWidth":     pctWidth,
-	"overviewURL":  overviewURL,
-	"nodeURL":      nodeURL,
-	"sinceChoices": sinceChoices,
-	"activeSince":  activeSince,
+	"cacheClass":    cacheGaugeClass,
+	"pctWidth":      pctWidth,
+	"overviewURL":   overviewURL,
+	"nodeURL":       nodeURL,
+	"sinceChoices":  sinceChoices,
+	"activeSince":   activeSince,
+	"sinceLabelFor": sinceLabelFor,
 	// requestsForBlock builds the drill-down link from a repeated block to the
 	// requests containing it. A func rather than an inline expression because a
 	// template must not be assembling a query string by hand.

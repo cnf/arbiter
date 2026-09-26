@@ -23,57 +23,79 @@ JS: it is the one piece of real arithmetic on this page, so it belongs somewhere
 
 {{define "overview-body"}}
 <div id="overview-body" class="overview-body{{if eq .Mode "compare"}} compare-on{{end}}">
+  {{/* One form, one submit. Mode is derived from whether an anchor is set
+  rather than chosen by a separate button pair: with two controls, picking a
+  change in "single" mode did nothing and picking "compare" with no change
+  submitted straight to a 400. Clearing the change is how you get back to a
+  single window, and that is the only way the two can't contradict. */}}
   <form class="toolbar" method="get" action="/admin/ui/overview">
-    {{/* The mode switch is two submit buttons rather than JS: each is a real
-    GET with its own parameters, so a compared view is a URL you can keep. */}}
-    <div class="seg">
-      <button type="submit" name="mode" value="single"
-              class="{{if eq .Mode "single"}}active{{end}}">Single window</button>
-      <button type="submit" name="mode" value="compare"
-              class="{{if eq .Mode "compare"}}active{{end}}"
-              {{if not .Epochs}}{{if not .AnchorRaw}}disabled
-              title="no config changes recorded to compare against"{{end}}{{end}}>Compare</button>
-    </div>
-
-    <label class="tb-field">
+    <label class="tb-field{{if .SpanIgnoresWindow}} inert{{end}}">
       <span>window</span>
-      <select name="since">
+      <select name="since"{{if .SpanIgnoresWindow}} disabled{{end}}>
         {{$active := activeSince .SinceRaw}}
-        {{range sinceChoices}}<option value="{{.}}"{{if eq . $active}} selected{{end}}>{{sinceLabel .}}</option>{{end}}
+        {{$cmp := eq .Mode "compare"}}
+        {{range sinceChoices}}<option value="{{.}}"{{if eq . $active}} selected{{end}}>{{sinceLabelFor . $cmp}}</option>{{end}}
       </select>
+      {{/* With "since the change" the window duration is not consulted: both
+      sides are measured from the anchor to now. The control is disabled and says
+      so rather than sitting there looking live — a filter that silently stops
+      applying is indistinguishable from a broken one. */}}
+      {{if .SpanIgnoresWindow}}<em class="inert-note">set by the change</em>{{end}}
     </label>
+    {{/* A disabled select submits nothing, so the value is carried explicitly.
+    Without this, switching span from "since the change" to "one window each
+    side" would silently reset the window to its default. */}}
+    {{if .SpanIgnoresWindow}}<input type="hidden" name="since" value="{{activeSince .SinceRaw}}">{{end}}
 
     {{/* The anchor picker: real config-change boundaries, newest first. Arbiter
     reloads on config file change, so consecutive editor saves land as a burst
     of epochs seconds apart — store.ConfigEpochs collapses each burst to the
     config that actually served traffic, which is why an entry can say
-    "settled after N saves". */}}
+    "settled after N saves". Choosing one switches the page into compare mode;
+    the blank option switches it back. */}}
     <label class="tb-field anchor">
-      <span>config change</span>
+      <span>compare across</span>
       <select name="anchor">
-        <option value="">— pick a change —</option>
+        <option value="">— nothing, show one window —</option>
         {{range .Epochs}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
       </select>
     </label>
 
+    {{/* A real datetime picker, for a moment that is not a config change — a
+    deploy, an upstream incident, "when I noticed it got slow". It overrides the
+    select when both are set (the handler reads `anchor_at` last), which is why
+    the two are visibly separate controls rather than one ambiguous field. */}}
     <label class="tb-field">
-      <span>compare</span>
+      <span>or a moment</span>
+      <input type="datetime-local" name="anchor_at" value="{{.AnchorLocal}}"
+             step="60" title="compare across an arbitrary moment, UTC">
+    </label>
+
+    {{if eq .Mode "compare"}}
+    <label class="tb-field">
+      <span>span</span>
       <select name="span">
         <option value="to_now"{{if eq .Span "to_now"}} selected{{end}}>since the change, vs. the same span before</option>
         <option value="fixed"{{if eq .Span "fixed"}} selected{{end}}>one window each side of the change</option>
       </select>
     </label>
+    {{end}}
+
+    <button class="tb-apply" type="submit">apply</button>
 
     <div class="spacer"></div>
 
+    {{/* What you are looking at, stated rather than implied. In compare mode
+    both windows are named with real bounds; in single mode the one window is.
+    The label is built server-side from the windows that were actually queried,
+    so it cannot drift from the data below it. */}}
     {{if eq .Mode "compare"}}
       <span class="vs-pill" title="the earlier window">{{.BeforeLabel}}</span>
       <span class="vs-text">vs</span>
       <span class="range-pill accent" title="the later window">{{.AfterLabel}}</span>
     {{else}}
-      <span class="range-pill accent">{{.SinceLabel}} → {{.UntilLabel}}</span>
+      <span class="range-pill accent" title="the window being shown">{{.SinceLabel}} → {{.UntilLabel}}</span>
     {{end}}
-    <button class="tb-apply" type="submit">apply</button>
   </form>
 
   {{if .StoreDisabled}}

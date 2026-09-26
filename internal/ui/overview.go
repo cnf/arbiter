@@ -39,6 +39,14 @@ const overviewDefaultWindow = 24 * time.Hour
 const overviewMaxEpochAnchors = 30
 
 // overviewMode is how the page is being read: one window, or two compared.
+//
+// It is *derived* from whether an anchor was given, not set by a separate
+// control. An earlier version had a Single/Compare button pair alongside an
+// anchor select, which produced three defects at once: picking an anchor in
+// single mode did nothing (so the selection looked ignored), clicking Compare
+// with no anchor submitted straight to a 400, and after either one the form
+// re-rendered without the selection so it was unclear what was on screen. One
+// input cannot disagree with itself.
 type overviewMode string
 
 const (
@@ -141,12 +149,31 @@ type overviewView struct {
 	// Compare-mode inputs, echoed for the form.
 	AnchorRaw  string
 	AnchorTime time.Time
-	Span       anchorSpan
-	SpanRaw    string
+
+	// AnchorLocal is the anchor in the layout a datetime-local input needs
+	// (no zone, no seconds), so the free-form picker reopens on the value in
+	// play rather than blank.
+	AnchorLocal string
+
+	Span    anchorSpan
+	SpanRaw string
+
+	// AnchorIsListed reports whether the anchor in play is one of the offered
+	// config changes. When false the anchor came from the free-form field, and
+	// the select must show its neutral option rather than appearing to have
+	// selected something.
+	AnchorIsListed bool
 
 	// BeforeLabel/AfterLabel describe the two compared windows for the toolbar.
 	BeforeLabel string
 	AfterLabel  string
+
+	// SpanIgnoresWindow reports that the window duration is not being applied,
+	// which happens with span=to_now: both sides are measured from the anchor
+	// to now instead. The toolbar disables and annotates the window control
+	// rather than leaving it looking live — a control that silently stops
+	// mattering is indistinguishable from one that is broken.
+	SpanIgnoresWindow bool
 
 	KPIs []kpi
 
@@ -211,15 +238,35 @@ func (h *Handler) OverviewHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		since = d
 	}
+	// SinceRaw is echoed into the window select, so it must hold a value the
+	// select actually offers. Empty means "the default", and the default's
+	// Duration.String() form ("24h0m0s") matches no option — which left the
+	// control showing "last 1h" on a page rendering 24h of data.
+	if view.SinceRaw == "" {
+		view.SinceRaw = defaultSinceChoice
+	}
 
-	switch raw := q.Get("mode"); raw {
-	case "", string(modeSingle):
-		view.Mode = modeSingle
-	case string(modeCompare):
+	// Mode follows the anchor: an anchor means compare, no anchor means single.
+	// There is no separate mode parameter to contradict it.
+	//
+	// Two inputs can supply it — the config-change select (`anchor`) and the
+	// free-form datetime picker (`anchor_at`). The picker wins when both are
+	// set, because that is the one the operator just typed into: the select
+	// still carries its previous value on submit, so preferring it would make
+	// the picker appear to do nothing.
+	anchorRaw := q.Get("anchor")
+	if at := q.Get("anchor_at"); at != "" {
+		anchorRaw = at
+	}
+	if anchorRaw != "" {
+		t, err := parseAnchor(anchorRaw)
+		if err != nil {
+			h.fail(w, r, http.StatusBadRequest,
+				"the compare moment must be a timestamp like 2026-09-23T19:08 — got "+anchorRaw)
+			return
+		}
+		view.AnchorTime = t
 		view.Mode = modeCompare
-	default:
-		h.fail(w, r, http.StatusBadRequest, `mode must be "single" or "compare"`)
-		return
 	}
 
 	if raw := q.Get("span"); raw != "" {
@@ -234,23 +281,15 @@ func (h *Handler) OverviewHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The anchor is required in compare mode and ignored otherwise. Parsed as
-	// RFC3339 because that is what the picker emits and what a datetime-local
-	// input can be normalised to; a bare "YYYY-MM-DDTHH:MM" is accepted too,
-	// since that is exactly what the browser control produces.
-	if view.Mode == modeCompare {
-		raw := q.Get("anchor")
-		if raw == "" {
-			h.fail(w, r, http.StatusBadRequest, "anchor is required in compare mode")
-			return
-		}
-		t, err := parseAnchor(raw)
-		if err != nil {
-			h.fail(w, r, http.StatusBadRequest,
-				"anchor must be an RFC3339 timestamp or YYYY-MM-DDTHH:MM")
-			return
-		}
-		view.AnchorTime = t
+	// AnchorRaw is echoed into the form. It is normalised to the picker's own
+	// format rather than passed through verbatim, so a hand-typed
+	// "2026-09-23T19:08" still matches the option whose value is the RFC3339
+	// form — otherwise the select silently reopens on "— pick a change —" and
+	// the selection looks ignored.
+	if !view.AnchorTime.IsZero() {
+		view.AnchorRaw = view.AnchorTime.Format(time.RFC3339)
+		// The datetime-local input needs its own layout: no zone, no seconds.
+		view.AnchorLocal = view.AnchorTime.Format("2006-01-02T15:04")
 	}
 
 	if h.reader == nil {
@@ -283,6 +322,11 @@ func (h *Handler) OverviewHandler(w http.ResponseWriter, r *http.Request) {
 		flowWindow = after
 		view.SinceLabel = fmtWindowEdge(after.Since)
 		view.UntilLabel = untilLabel(after)
+		// With span=to_now the after-side runs to now and the before-side
+		// matches its elapsed length, so the window duration is not consulted
+		// at all. Saying so is the point: a control that silently stops
+		// applying is exactly the confusion this round is fixing.
+		view.SpanIgnoresWindow = view.Span == spanToNow
 	default:
 		flowWindow = store.Window{Since: time.Now().UTC().Add(-since)}
 		sum, serr := h.reader.SummarizeWindow(r.Context(), flowWindow)
@@ -314,6 +358,11 @@ func (h *Handler) OverviewHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view.Epochs = h.epochChoices(r, view.AnchorTime)
+	for _, e := range view.Epochs {
+		if e.Selected {
+			view.AnchorIsListed = true
+		}
+	}
 
 	h.render(w, r, "overview", "overview-body", view)
 }
@@ -345,10 +394,18 @@ func (h *Handler) epochChoices(r *http.Request, selected time.Time) []epochChoic
 			// the one that actually served traffic.
 			label += fmt.Sprintf(" · settled after %d saves", a.Merged)
 		}
+		// Selection is decided on the *formatted* value, not on time.Equal.
+		// The option's value is RFC3339, which carries no sub-second part, so a
+		// stored timestamp's nanoseconds are lost in the round trip and an
+		// Equal comparison against the reparsed value always fails — the select
+		// then reopened blank and the choice read as ignored. Seeded test data
+		// hid this because its timestamps have zero nanoseconds; live rows do
+		// not.
+		value := a.Started.Format(time.RFC3339)
 		out = append(out, epochChoice{
-			Value:    a.Started.Format(time.RFC3339),
+			Value:    value,
 			Label:    label,
-			Selected: !selected.IsZero() && a.Started.Equal(selected),
+			Selected: !selected.IsZero() && selected.Format(time.RFC3339) == value,
 		})
 	}
 	return out
@@ -749,11 +806,35 @@ func nodeURL(id, since, anchor, span string) string {
 // sinceChoices are the trailing-window presets the range control offers.
 func sinceChoices() []string { return []string{"1h", "6h", "24h", "72h", "168h", "720h"} }
 
+// defaultSinceChoice is the option the window select opens on, as the *string
+// the select offers* rather than overviewDefaultWindow.String().
+//
+// Those differ: Duration.String() renders 24h as "24h0m0s", which matches no
+// option value, so the select fell back to displaying its first entry ("last
+// 1h") while the page rendered 24 hours of data. The two must be the same
+// literal, and this constant is checked against overviewDefaultWindow by
+// TestDefaultSinceChoiceIsOffered.
+const defaultSinceChoice = "24h"
+
+// sinceLabelFor names a window duration for the select, and says what the
+// duration *does* in each mode — the same "168h" means "the last 7 days" on a
+// single window and "7 days either side of the change" in a compare, and a
+// control whose meaning shifts silently under a mode is the one thing a reader
+// cannot recover from the page.
+func sinceLabelFor(raw string, compare bool) string {
+	if compare {
+		return raw + " each side"
+	}
+	return "last " + raw
+}
+
 // activeSince renders the window duration for a form value, so the select
-// reopens on what is actually in play.
+// reopens on what is actually in play. An empty raw value means the handler
+// applied the default, which is the option literal rather than the Duration's
+// own String() form (see defaultSinceChoice).
 func activeSince(raw string) string {
 	if raw == "" {
-		return overviewDefaultWindow.String()
+		return defaultSinceChoice
 	}
 	return raw
 }

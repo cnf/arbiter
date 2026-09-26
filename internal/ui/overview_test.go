@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"regexp"
 	"strings"
 	"testing"
@@ -95,19 +96,278 @@ func TestOverviewKPIStripShowsTheAgreedMetrics(t *testing.T) {
 	}
 }
 
-// Compare mode needs an anchor, and says so rather than quietly showing a
-// single-window page — a page that answers a different question than the one
-// asked is worse than an error here, since the whole point is attributing a
-// change to a cause.
-func TestOverviewCompareRequiresAnAnchor(t *testing.T) {
+// Compare mode is entered by picking an anchor, not by a separate mode control.
+// The earlier shape — a Single/Compare button pair beside an anchor select —
+// produced three defects at once, all reported from real use: picking a change
+// in single mode did nothing, clicking Compare with no change submitted straight
+// to a 400 error page, and the form re-rendered without the selection so it was
+// unclear what was on screen.
+func TestOverviewModeFollowsTheAnchor(t *testing.T) {
+	base := timeAt()
+	anchor := base.Add(time.Hour)
+	h, _ := newSeededHandler(t,
+		flowEventFor(base, "coding", "claude", "sonnet-5", 100, 10, 0, 1.0, 200),
+		flowEventFor(anchor.Add(time.Second), "coding", "claude", "sonnet-5", 100, 10, 800, 0.5, 200),
+	)
+
+	// An anchor alone switches to compare — no mode parameter needed.
+	withAnchor := "/admin/ui/overview?since=" + testWindow +
+		"&anchor=" + anchor.Format(time.RFC3339) + "&span=fixed"
+	rec := serve(t, h, "GET", withAnchor, false)
+	if rec.Code != 200 {
+		t.Fatalf("anchored request = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "compare-on") {
+		t.Error("an anchor did not put the page into compare mode")
+	}
+
+	// No anchor means a single window, and must not 400.
+	rec = serve(t, h, "GET", "/admin/ui/overview?since="+testWindow, false)
+	if rec.Code != 200 {
+		t.Fatalf("unanchored request = %d, want 200", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "compare-on") {
+		t.Error("a page with no anchor claims to be comparing")
+	}
+
+	// There is no mode parameter left to contradict the anchor: an unknown one
+	// is ignored rather than accepted as a second source of truth.
+	rec = serve(t, h, "GET", "/admin/ui/overview?since="+testWindow+"&mode=compare", false)
+	if rec.Code != 200 {
+		t.Errorf("a stray mode parameter = %d, want it ignored with 200", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "compare-on") {
+		t.Error("mode=compare without an anchor entered compare mode; the anchor is the only switch")
+	}
+}
+
+// A selection must survive its own submit. Reported from real use: "pick a
+// change gets reset whenever you click apply, makes it seem like it gets
+// ignored".
+func TestOverviewSelectionsPersistAcrossSubmit(t *testing.T) {
+	base := timeAt()
+	anchor := base.Add(time.Hour)
+
+	// Sub-second precision on purpose: the store's real timestamps carry
+	// nanoseconds, and the picker's option value is RFC3339, which does not.
+	// A selection check that round-trips through that format must therefore
+	// compare formatted values — comparing time.Equal against the reparsed
+	// value always fails, which is precisely the "my pick got reset" bug.
+	// Seeded data with clean timestamps hid it.
+	nanos := 123456789 * time.Nanosecond
+
+	var events []store.Event
+	for i := 0; i < 3; i++ {
+		ev := flowEventFor(base.Add(time.Duration(i)*time.Second+nanos), "coding", "claude", "sonnet-5", 100, 10, 0, 1.0, 200)
+		ev.ConfigEpoch = "before"
+		events = append(events, ev)
+	}
+	for i := 0; i < 3; i++ {
+		ev := flowEventFor(anchor.Add(time.Duration(i)*time.Second+nanos), "coding", "claude", "sonnet-5", 100, 10, 800, 0.5, 200)
+		ev.ConfigEpoch = "after"
+		events = append(events, ev)
+	}
+	h, _ := newSeededHandler(t, events...)
+
+	// The window select must mark the window actually in play.
+	body := serve(t, h, "GET", "/admin/ui/overview?since=72h", false).Body.String()
+	if !strings.Contains(body, `<option value="72h" selected>`) {
+		t.Error("the window select did not reopen on the chosen window")
+	}
+
+	// And on the default page it must mark the default rather than leaving the
+	// browser to display the first option — the bug that made the control look
+	// inert: Duration.String() gives "24h0m0s", which matches no option value.
+	body = serve(t, h, "GET", "/admin/ui/overview", false).Body.String()
+	if !strings.Contains(body, `<option value="`+defaultSinceChoice+`" selected>`) {
+		t.Errorf("the default page marks no window option selected, so the control shows the "+
+			"wrong value; want %q selected", defaultSinceChoice)
+	}
+
+	// An anchor picked from the list must come back selected, so it is visible
+	// that it took effect.
+	epochs, err := h.reader.ConfigEpochs(context.Background(),
+		store.Window{Since: base.Add(-time.Hour)}, 10)
+	if err != nil {
+		t.Fatalf("epochs: %v", err)
+	}
+	if len(epochs) == 0 {
+		t.Fatal("no config anchors seeded")
+	}
+	picked := epochs[0]
+	body = serve(t, h, "GET", "/admin/ui/overview?since="+testWindow+
+		"&anchor="+picked.Started.Format(time.RFC3339)+"&span=fixed", false).Body.String()
+	if !strings.Contains(body, `value="`+picked.Started.Format(time.RFC3339)+`" selected`) {
+		t.Error("the picked config change did not come back selected; it reads as ignored")
+	}
+
+	// The span select must persist too.
+	if !strings.Contains(body, `<option value="fixed" selected>`) {
+		t.Error("the span select did not reopen on the chosen span")
+	}
+}
+
+// A free-form moment works, and reopens in the datetime input. Reported: "there
+// is no actual date picker. is that intentional?" — it was not.
+func TestOverviewAcceptsAFreeFormMoment(t *testing.T) {
+	base := timeAt()
+	anchor := base.Add(time.Hour)
+	h, _ := newSeededHandler(t,
+		flowEventFor(base, "coding", "claude", "sonnet-5", 100, 10, 0, 1.0, 200),
+		flowEventFor(anchor.Add(time.Second), "coding", "claude", "sonnet-5", 100, 10, 800, 0.5, 200),
+	)
+
+	// The layout a datetime-local input actually submits: no zone, no seconds.
+	local := anchor.Format("2006-01-02T15:04")
+	rec := serve(t, h, "GET", "/admin/ui/overview?since="+testWindow+
+		"&anchor_at="+local+"&span=fixed", false)
+	if rec.Code != 200 {
+		t.Fatalf("free-form moment = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "compare-on") {
+		t.Error("a free-form moment did not enter compare mode")
+	}
+	if !strings.Contains(body, `name="anchor_at" value="`+local+`"`) {
+		t.Errorf("the datetime input did not reopen on %q", local)
+	}
+
+	// The free-form field wins over a stale select value, because it is the one
+	// just typed into — the select still carries its previous value on submit.
+	other := base.Add(30 * time.Minute).Format(time.RFC3339)
+	body = serve(t, h, "GET", "/admin/ui/overview?since="+testWindow+
+		"&anchor="+other+"&anchor_at="+local+"&span=fixed", false).Body.String()
+	if !strings.Contains(body, `name="anchor_at" value="`+local+`"`) {
+		t.Error("the select overrode the datetime field; the field the operator typed into must win")
+	}
+
+	// A malformed moment is a 400 that says what a good one looks like, rather
+	// than the previous opaque "anchor must be an RFC3339 timestamp".
+	rec = serve(t, h, "GET", "/admin/ui/overview?anchor_at=whenever", false)
+	if rec.Code != 400 {
+		t.Errorf("malformed moment = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "2026-09-23T19:08") {
+		t.Error("the 400 does not show the expected timestamp shape")
+	}
+}
+
+// The window control's label and liveness must match what it is doing. Reported:
+// "can select window: 1h but the range pill will always say -> now, so what does
+// last x time actually do? can it or can it not be used in conjunction with the
+// other filters?"
+func TestOverviewWindowControlSaysWhatItDoes(t *testing.T) {
+	base := timeAt()
+	anchor := base.Add(time.Hour)
+	h, _ := newSeededHandler(t,
+		flowEventFor(base, "coding", "claude", "sonnet-5", 100, 10, 0, 1.0, 200),
+		flowEventFor(anchor.Add(time.Second), "coding", "claude", "sonnet-5", 100, 10, 800, 0.5, 200),
+	)
+
+	// Single window: the duration is a trailing window, labelled "last N".
+	body := serve(t, h, "GET", "/admin/ui/overview?since=72h", false).Body.String()
+	if !strings.Contains(body, "last 72h") {
+		t.Error("single mode does not label the window as a trailing window")
+	}
+
+	// span=fixed: the duration applies to both sides, so it stays live and its
+	// label changes to say so.
+	body = serve(t, h, "GET", "/admin/ui/overview?since=72h&anchor="+
+		anchor.Format(time.RFC3339)+"&span=fixed", false).Body.String()
+	if !strings.Contains(body, "72h each side") {
+		t.Error("compare+fixed does not label the window as applying to each side")
+	}
+	if strings.Contains(body, "set by the change") {
+		t.Error("compare+fixed wrongly marks the window control inert; it does apply")
+	}
+
+	// span=to_now: the duration is genuinely not consulted, so the control is
+	// disabled and annotated instead of sitting there looking live.
+	body = serve(t, h, "GET", "/admin/ui/overview?since=72h&anchor="+
+		anchor.Format(time.RFC3339)+"&span=to_now", false).Body.String()
+	if !strings.Contains(body, "set by the change") {
+		t.Error("span=to_now ignores the window but the control does not say so")
+	}
+	if !strings.Contains(body, "disabled") {
+		t.Error("span=to_now ignores the window but the control is still enabled")
+	}
+	// The value is still carried, so switching span back does not silently
+	// reset the window.
+	if !strings.Contains(body, `type="hidden" name="since" value="72h"`) {
+		t.Error("the ignored window value is not carried forward, so switching span would lose it")
+	}
+}
+
+// Both compared windows are named with real bounds, so "what am I looking at"
+// is answered on the page rather than inferred. Reported: "because things reset,
+// it's not clear what you are actually looking at".
+func TestOverviewNamesTheWindowsItShows(t *testing.T) {
+	base := timeAt()
+	anchor := base.Add(time.Hour)
+	h, _ := newSeededHandler(t,
+		flowEventFor(base, "coding", "claude", "sonnet-5", 100, 10, 0, 1.0, 200),
+		flowEventFor(anchor.Add(time.Second), "coding", "claude", "sonnet-5", 100, 10, 800, 0.5, 200),
+	)
+
+	body := serve(t, h, "GET", "/admin/ui/overview?since=1h&anchor="+
+		anchor.Format(time.RFC3339)+"&span=fixed", false).Body.String()
+
+	// The anchor is 2026-09-16 06:00; with span=fixed and since=1h the two
+	// windows are 05:00→06:00 and 06:00→07:00. Both bounds must be on the page.
+	for _, want := range []string{"2026-09-16 05:00", "2026-09-16 06:00", "2026-09-16 07:00"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the toolbar does not name window bound %q", want)
+		}
+	}
+	// And the single-window case names its own bounds, ending at "now".
+	body = serve(t, h, "GET", "/admin/ui/overview?since=1h", false).Body.String()
+	if !strings.Contains(body, "→ now") {
+		t.Error("a trailing window does not say it runs to now")
+	}
+}
+
+// defaultSinceChoice must be a real option and mean the same thing as
+// overviewDefaultWindow. They are two literals and drifted apart once already,
+// which is what made the window select display "last 1h" on a 24h page.
+func TestDefaultSinceChoiceIsOffered(t *testing.T) {
+	d, err := time.ParseDuration(defaultSinceChoice)
+	if err != nil {
+		t.Fatalf("defaultSinceChoice %q is not a duration: %v", defaultSinceChoice, err)
+	}
+	if d != overviewDefaultWindow {
+		t.Errorf("defaultSinceChoice is %v but overviewDefaultWindow is %v — the select would "+
+			"open on a window the page is not showing", d, overviewDefaultWindow)
+	}
+	var found bool
+	for _, c := range sinceChoices() {
+		if c == defaultSinceChoice {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("defaultSinceChoice %q is not one of the offered options %v",
+			defaultSinceChoice, sinceChoices())
+	}
+}
+
+// A bad parameter is a 400 naming it, never a silent fallback to a default.
+func TestOverviewRejectsBadParameters(t *testing.T) {
 	h, _ := newSeededHandler(t, flowEventFor(timeAt(), "a", "p", "m", 10, 1, 0, 0.1, 200))
 
-	rec := serve(t, h, "GET", "/admin/ui/overview?mode=compare", false)
-	if rec.Code != 400 {
-		t.Fatalf("compare without an anchor = %d, want 400", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "anchor") {
-		t.Error("the 400 does not name the missing parameter")
+	for _, tc := range []struct{ q, want string }{
+		{"?since=7d", "since"},  // not a Go duration
+		{"?since=-1h", "since"}, // negative
+		{"?anchor=nope", "timestamp"},
+		{"?anchor=2026-09-20T10:00:00Z&span=diagonal", "span"},
+	} {
+		rec := serve(t, h, "GET", "/admin/ui/overview"+tc.q, false)
+		if rec.Code != 400 {
+			t.Errorf("%s = %d, want 400", tc.q, rec.Code)
+			continue
+		}
+		if !strings.Contains(rec.Body.String(), tc.want) {
+			t.Errorf("%s: the 400 does not name %q", tc.q, tc.want)
+		}
 	}
 }
 
@@ -129,7 +389,7 @@ func TestOverviewCompareShowsDeltas(t *testing.T) {
 	}
 	h, _ := newSeededHandler(t, events...)
 
-	url := "/admin/ui/overview?mode=compare&anchor=" + anchor.Format("2006-01-02T15:04:05") + "&span=fixed&since=1h"
+	url := "/admin/ui/overview?anchor=" + anchor.Format("2006-01-02T15:04:05") + "&span=fixed&since=1h"
 	rec := serve(t, h, "GET", url, false)
 	if rec.Code != 200 {
 		t.Fatalf("compare = %d, want 200: %s", rec.Code, rec.Body.String())
@@ -148,28 +408,6 @@ func TestOverviewCompareShowsDeltas(t *testing.T) {
 	// Both window labels are shown, so it is clear what is being compared.
 	if !strings.Contains(body, "vs") {
 		t.Error("compare mode does not show the two windows it compared")
-	}
-}
-
-// A bad parameter is a 400 naming it, never a silent fallback to a default.
-func TestOverviewRejectsBadParameters(t *testing.T) {
-	h, _ := newSeededHandler(t, flowEventFor(timeAt(), "a", "p", "m", 10, 1, 0, 0.1, 200))
-
-	for _, tc := range []struct{ q, want string }{
-		{"?since=7d", "since"},     // not a Go duration
-		{"?since=-1h", "since"},    // negative
-		{"?mode=sideways", "mode"}, // unknown mode
-		{"?mode=compare&anchor=nope", "anchor"},
-		{"?mode=compare&anchor=2026-09-20T10:00:00&span=diagonal", "span"},
-	} {
-		rec := serve(t, h, "GET", "/admin/ui/overview"+tc.q, false)
-		if rec.Code != 400 {
-			t.Errorf("%s = %d, want 400", tc.q, rec.Code)
-			continue
-		}
-		if !strings.Contains(rec.Body.String(), tc.want) {
-			t.Errorf("%s: the 400 does not name %q", tc.q, tc.want)
-		}
 	}
 }
 

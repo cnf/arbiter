@@ -248,50 +248,19 @@ func (h *Handler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			expiresAt, hasPin := pinExpiry[s.Key]
+			_, hasPin := pinExpiry[s.Key]
 			if view.LiveOnly && !hasPin {
 				// No pin at all within the grace floor already applied to
 				// the query — this lane is neither live nor recently live.
 				continue
 			}
 
-			kindFilter := ""
-			if view.ClientOnly {
-				kindFilter = "client"
-			}
-			rows, err := h.reader.ListRequests(ctx, store.RequestFilter{
-				SessionKey: s.Key,
-				Since:      w0.Since,
-				Limit:      maxRequestRows,
-				Kind:       kindFilter,
-			})
+			lane, err := h.buildLane(ctx, s, pinExpiry, now, w0.Since, view.ClientOnly)
 			if err != nil {
 				h.logger.LogError(ctx, "error", err,
 					map[string]interface{}{"phase": "admin_ui_sessions_lane", "session": s.Key})
 				h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
 				return
-			}
-
-			lane := laneRow{SessionSummary: s, ShortKey: shortSessionKey(s.Key)}
-			if hasPin {
-				lane.PinExpiresAt = expiresAt
-				lane.Active = !expiresAt.Before(now)
-			}
-			lane.Preview, lane.PreviewNote = h.lanePreview(ctx, rows)
-
-			views := make([]requestRowView, 0, len(rows))
-			for _, row := range rows {
-				views = append(views, requestRowView{RequestRow: row, ShortSession: lane.ShortKey})
-			}
-			lane.Lines = attachTraceChildren(foldRequestLines(views))
-			for i := range lane.Lines {
-				lane.Lines[i].OpenHref = sessionNodeHref(s.Key, lane.Lines[i].Head)
-				for j := range lane.Lines[i].Children {
-					lane.Lines[i].Children[j].OpenHref = sessionNodeHref(s.Key, lane.Lines[i].Children[j].Head)
-				}
-			}
-			for _, line := range lane.Lines {
-				lane.SatelliteCount += len(line.Children)
 			}
 
 			if needle != "" {
@@ -320,6 +289,55 @@ func (h *Handler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.render(w, r, "sessions", "session-rows", view)
+}
+
+// buildLane assembles one session's lane row: its requests (folded/nested
+// exactly as the requests page computes them), its opening-message preview,
+// and its Active/PinExpiresAt fields from an already-fetched pin-expiry map.
+//
+// Factored out of SessionsHandler so the live-tail poller (see
+// SessionsTailHandler) can rebuild exactly one lane — the one whose pin
+// changed — without duplicating the per-lane query and folding logic the
+// full page render already has. clientOnly mirrors the toolbar's own
+// "client only" chip; the poller passes the same value the page was loaded
+// with, carried in the tail's own query string.
+func (h *Handler) buildLane(ctx context.Context, s store.SessionSummary, pinExpiry map[string]time.Time, now time.Time, since time.Time, clientOnly bool) (laneRow, error) {
+	kindFilter := ""
+	if clientOnly {
+		kindFilter = "client"
+	}
+	rows, err := h.reader.ListRequests(ctx, store.RequestFilter{
+		SessionKey: s.Key,
+		Since:      since,
+		Limit:      maxRequestRows,
+		Kind:       kindFilter,
+	})
+	if err != nil {
+		return laneRow{}, err
+	}
+
+	lane := laneRow{SessionSummary: s, ShortKey: shortSessionKey(s.Key)}
+	if expiresAt, hasPin := pinExpiry[s.Key]; hasPin {
+		lane.PinExpiresAt = expiresAt
+		lane.Active = !expiresAt.Before(now)
+	}
+	lane.Preview, lane.PreviewNote = h.lanePreview(ctx, rows)
+
+	views := make([]requestRowView, 0, len(rows))
+	for _, row := range rows {
+		views = append(views, requestRowView{RequestRow: row, ShortSession: lane.ShortKey})
+	}
+	lane.Lines = attachTraceChildren(foldRequestLines(views))
+	for i := range lane.Lines {
+		lane.Lines[i].OpenHref = sessionNodeHref(s.Key, lane.Lines[i].Head)
+		for j := range lane.Lines[i].Children {
+			lane.Lines[i].Children[j].OpenHref = sessionNodeHref(s.Key, lane.Lines[i].Children[j].Head)
+		}
+	}
+	for _, line := range lane.Lines {
+		lane.SatelliteCount += len(line.Children)
+	}
+	return lane, nil
 }
 
 // lanePreview finds a lane's opening message: the earliest kind="client" row

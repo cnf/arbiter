@@ -263,6 +263,7 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	// keys are opaque and may be arbitrary client-supplied header values, so a
 	// `/` or a `:` in one would break the route. This mirrors /admin/stats/session.
 	r.HandleFunc("/admin/ui/sessions", arbiterhttp.Gate(forwardAuthHeader, adminUI.SessionsHandler)).Methods("GET")
+	r.HandleFunc("/admin/ui/sessions/tail", arbiterhttp.Gate(forwardAuthHeader, adminUI.SessionsTailHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/session", arbiterhttp.Gate(forwardAuthHeader, adminUI.SessionHandler)).Methods("GET")
 
 	// Overview (#54): the routing-flow page. The old pivot explorer and its

@@ -76,6 +76,24 @@
     }
   }
 
+  // clearSelectionIfWithin is laneLive.js's hook: a lane it just replaced
+  // with a freshly rendered copy may have held the current selection, and
+  // the DOM node `selected` points at is now detached (removed by the
+  // swap). Left alone the panel would keep showing a node that no longer
+  // exists on screen, and Escape/click-elsewhere would throw reaching for
+  // its .closest(...) on a detached element. Rather than trying to
+  // re-select the reappearing node (which may have shifted position or
+  // folded into a different node as new turns arrive), the simple and
+  // honest behaviour is to fall back to the aggregate view — the same
+  // state a click on the lane background produces.
+  window.ArbiterLaneDetail = {
+    clearSelectionIfWithin: function (row) {
+      if (selected && row.contains(selected)) {
+        clearSelection();
+      }
+    },
+  };
+
   function select(node) {
     if (selected === node) {
       clearSelection();

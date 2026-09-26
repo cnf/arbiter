@@ -809,6 +809,51 @@ LIMIT ?`
 	return out, rows.Err()
 }
 
+// SessionSummaryFor is Sessions' per-row aggregate for exactly one session
+// key, over the same window shape (ts >= since, kind = 'client').
+//
+// It exists for the live-tail poller (see ui.SessionsTailHandler): Sessions
+// itself is a bulk, windowed group-by over every conversation, which is the
+// right query for a full page load but the wrong one for "refresh this one
+// lane whose pin just moved" — running the whole index every 5 seconds to
+// pick one row back out of it would scale with total session count instead
+// of with the (small, single-digit) number of currently-pinned sessions a
+// poll actually needs. ok is false when the session has no client rows in
+// the window at all (a pin can outlive the window that produced it, or name
+// a session whose only rows are non-client and therefore excluded here, same
+// as Sessions).
+func (r *Reader) SessionSummaryFor(ctx context.Context, key string, since time.Time) (SessionSummary, bool, error) {
+	const q = `
+SELECT session_key,
+    COUNT(*),
+    MIN(ts), MAX(ts),
+    CAST(COALESCE(SUM(input_tokens), 0)  AS INTEGER),
+    CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER),
+    COALESCE(SUM(cost_usd), 0),
+    CAST(COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS INTEGER),
+    COALESCE(group_concat(DISTINCT provider), ''),
+    COUNT(DISTINCT provider || '/' || model)
+FROM requests
+WHERE ts >= ? AND session_key = ? AND kind = 'client'
+GROUP BY session_key`
+
+	var (
+		s              SessionSummary
+		first, lastRaw interface{}
+	)
+	err := r.db.QueryRowContext(ctx, q, since, key).Scan(&s.Key, &s.Turns, &first, &lastRaw,
+		&s.InputTokens, &s.OutputTokens, &s.CostUSD, &s.Errors, &s.Providers, &s.Models)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SessionSummary{}, false, nil
+	}
+	if err != nil {
+		return SessionSummary{}, false, fmt.Errorf("session summary for %q: %w", key, err)
+	}
+	s.FirstSeen = formatTime(first)
+	s.LastSeen = formatTime(lastRaw)
+	return s, true, nil
+}
+
 // SessionlessRequestCount counts the requests in a window that have no session
 // key at all. It is what keeps those requests visible in the sessions index
 // rather than silently absent from it.

@@ -13,7 +13,7 @@ same convention filters.html/req-rows.html use on the requests page — so a
 filter change updates the count and the window note together with the list,
 not just the rows. */}}
 {{define "session-rows"}}
-<div id="lane-list">
+<div id="lane-list" data-live-src="/admin/ui/sessions/tail">
   <form class="toolbar" hx-get="/admin/ui/sessions" hx-target="#lane-list" hx-swap="outerHTML"
         hx-push-url="true" hx-indicator="#lanesBusy" hx-trigger="submit, change">
     <input class="search" type="text" name="q" value="{{.Query}}"

@@ -10,6 +10,7 @@
 <script src="/admin/ui/static/popover.js?v={{.AssetVersion}}" defer></script>
 <script src="/admin/ui/static/showmore.js?v={{.AssetVersion}}" defer></script>
 <script src="/admin/ui/static/laneDetail.js?v={{.AssetVersion}}" defer></script>
+<script src="/admin/ui/static/laneLive.js?v={{.AssetVersion}}" defer></script>
 <script src="/admin/ui/static/laneTimeline.js?v={{.AssetVersion}}" defer></script>
 <script src="/admin/ui/static/transcript.js?v={{.AssetVersion}}" defer></script>
 <script src="/admin/ui/static/discovery.js?v={{.AssetVersion}}" defer></script>
@@ -24,7 +25,7 @@
     <nav>
       {{range .Nav}}<a href="{{.Href}}"{{if eq .Name $.Active}} class="on"{{end}}>
         <span class="lbl">{{.Name}}</span>
-        <span class="stat{{if .ErrVal}} errval{{end}}">{{.Stat}}<span class="u">{{.Unit}}</span></span>
+        <span class="stat{{if .ErrVal}} errval{{end}}"{{if eq .Name "Sessions"}} data-nav-stat="sessions"{{end}}>{{.Stat}}<span class="u">{{.Unit}}</span></span>
       </a>{{end}}
     </nav>
     <div class="actions">

@@ -193,7 +193,7 @@ func TestNavSessionsStatReflectsActivePins(t *testing.T) {
 	h := New(r, logger)
 
 	body := serve(t, h, "GET", "/admin/ui/sessions", false).Body.String()
-	if !strings.Contains(body, `<span class="stat">1<span class="u">active</span></span>`) {
+	if !strings.Contains(body, `<span class="stat" data-nav-stat="sessions">1<span class="u">active</span></span>`) {
 		t.Errorf("nav bar's Sessions stat should read 1 active (one live pin), got:\n%s", body)
 	}
 }

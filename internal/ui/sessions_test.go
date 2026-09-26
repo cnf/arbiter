@@ -37,7 +37,11 @@ func TestSessionsLaneRendersRequestsAndSatellites(t *testing.T) {
 	}
 	h, _ := newSeededHandler(t, events...)
 
-	body := serve(t, h, "GET", "/admin/ui/sessions", false).Body.String()
+	// live_only=0: these lanes carry no affinity pin, so the live-only
+	// filter (on by default) would hide them before this test ever gets
+	// to check the render — this test is about foldRequestLines/
+	// attachTraceChildren's node classes, not the filter.
+	body := serve(t, h, "GET", "/admin/ui/sessions?live_only=0", false).Body.String()
 
 	for _, want := range []string{
 		// Both lanes rendered, each under its own session id (both keys are
@@ -72,7 +76,10 @@ func TestSessionsLanePreviewNoteWhenCaptureOff(t *testing.T) {
 	// (no pipeline sets it), which is exactly the case lanePreview's first
 	// branch handles.
 
-	body := serve(t, h, "GET", "/admin/ui/sessions", false).Body.String()
+	// live_only=0: this session has no affinity pin, and the live-only
+	// filter (on by default) would hide it before this test could check
+	// the preview-note rendering, which is what it's actually about.
+	body := serve(t, h, "GET", "/admin/ui/sessions?live_only=0", false).Body.String()
 	if !strings.Contains(body, "content capture is off") {
 		t.Errorf("expected the capture-off preview note, got:\n%s", body)
 	}
@@ -93,14 +100,18 @@ func TestSessionsErrorsFilterRoundTrips(t *testing.T) {
 			Provider: "p", Model: "m", StatusCode: 500, Ts: now.Add(time.Second), LatencyMs: 1},
 	)
 
+	// live_only=0 on every request here: this test is about the
+	// errors-only radio, and neither seeded session has an affinity pin,
+	// so the live-only filter (on by default) would hide both regardless
+	// of the errors filter under test.
 	// Default (no ?errors param at all): both lanes present.
-	body := serve(t, h, "GET", "/admin/ui/sessions", false).Body.String()
+	body := serve(t, h, "GET", "/admin/ui/sessions?live_only=0", false).Body.String()
 	if !strings.Contains(body, "sess-ok") || !strings.Contains(body, "sess-bad") {
 		t.Fatalf("default view should show both sessions, got:\n%s", body)
 	}
 
 	// "errors only" (?errors=1): only the errored lane.
-	body = serve(t, h, "GET", "/admin/ui/sessions?errors=1", false).Body.String()
+	body = serve(t, h, "GET", "/admin/ui/sessions?errors=1&live_only=0", false).Body.String()
 	if strings.Contains(body, "sess-ok") {
 		t.Errorf("errors=1 should hide the clean session, got:\n%s", body)
 	}
@@ -110,7 +121,7 @@ func TestSessionsErrorsFilterRoundTrips(t *testing.T) {
 
 	// "all" (?errors=, empty value — what the toolbar's own radio submits):
 	// must behave identically to no param at all, showing both lanes again.
-	body = serve(t, h, "GET", "/admin/ui/sessions?errors=", false).Body.String()
+	body = serve(t, h, "GET", "/admin/ui/sessions?errors=&live_only=0", false).Body.String()
 	if !strings.Contains(body, "sess-ok") || !strings.Contains(body, "sess-bad") {
 		t.Errorf("errors= (the toolbar's \"all\" radio) should show both sessions again, got:\n%s", body)
 	}
@@ -190,7 +201,11 @@ func TestSessionsLaneHotDotReflectsActivePin(t *testing.T) {
 	t.Cleanup(func() { _ = r.Close() })
 	h := New(r, logger)
 
-	body := serve(t, h, "GET", "/admin/ui/sessions", false).Body.String()
+	// live_only=0: this test is about the hot dot, not the live-only
+	// filter, and sess-cold (no pin at all) would otherwise be dropped by
+	// the filter's new default-on behavior before it ever got a chance to
+	// prove the dot is absent.
+	body := serve(t, h, "GET", "/admin/ui/sessions?live_only=0", false).Body.String()
 
 	hotIdx := strings.Index(body, "sess-hot")
 	coldIdx := strings.Index(body, "sess-cold")
@@ -213,5 +228,85 @@ func TestSessionsLaneHotDotReflectsActivePin(t *testing.T) {
 	}
 	if strings.Contains(laneSlice(coldIdx), `class="hot"`) {
 		t.Errorf("sess-cold has no live pin and must not carry the hot dot, got:\n%s", laneSlice(coldIdx))
+	}
+}
+
+// "live only" (default on, per its own doc comment on sessionsView.LiveOnly)
+// must show a lane with a live pin, keep showing a lane whose pin expired
+// recently enough to be inside liveOnlyGraceWindow, and drop a lane whose
+// pin expired before that window (or that never had one) — then explicit
+// live_only=0 must bring everything back, including the one with no pin at
+// all. This is the filter itself, not the hot dot (TestSessionsLaneHotDotReflectsActivePin
+// covers that instead — the dot and the filter share a data source but ask
+// two different questions about it).
+func TestSessionsLiveOnlyFilter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	logger := logging.NewStdoutLogger("error")
+
+	w, err := store.NewSQLiteWriter(path, logger)
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	now := time.Now().UTC()
+	w.Record(store.Event{TraceID: "t1", SessionKey: "sess-live", Kind: "client",
+		Provider: "p", Model: "m", StatusCode: 200, Ts: now, LatencyMs: 1})
+	w.Record(store.Event{TraceID: "t2", SessionKey: "sess-lingering", Kind: "client",
+		Provider: "p", Model: "m", StatusCode: 200, Ts: now.Add(time.Second), LatencyMs: 1})
+	w.Record(store.Event{TraceID: "t3", SessionKey: "sess-longgone", Kind: "client",
+		Provider: "p", Model: "m", StatusCode: 200, Ts: now.Add(2 * time.Second), LatencyMs: 1})
+	w.Record(store.Event{TraceID: "t4", SessionKey: "sess-nopin", Kind: "client",
+		Provider: "p", Model: "m", StatusCode: 200, Ts: now.Add(3 * time.Second), LatencyMs: 1})
+
+	if err := w.SavePin(context.Background(), store.AffinityPin{
+		SessionKey: "sess-live", RequestedModel: "auto", Provider: "p", Model: "m",
+		ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SavePin sess-live: %v", err)
+	}
+	if err := w.SavePin(context.Background(), store.AffinityPin{
+		SessionKey: "sess-lingering", RequestedModel: "auto", Provider: "p", Model: "m",
+		ExpiresAt: now.Add(-liveOnlyGraceWindow / 2),
+	}); err != nil {
+		t.Fatalf("SavePin sess-lingering: %v", err)
+	}
+	if err := w.SavePin(context.Background(), store.AffinityPin{
+		SessionKey: "sess-longgone", RequestedModel: "auto", Provider: "p", Model: "m",
+		ExpiresAt: now.Add(-liveOnlyGraceWindow * 2),
+	}); err != nil {
+		t.Fatalf("SavePin sess-longgone: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	r, err := store.OpenReader(path)
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	h := New(r, logger)
+
+	// Default (no live_only param at all): on, per LiveOnly's own default.
+	body := serve(t, h, "GET", "/admin/ui/sessions", false).Body.String()
+	if !strings.Contains(body, "sess-live") {
+		t.Errorf("default (live-only on) should show a lane with a live pin, got:\n%s", body)
+	}
+	if !strings.Contains(body, "sess-lingering") {
+		t.Errorf("default (live-only on) should still show a lane inside its grace window, got:\n%s", body)
+	}
+	if strings.Contains(body, "sess-longgone") {
+		t.Errorf("default (live-only on) must hide a lane whose pin expired past the grace window, got:\n%s", body)
+	}
+	if strings.Contains(body, "sess-nopin") {
+		t.Errorf("default (live-only on) must hide a lane with no pin at all, got:\n%s", body)
+	}
+
+	// Explicit live_only=0: everything, including the never-pinned lane.
+	body = serve(t, h, "GET", "/admin/ui/sessions?live_only=0", false).Body.String()
+	for _, want := range []string{"sess-live", "sess-lingering", "sess-longgone", "sess-nopin"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("live_only=0 should show every lane regardless of pin state, missing %q in:\n%s", want, body)
+		}
 	}
 }

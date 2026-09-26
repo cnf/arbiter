@@ -16,6 +16,22 @@ import (
 // for an unexported constant.
 const defaultWindow = 7 * 24 * time.Hour
 
+// affinityDefaultTTL is the pin TTL routing hands out when a provider config
+// doesn't set its own — see internal/pipeline. The store only ever persists
+// the resulting expires_at, not the TTL that produced it (per-provider TTLs
+// can differ), so this is the one place the UI has to assume a number rather
+// than read it back.
+const affinityDefaultTTL = 25 * time.Hour
+
+// liveOnlyGraceWindow is how long a lane keeps showing under "live only"
+// after its pin expires, instead of disappearing the instant the pin does.
+// A hard cutoff at expiry would make an in-progress read (you're mid-reply,
+// the tab is open) blink out from under you; 2x the default pin TTL gives
+// enough slack for that without the filter drifting far from "live" as a
+// word — the tradeoff explicitly asked for over an exact per-pin TTL, which
+// the store doesn't retain.
+const liveOnlyGraceWindow = 2 * affinityDefaultTTL
+
 // sessionKeyDisplayLen is how much of a session key the UI shows.
 //
 // A content-derived key is 64 hex characters (a sha256 of the client's system
@@ -62,11 +78,16 @@ type laneRow struct {
 
 	// Active is true when this session has a live affinity pin — the same
 	// "still within cache TTL" definition the nav bar's "N active" stat
-	// uses (store.ActiveSessionCount / store.ActiveSessionKeys). Drives the
-	// lane header's subtle "hot" dot: not merely "had a request recently",
-	// but "the next turn, if there is one, still reuses this session's
-	// prompt cache instead of re-routing from scratch."
+	// uses. Drives the lane header's subtle "hot" dot: not merely "had a
+	// request recently", but "the next turn, if there is one, still reuses
+	// this session's prompt cache instead of re-routing from scratch."
 	Active bool
+
+	// PinExpiresAt is this session's affinity pin expiry, when it has one
+	// (zero otherwise) — Active's underlying timestamp, kept alongside the
+	// bool so the live-updates poller can tell the client when a lane's
+	// dot is due to go dark without re-deriving it server-side per poll.
+	PinExpiresAt time.Time
 
 	// Lines is this session's requests, folded and nested exactly as the
 	// requests page computes them: a streamed run collapses into one Run
@@ -123,6 +144,14 @@ type sessionsView struct {
 	ErrorsOnly bool
 	ClientOnly bool
 
+	// LiveOnly hides lanes with no live (or recently-expired, within
+	// liveOnlyGraceWindow) affinity pin. Defaults to on: a query string
+	// with no live_only param at all means "on", so a first visit to the
+	// page opens already filtered to the sessions a next turn would still
+	// route consistently for — everything else is history, not "live".
+	// An explicit live_only=0 is the only way to see the unfiltered list.
+	LiveOnly bool
+
 	// InView totals the lanes actually rendered (post-filter), for the
 	// detail panel's default "in view" stat grid.
 	InViewSessions int
@@ -160,6 +189,7 @@ func (h *Handler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 		Query:      q.Get("q"),
 		ErrorsOnly: q.Get("errors") == "1",
 		ClientOnly: q.Has("client_only"),
+		LiveOnly:   q.Get("live_only") != "0",
 	}
 	view.Title = "sessions"
 
@@ -175,19 +205,30 @@ func (h *Handler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		view.Capped = len(sessions) == view.Limit
 
-		activeKeys, err := h.reader.ActiveSessionKeys(ctx)
+		pinExpiry, err := h.reader.SessionPinExpiry(ctx, time.Now().Add(-liveOnlyGraceWindow))
 		if err != nil {
 			// Degrade rather than fail: the lane list itself loaded fine, and
-			// the "hot" dot is a courtesy annotation on top of it — losing it
-			// for one request is preferable to losing the whole page.
+			// the "hot" dot / live-only filter are courtesy features on top
+			// of it — losing them for one request is preferable to losing
+			// the whole page. Degrading here means every lane reads as
+			// "not active" and live_only=1 (the default) would show nothing;
+			// that is a visible, honest failure mode, not a silent wrong one.
 			h.logger.LogError(ctx, "warn", err,
-				map[string]interface{}{"phase": "admin_ui_sessions_active_keys"})
-			activeKeys = map[string]bool{}
+				map[string]interface{}{"phase": "admin_ui_sessions_pin_expiry"})
+			pinExpiry = map[string]time.Time{}
 		}
+		now := time.Now()
 
 		needle := strings.ToLower(strings.TrimSpace(view.Query))
 		for _, s := range sessions {
 			if view.ErrorsOnly && s.Errors == 0 {
+				continue
+			}
+
+			expiresAt, hasPin := pinExpiry[s.Key]
+			if view.LiveOnly && !hasPin {
+				// No pin at all within the grace floor already applied to
+				// the query — this lane is neither live nor recently live.
 				continue
 			}
 
@@ -208,7 +249,11 @@ func (h *Handler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			lane := laneRow{SessionSummary: s, ShortKey: shortSessionKey(s.Key), Active: activeKeys[s.Key]}
+			lane := laneRow{SessionSummary: s, ShortKey: shortSessionKey(s.Key)}
+			if hasPin {
+				lane.PinExpiresAt = expiresAt
+				lane.Active = !expiresAt.Before(now)
+			}
 			lane.Preview, lane.PreviewNote = h.lanePreview(ctx, rows)
 
 			views := make([]requestRowView, 0, len(rows))

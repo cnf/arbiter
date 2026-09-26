@@ -772,32 +772,40 @@ func (r *Reader) ActiveSessionCount(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
-// ActiveSessionKeys returns the session keys with a live affinity pin — the
-// same "still within cache TTL" definition ActiveSessionCount uses, just as
-// a set instead of a count. It backs the Sessions lane list's "hot" dot: one
-// query per page load (not per lane), so checking whether a given lane is
-// active is a map lookup, not a second query per row.
+// SessionPinExpiry returns every session's pin expiry, for pins that expired
+// no earlier than since — i.e. still live, or expired but recently enough to
+// be within a caller-chosen grace window. It is the one query that answers
+// both "is this session still active" (expires_at in the result is >= now)
+// and "is this session still within its post-expiry grace window" (present
+// in the result at all), without a second round trip for each question.
 //
-// A store with no live pins returns an empty, non-nil map — the caller does
-// not need to special-case "nothing is active" separately from "the query
-// failed", which is the same nil-vs-empty distinction ActiveSessionCount's
-// own doc calls out.
-func (r *Reader) ActiveSessionKeys(ctx context.Context) (map[string]bool, error) {
-	const q = `SELECT session_key FROM affinity_pins WHERE expires_at >= ?`
+// This is the Sessions lane list's data source for both the "hot" dot and
+// the "live only" filter: a lane whose key is absent from the result (its
+// pin expired earlier than since, or it was never pinned) drops out of the
+// filtered view entirely, while one still present but past its own expiry
+// lingers — see sessions.go's liveGraceWindow for why a session does not
+// vanish from the list the instant its pin expires.
+//
+// A store with no matching affinity_pins rows returns an empty, non-nil map
+// — the caller does not need to special-case "nothing is live" separately
+// from "the query failed".
+func (r *Reader) SessionPinExpiry(ctx context.Context, since time.Time) (map[string]time.Time, error) {
+	const q = `SELECT session_key, expires_at FROM affinity_pins WHERE expires_at >= ?`
 
-	rows, err := r.db.QueryContext(ctx, q, time.Now().UTC())
+	rows, err := r.db.QueryContext(ctx, q, since.UTC())
 	if err != nil {
-		return nil, fmt.Errorf("active session keys: %w", err)
+		return nil, fmt.Errorf("session pin expiry: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	out := map[string]bool{}
+	out := map[string]time.Time{}
 	for rows.Next() {
 		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, fmt.Errorf("scan active session key: %w", err)
+		var expiresAt time.Time
+		if err := rows.Scan(&key, &expiresAt); err != nil {
+			return nil, fmt.Errorf("scan session pin expiry: %w", err)
 		}
-		out[key] = true
+		out[key] = expiresAt
 	}
 	return out, rows.Err()
 }

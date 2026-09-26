@@ -51,15 +51,19 @@ overrides both. Loopback is the default on purpose — see
 | `GET /admin/stats/session?key=` | one session's trajectory      |
 | `GET /admin/stats/tools` | tool-name usage counts            |
 | `GET /admin/requests` | request list, newest first           |
-| `GET /admin/ui/requests/tail` | the live tail's poll endpoint (UI-internal, unstable) |
 | `GET /admin/content/repeated` | blocks recurring across requests |
 | `GET /admin/ui/` | the admin web UI (302 to `/overview`)   |
 | `GET /admin/ui/overview` | routing flow, cost/cache KPIs, config-change compare |
 | `GET /admin/ui/overview/node?id=` | one flow node's detail drawer (fragment) |
+| `GET /admin/ui/overview/node/close` | closes that drawer (fragment) |
 | `GET /admin/ui/sessions` | conversations, one row each          |
 | `GET /admin/ui/session?key=` | one conversation, turn by turn  |
+| `GET /admin/ui/requests/tail` | the live tail's poll endpoint (UI-internal, unstable — see the note below) |
+| `GET /admin/ui/requests/{id}/guardrail-diff?msg=…&pos=…` | line-level diff of one preamble (fragment) |
 | `GET /admin/ui/content/repeated` | blocks of content that recur across requests |
 | `GET /admin/ui/content/block?hash=…` | the requests containing one block |
+| `GET /admin/ui/content/block/body?hash=…` | one block's full body (fragment) |
+| `POST /admin/ui/content/repeated/state` | set a block's triage state (the only write under `/admin/ui/`) |
 
 ### Attachments (images, PDFs, documents)
 
@@ -1351,6 +1355,18 @@ arbitrary order. `/admin/requests/{id}` takes the `id` the list returns and
 adds the fields a list row omits (confidence, cache token counts, tool calls,
 inbound headers); `404` for an unknown id, `400` for a malformed one.
 
+This is the **JSON** surface, and it is the only one. The browser UI under
+`/admin/ui/` reads the same rows through `internal/ui`'s own handlers (see
+below); the request-list *page* it used to have was deleted in the newui
+rebuild, so `/admin/ui/requests` is a 404 — and `flatLineHref`
+(`internal/ui/requests.go`) still builds links to it, which is a real defect on
+the Sessions page's "open flat list" affordance, not a doc problem. **Known,
+unfixed, no ticket yet.**
+
+`?no_session` exists because an empty `?session=` means "any", so the requests
+with *no* session key (those whose affinity derivation declined to pin them)
+needed their own flag.
+
 Every row carries a `kind`: `"client"` for real traffic (the default and, so
 far, the only kind that exists in practice — `"classifier"` lands with the
 LLM-backed domain classifier), and later `"subagent"` will reuse
@@ -1359,10 +1375,10 @@ request is never hidden from the store or the detail/session views — the
 point is debuggability, not opacity — but it *is* excluded by default from
 `/admin/requests` (omit `?kind=` for client-only, pass `?kind=all` to see
 everything, or `?kind=<kind>` for an exact match) and unconditionally from
-every aggregate (`/admin/stats*`, the pivot table, the sessions index): a
+every aggregate (`/admin/stats*` and the sessions index): a
 classifier call's own tokens/cost/latency must not skew numbers meant to
 describe what a client actually asked for. The per-session trajectory
-(`/admin/ui/session?key=`) and a single request's own detail page are the
+(`/admin/ui/session?key=`) and a single request's own detail view are the
 exception — they show every kind, tagged, because a classifier call is most
 useful to see *in the context of the turn it informed*.
 
@@ -1399,38 +1415,20 @@ request. Declared first and `decisive: true`, a `kind:` signature also skips
 every model-backed classifier behind it, so an identified request pays for no
 classification call at all.
 
-**A title request is tied back to the session it named**, both in the store
-and in the admin UI (`/admin/ui/requests`), because on its own a title-gen row
-is an orphan — its own session key is derived from the conversation text and
-matches nothing else, so nothing links it to the conversation it titled without
-help. `Reader.ParentSessionForTitle` (`internal/store/discovery.go`) resolves
-the link in two tiers, tried in order:
-
-1. **Session-affinity header.** When `session_affinity.header` is configured
-   (see below) and the client sends it on both the title call and the real
-   turns — Hermes does this by design, calling it `session_affinity_header` on
-   its own side, and sends it on title-generation calls specifically — the
-   title request's own `session_key` *is* the parent's, an exact indexed
-   lookup.
-2. **Content-hash fallback**, tried only when the header match finds nothing:
-   joins on shared `role="user"` content-ref hashes against other requests,
-   excluding other title requests (so two title-gen retries of the same
-   opener never link to each other), and returns the best match by row count.
-   This tier needs `storage.capture_content: true` — there is nothing to hash
-   without it.
-
-The request list nests a resolved title line under its parent as a `Children`
-entry, the same rendering `attachTraceChildren` already uses to nest a
-classifier call under the request that spawned it (immediately above the
-parent row, since the page is newest-first and a title call is chronologically
-later than what it names). A title line that cannot be placed still renders —
-no request is ever hidden — with a tag explaining why: resolved but the parent
-session has no row on the current page, resolved-search genuinely found
-nothing, or (distinctly) the content-hash tier could not run at all because
-`capture_content` is off. The three read differently on purpose: with capture
-off, every title line would otherwise look identically "unmatched", which
-reads as the feature being broken rather than as an expected consequence of a
-storage setting.
+**A title request is nested into the lanes view under the session it named.**
+The two-tier resolution (`ParentSessionForTitle`) is described in "Admin web UI"
+above; what belongs here is the rendering rule. A resolved title line becomes a
+`Children` entry on its parent lane, the same rendering `attachTraceChildren`
+uses to nest a classifier call under the request that spawned it — and, since
+the lane is oldest-first within its own timeline while the title call is
+chronologically later than what it names, it sits immediately after the turn it
+titled. A title line that cannot be placed still renders — no request is ever
+hidden — with a tag explaining why: resolved but the parent session has no row in
+the window, resolved-search genuinely found nothing, or (distinctly) the
+content-hash tier could not run at all because `capture_content` is off. The
+three read differently on purpose: with capture off, every title line would
+otherwise look identically "unmatched", which reads as the feature being broken
+rather than as an expected consequence of a storage setting.
 
 Every request's inbound headers are captured and shown on its detail page —
 `User-Agent` is what tells two otherwise-identical requests apart by client.
@@ -1470,11 +1468,18 @@ always empty; `content` is the field that carries bodies.
 ### Admin web UI
 
 `internal/ui` serves a read-only browser over the same event store, under the
-same gate: `/admin/ui/requests` is the request list with the filters above as a
-real form, and `/admin/ui/requests/{id}` is one request in full with its
-captured content loaded lazily. It is HTML rather than JSON because the
-questions REQUIREMENTS §2 asks — what happened, to which conversation, at what
-cost — are answerable by reading rows, not by summing them.
+same gate. It is HTML rather than JSON because the questions REQUIREMENTS §2
+asks — what happened, to which conversation, at what cost — are answerable by
+reading rows, not by summing them.
+
+**The UI is a greenfield rebuild, not a port** (see `design/REDESIGN.md` and
+`DESIGN.md`). Every page template and asset from the previous generation was
+deleted rather than adapted, and the pages are landing one at a time; the four
+that exist are `/admin/ui/overview` (landing), `/admin/ui/sessions`,
+`/admin/ui/session?key=` and `/admin/ui/content/repeated` (+ its block
+drill-down). Anything the old UI did that is not on that list is not
+temporarily missing — it was removed on purpose and will be rebuilt fresh if it
+is wanted.
 
 It is a separate package from `internal/http` because it shares none of that
 package's concerns (wire formats, SSE flushing, the request hot path) and brings
@@ -1482,6 +1487,12 @@ its own embedded assets. Its dependencies are exactly `StatsHandler`'s: a
 `*store.Reader` and a logger. Nothing is fetched at runtime — `htmx` and our CSS
 are embedded in the binary (`internal/ui/static/`, see `THIRD_PARTY.md`), so the
 UI needs no network of its own and no JS build step.
+
+Templates are parsed **one set per page** (`internal/ui/ui.go`'s `pageFiles`),
+because Go's `html/template` cannot redefine a block name within a single set:
+a shared `{{define "content"}}` is only reachable that way. Parsing happens at
+construction, so a broken template fails at process start rather than on the
+first request to that page. Adding a page means adding its name to `pageFiles`.
 
 Three behaviours worth knowing, because they are deliberate and look like bugs
 otherwise:
@@ -1496,29 +1507,22 @@ otherwise:
   pointed directly at loopback gets a 401 on the CSS and sees an unstyled page.
   Through Caddy it is fine — the proxy injects the header on every request,
   assets included.
-- **Paging uses an opaque `?after=` cursor**, not `?before_ts=`. The honest
-  cursor is the row's stored timestamp text (`… +0000 UTC`), whose `+`
-  characters a query string is entitled to read as spaces; a client that does so
-  gets an empty page rather than an error. The token is base64 over
-  `ts \x00 id` and is URL-exact.
-- **A request's captured content defaults to the guardrailed form** — the text
-  that actually went upstream, not what the client sent — because that is what
-  answers "why did the model see this" for the vast majority of requests, where
-  the two are identical anyway. When a pre-guardrail did rewrite the request,
-  `/admin/ui/requests/{id}/content` shows a "show as sent" link that re-fetches
-  the fragment with `?as_sent=1` and swaps in the client's original instead; the
-  link only appears when the two forms actually differ, i.e. when
-  `content_refs` has a `request_guardrailed` row for that request. There is no
-  side-by-side diff yet — one view at a time — deliberately, until the UI gets
-  a broader pass.
+- **`/admin/ui/content/repeated/state` is the only write under `/admin/ui/`.**
+  Every other route there is a read, and the rebuild has kept that line. It is
+  registered with its own `Methods("POST")` the same way `/admin/reload` is, so
+  a fronting proxy's `forward_auth` gate can allow every GET under `/admin/ui/`
+  while still denying this one specifically, if it chooses to draw that line.
 
-`?no_session` was added to `/admin/requests` at the same time: an empty
-`?session=` means "any", so the requests with *no* session key (those whose
-affinity derivation declined to pin them) needed their own flag.
-
-**`/admin/ui/sessions` and `/admin/ui/session?key=`** are the conversation view.
+`/admin/ui/sessions` and `/admin/ui/session?key=` are the conversation view.
 The store records one row per *request*, but a conversation is the unit a client
 actually has, and the transcript is what makes the captured content readable.
+The index renders one *lane* per conversation — a header line (session id,
+counts, first-message preview, cost) above a full-width timeline of that
+session's requests, with collapsed streamed runs drawn as stack nodes. Clicking
+a node opens a detail panel; the timeline compresses its own nodes
+(`laneTimeline.js`) so a 20-request session fits the lane width instead of
+scrolling sideways.
+
 Two properties are worth knowing because they are deliberate:
 
 - **The index is windowed, the transcript is not.** Session turns and cost are
@@ -1543,6 +1547,45 @@ truncated to 10 with the full value in the tooltip and in every link. The
 truncation is display-only — a shortened key in an href would fetch the wrong
 conversation.
 
+**The grouping rule survives the rebuild** and now lives in the lanes view.
+Rows are folded by `foldRequestLines` (`internal/ui/requests.go`): one line per
+distinct thing that happened, keyed on session plus routing facts (provider,
+model, alias, status, request kind), with **only streamed runs folding**. A
+non-streamed request never joins a line with another. Two consequences that are
+deliberate rather than incidental: there is **no time window** (the gap between
+two turns is a tuning knob with no correct value, so identity binds a line, not
+proximity), and **a burst of one row per different session is not folded at
+all** — an upstream outage writes one failed row per conversation, which is
+genuinely 31 different things happening, not a repeat.
+
+Classifier calls are nested under the request that spawned them
+(`attachTraceChildren`), and a resolved title-generation request is nested under
+the conversation it named (`attachTitleChildren`). A line that cannot be placed
+still renders — no request is ever hidden — with a tag explaining why, because
+the three failure modes (no parent row on this page, resolved-search found
+nothing, and the content-hash tier could not run because `capture_content` is
+off) read identically as "unmatched" and mean different things.
+
+**A title request is tied back to the session it named**, both in the store and
+in the admin UI, because on its own a title-gen row is an orphan — its own
+session key is derived from the conversation text and matches nothing else, so
+nothing links it to the conversation it titled without help.
+`Reader.ParentSessionForTitle` (`internal/store/discovery.go`) resolves the link
+in two tiers, tried in order:
+
+1. **Session-affinity header.** When `session_affinity.header` is configured
+   (see below) and the client sends it on both the title call and the real
+   turns — Hermes does this by design, calling it `session_affinity_header` on
+   its own side, and sends it on title-generation calls specifically — the
+   title request's own `session_key` *is* the parent's, an exact indexed
+   lookup.
+2. **Content-hash fallback**, tried only when the header match finds nothing:
+   joins on shared `role="user"` content-ref hashes against other requests,
+   excluding other title requests (so two title-gen retries of the same
+   opener never link to each other), and returns the best match by row count.
+   This tier needs `storage.capture_content: true` — there is nothing to hash
+   without it.
+
 **`/admin/ui/overview`** answers two questions: where do requests actually go,
 and did the last config change make that better or worse.
 
@@ -1553,12 +1596,39 @@ Clicking any node opens a drawer with that node's rate/efficiency numbers, a
 cache-hit gauge, and the individual routes behind it.
 
 `?since=` takes a Go duration for the trailing window (default `24h`).
-`?mode=compare` switches to the before/after view and needs `?anchor=`, an
-RFC3339 timestamp; `?span=to_now` (default) measures the anchor to now against
-an equal span before it, and `?span=fixed` uses one `since`-long window on each
-side. An unparseable parameter is a 400 naming it, never a silent fallback —
-this page exists to attribute a change to a cause, so quietly answering a
-different question is worse than an error.
+
+**Compare mode is entered by choosing an anchor, not by a separate control.**
+There is no `?mode=` parameter: `?anchor=` (an RFC3339 timestamp) means compare,
+and its absence means one window. The earlier shape — a Single/Compare button
+pair beside the anchor select — let the two controls contradict each other, so
+picking a change in single mode silently did nothing and clicking Compare
+submitted without one. Deriving the mode from the anchor removes the contradiction
+structurally.
+
+The anchor comes from either of two inputs, and **the free-form one wins when both
+are set** (`?anchor_at=YYYY-MM-DDTHH:MM`, a real `datetime-local` picker, for a
+moment that is not a config change — a deploy, an upstream incident, "when I
+noticed it got slow"): the config-change select keeps its previous value on
+submit, so preferring it would make the picker look dead.
+
+`?span=` decides what the two windows are:
+
+- `to_now` (default) — the anchor to now, against an equal span before it.
+- `fixed` — one `since`-long window on each side of the anchor.
+
+With `span=to_now` the duration is genuinely unused, because both sides are
+measured from the anchor. The control is therefore **disabled and labelled "set
+by the change"** rather than left looking live, and its value is carried in a
+hidden field so switching span back does not lose it. A filter that silently
+stops applying is indistinguishable from a broken one — that was a real report,
+not a hypothetical.
+
+An unparseable parameter is a 400 naming it, never a silent fallback — this page
+exists to attribute a change to a cause, so quietly answering a different
+question is worse than an error.
+
+Both compared windows are named in the toolbar with their real bounds, built from
+the windows actually queried, so the label cannot drift from the data below it.
 
 Four things about its numbers are deliberate, and are also the reasons the page
 looks the way it does:
@@ -1633,11 +1703,20 @@ is enforcing reachability.
 
 ## The live tail
 
-`/admin/ui/requests` has a **live** control above the table: while it is on and
-the tab is visible, the page polls `/admin/ui/requests/tail` and prepends new
-requests as they arrive. It reports how many arrived and the time of the last
-poll, which is the point of watching one — a tail that has silently stopped looks
-exactly like a store with no traffic.
+**The tail's endpoint survives but no page mounts it.** `TailHandler` still
+serves `GET /admin/ui/requests/tail`, and `live.js` still implements the polling
+client, but `live.js` only activates on a `[data-tail-src]` element and nothing
+in the template tree renders one — the old requests page was its only mount
+point and the newui rebuild deleted that page. So the endpoint returns 200 and
+nothing ever calls it. This is dead-but-working, not broken, and it is the
+cheapest thing to re-mount when the rebuilt request list lands: the server half
+(cursor, cap, group placement) is tested and unchanged.
+
+What it does, for when it is re-mounted: while the control is on and the tab is
+visible, the page polls the endpoint and prepends new requests as they arrive. It
+reports how many arrived and the time of the last poll, which is the point of
+watching one — a tail that has silently stopped looks exactly like a store with
+no traffic.
 
 Three things about it are deliberate and each was wrong in a first version:
 
@@ -1660,64 +1739,48 @@ A poll is capped (50 rows) and returns the newest rows that fit, so a burst larg
 than that in one interval is truncated — reported as such rather than shown as a
 quiet period. The cap is bounded on purpose: an unbounded query is not a tail.
 
-The tail is only offered on the newest page. On a later page the newest row is not
-on screen, so "everything after what you are showing" would mean starting the view
-from the middle of history; the control is simply absent there.
+The tail was only ever offered on the newest page. On a later page the newest row
+is not on screen, so "everything after what you are showing" would mean starting
+the view from the middle of history; the control was simply absent there.
 
-**The tail follows the table's mode.** In the grouped list (below) a polled row is
-placed by its group: one that matches a line already on screen bumps that line's
-count and moves it to the top, and one that matches nothing becomes a line of its
-own. The server sends each row's group with the row, computed by the same function
+**The tail follows the table's mode.** In the grouped list a polled row is placed
+by its group: one that matches a line already on screen bumps that line's count
+and moves it to the top, and one that matches nothing becomes a line of its own.
+The server sends each row's group with the row, computed by the same function
 that folded the page, so the two cannot disagree about what a group is. In Flat
-mode every row is prepended as before. The mode travels on the tail's own query
-string, so a flat list gets a flat tail.
+mode every row was prepended as before. The mode travelled on the tail's own
+query string, so a flat list got a flat tail. (`?flat=1` was the requests page's
+own escape hatch and went with that page; the group-placement logic in
+`live.js` is still there for the rebuild to reuse.)
 
 ## Grouping: a run of streamed turns is one line
 
-`/admin/ui/requests` renders **one line per distinct thing that happened**, not one
-line per request. A streamed conversation writes a row per turn, so a working
-session filled the list with near-identical rows — measured on the live store, the
-newest 100 rows held **four** distinct lines (96 streamed turns across two
-sessions, plus four classifier calls), and the events worth seeing were scrolled
-off by the repeats. A line that stands for more than one request shows a count
-(`74×`) that is a link to the flat view of exactly those requests.
+The folding rule is described under "Admin web UI" above, where it now lives
+(the lanes view). Kept here are the two data points that motivated it, since they
+are the argument against ever adding a time threshold:
 
-**What counts as "the same thing happening again"** is the row's session plus its
-routing facts: session, provider, model, alias, status, request kind. Any change in
-those starts a new line, because each is an event the reader wants to see rather
-than a repeat to fold — a 502 among 200s is the most important row on the page, and
-a session that switched model mid-conversation is showing a re-route.
+A streamed conversation writes a row per turn, so a working session filled the
+old list with near-identical rows — measured on the live store, the newest 100
+rows held **four** distinct lines (96 streamed turns across two sessions, plus
+four classifier calls), and the events worth seeing were scrolled off by the
+repeats.
 
-**Only streamed runs fold.** A non-streamed request never joins a line with
-another: its own row is its own line, and a group of non-streamed requests renders
-one line per request exactly as the list always did.
+**No time window, ever.** The gap between two turns is a tuning knob with no
+correct value — measured merge counts climb smoothly with it (92 at 2s, 718 at
+5s, 1721 at 15s, 2356 at 30s) — so the design has no threshold to mis-set. What
+binds a line is identity, not proximity. The same measurement is why adding one
+later would be wrong rather than merely unnecessary: **a burst of one row per
+*different* session is not folded at all**, and that is the requirement doing the
+work rather than a happy accident. An upstream outage writes one failed row per
+conversation; measured, the 2026-09-17 burst was 31 sessions in one minute,
+nothing to fold. A time-window rule would have merged 1,152 cross-session pairs
+at 30s — that is, most of what it folded would have been different
+conversations.
 
-Three consequences worth stating, because each was a deliberate choice:
-
-- **There is no time window.** The gap between two turns is a tuning knob with no
-  correct value — measured merge counts climb smoothly with it (92 at 2s, 718 at
-  5s, 1721 at 15s, 2356 at 30s) — so the design has no threshold to mis-set. What
-  binds a line is identity, not proximity.
-- **A line's count is over the page, not the conversation.** Grouping folds the
-  rows that were loaded (100 by default), so `74×` means "74 rows on this page".
-  Rendering it as a total would misstate every other number beside it, so the page
-  says which it is. Flat mode and the count's own link fetch the reader's full 500
-  and render one row per request, so nothing is ever unreachable.
-- **A burst of one row per *different* session is not folded at all**, and this is
-  the requirement doing the work rather than a happy accident. An upstream outage
-  writes one failed row per conversation; measured, the 2026-09-17 burst was 31
-  sessions in one minute, nothing to fold. A time-window rule would have merged
-  1,152 cross-session pairs at 30s — that is, most of what it folded would have
-  been different conversations.
-
-**Unpinned requests never fold into each other.** A request with no session key is
-not in a conversation, so two of them have no demonstrated relationship and no
-claim of repetition holds. Their keys carry the row id, which makes each its own
-line.
-
-`?flat=1` is the whole feature's escape hatch: same filters, same window, one row
-per request. Every collapsed line's count is a link straight to it, filtered to
-that line's own conversation and status.
+**Unpinned requests never fold into each other.** A request with no session key
+is not in a conversation, so two of them have no demonstrated relationship and
+no claim of repetition holds. Their keys carry the row id, which makes each its
+own line.
 
 ## Discovery: the blocks that recur
 

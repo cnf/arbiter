@@ -307,7 +307,8 @@ to every page, not just Sessions.
   changes shape per page.
 - **Brand mark always links home.** A real `<a href>`, not a styled `<div>`
   — clicking the logo/wordmark from any page returns to the primary
-  landing page (currently Sessions; see Overview note below).
+  landing page, which is **Overview** (`/admin/ui/` 302s there; see the
+  Overview note below).
 - **Each nav item carries a live stat, not just a label** — two-line
   stack: an uppercase `label-caps` line, then a `data-mono` numeric/value
   line directly beneath it (`OVERVIEW → $18/24h`, `SESSIONS → 3 active`,
@@ -445,11 +446,22 @@ forward unchanged:
 
 ### Overview
 
-**Not designed yet.** The app-chrome header now surfaces a live `$/24h`
-stat for this nav item, which implies at minimum a cost-over-time view
-exists here, but no page layout, mockup, or structural requirement has
-been agreed. Flagged as probably-needed (confirmed used by real header
-navigation) but unconfirmed as actually-used-day-to-day by the operator.
+**Designed, built, and iterated once against real use.** The landing page is a
+routing-flow diagram (aliases on the left, models reached on the right, ribbon
+width = request share) above a KPI strip, with a config-change compare mode. The
+mockup that settled it is `design/overview-mockups/f3-overview-styled.html`; the
+authoritative description of behaviour is README's "Admin web UI" section, which
+is maintained — this note is design history.
+
+Two decisions here are worth keeping because they were not obvious:
+
+- **The header's `$/24h` stat is real**, not the mockup's `$18/24h` placeholder.
+- **Compare mode is entered by picking an anchor, not by a mode button.** The
+  first implementation had a Single/Compare button pair beside the anchor select
+  and the two could contradict each other — picking a change in single mode did
+  nothing, and clicking Compare submitted without an anchor and rendered a 400.
+  Mode is now *derived* from whether an anchor is set, which removed the whole
+  class of defect rather than patching the symptoms.
 
 ### Cross-page conventions
 

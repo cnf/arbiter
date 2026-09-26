@@ -93,8 +93,18 @@ body untruncated, not the old 8KB-capped/200-char-preview version;
 left open** — #50/#52 (shipped)/#53 (shipped)/#54/#55 close together
 after the user's own full-UI pass. #54 (Overview) is the only page in
 the batch left unported. Branch `newui` still has no upstream
-configured. Run `git log --oneline -1` and `gh issue list --state
-open` for the truth.
+configured. New §36 added 2026-09-26 (later), **now at `aedb979`** —
+**#54 (Overview) implemented and committed** across five commits
+(`325b03b` store layer, `dbacc38` burst-collapse fix, `ecc6299`
+summaries/compare, `26c358c` the page + the pivot/series/uPlot rip-out,
+`aedb979` the toolbar fix from the user's first real click-through);
+`aedb979` also carries a full documentation refresh. **Every page in
+the batch is now built** — the user's own full-UI pass is the only
+thing left before the batch closes. Two real defects surfaced during
+the doc pass and are **unfixed, no ticket**: every `flatLineHref` link
+on the Sessions page 404s, and the live tail's endpoint has no page
+mounting it. See §36. Run `git log --oneline -1` and `gh issue list
+--state open` for the truth.
 
 ---
 
@@ -271,14 +281,16 @@ batch, it predates all of it:**
    **ticket open**, batched.
 6. **#50 — Discovery (cross-session repeated blocks)** — shipped
    (`c836c9b`), **ticket open**, batched.
-7. **#54 — Overview page** — design settled
-   (`design/overview-mockups/f3-overview-styled.html`), **not ported**
-   — the only remaining page in the batch.
+7. **#54 — Overview page** — **shipped** (`26c358c` + `aedb979`, branch
+   `newui`); the toolbar was fixed against the user's first real use of it.
+   **Ticket open**, batched. This was the last page in the batch.
 8. **#55 — CSS token reconciliation** — shipped, **ticket open**, batched.
 
 All of #50/#52/#53/#55 (shipped, not yet closed) wait on #54 landing
-before the user does one full-UI pass and closes the batch together —
-see §35. #46/#47/#48 already shipped and closed earlier in the batch.
+**before the user does one full-UI pass and closes the batch together** —
+see §35. #54 has now landed, so every page in the batch is built and that
+pass is the next step. #46/#47/#48 already shipped and closed earlier in
+the batch.
 
 As of `b8907e8` (2026-09-23e, §21), open: **#4, #8, #9, #14, #17, #18, #20, #21, #22,
 #23, #24, #26, #36, #38, #40, #41, #44, #45, #47, #48, #49, #50**. Closed
@@ -2900,3 +2912,95 @@ against the committed tree, same result.
    own full-UI test pass.
 2. #54 (Overview) is the only remaining unported page in the batch.
 3. Branch `newui` still has no upstream configured — ask before pushing.
+
+---
+
+## 36. Session 2026-09-26 (later) — #54 (Overview) implemented, toolbar fixed from first real use, docs refreshed (branch `newui`, HEAD `aedb979`)
+
+Continues §35. **#54 is now shipped and the batch is code-complete** — every
+page in it is built. Branch `newui` went `5c3b8c7` → `325b03b` → `dbacc38` →
+`ecc6299` → `26c358c` → `aedb979`.
+
+**What landed, in five commits:**
+
+- **`325b03b` / `dbacc38` — phase 1: the store layer.** `store.Window` gained
+  `Until` (exclusive; zero = open-ended, so every existing caller is unchanged),
+  and `internal/store/flow.go` added `RoutingEdge`/`RoutingFlow`/`ConfigEpochs`
+  with per-edge rate metrics. The first version collapsed config-epoch bursts by
+  **end-to-start** gap and was wrong on live data: consecutive epochs *overlap*
+  (an in-flight request is recorded under the old epoch after the new one began),
+  so the gap went negative at every reload and the settled config got swallowed.
+  Now start-to-start (< 3 min = `epochBurstGap`), and the seeded test carries the
+  straggler case — reverting the comparison reproduces the exact live failure.
+- **`ecc6299` — phase 2: summaries and compare.** `internal/store/summary.go`:
+  `Measures` (the one definition of cache-hit and cost-per-1M, embedded by both
+  `RoutingEdge` and `WindowSummary` so the KPI strip and the drawer cannot
+  drift), `SummarizeWindow`, `Delta`, `Direction`, `CompareWindows`. Direction is
+  a **tri-state** (`Neutral`/`LessIsBetter`/`MoreIsBetter`), not a bool — a bool
+  printed "requests −4.6% worse", and request volume has no good direction.
+- **`26c358c` — phases 3+4+5: the page, and the rip-out.** `internal/ui/sankey.go`
+  + `sankeypath.go` (geometry in Go, unit-testable), a rewritten `overview.go`,
+  `templates/pages/overview.html` + `partials/overviewNode.html`. Deleted by
+  `git rm`: `internal/ui/series.go`, `static/chart.js`, `uplot.min.js`,
+  `internal/store/series.go`, `pivot.go`, and their tests. Route cap 24 → 12
+  (tail folds into `other`) after a live render showed 18 model nodes with labels
+  9px apart; too-short bands now draw a bar only.
+- **`aedb979` — the toolbar fix**, from the user's first real click-through.
+
+**The toolbar fix is the part worth reading before touching that page.** The user
+reported six problems, and five shared one root cause: **mode was a button pair
+separate from the anchor select**, so the two controls could contradict each
+other. Picking a change in single mode did nothing; clicking Compare submitted
+without an anchor and rendered a 400. Mode is now *derived* from the anchor —
+there is no `?mode=` parameter at all — which removed the defect class instead of
+patching symptoms. A real `datetime-local` picker was added as `?anchor_at=`, and
+it wins over the select when both are set.
+
+Two bugs underneath it passed every existing test, both worth remembering:
+
+- **`activeSince` returned `overviewDefaultWindow.String()`** — `"24h0m0s"` —
+  which matches no `<option>` value, so the default page marked *nothing*
+  selected and the browser displayed its first entry ("last 1h") while rendering
+  24h of data. That is why the window control felt inert. Now a
+  `defaultSinceChoice` constant with a test asserting the two literals agree.
+- **Anchor selection only failed on live data.** The option value is RFC3339
+  (no sub-second part) while selection compared `time.Equal` against the
+  reparsed value, so real timestamps' nanoseconds broke every match — while
+  seeded test data (zero nanoseconds) stayed green. **This is the same failure
+  shape as the phase-1 burst bug: unrealistically tidy seed data hid a live-only
+  defect.** The test now seeds `123456789ns`.
+
+**Two real defects found while refreshing the docs, neither fixed — no ticket
+yet.** Both are consequences of the greenfield rip-out that nobody re-checked:
+
+1. **Every `flatLineHref` link 404s.** `internal/ui/requests.go` still builds
+   `/admin/ui/requests?flat=1…` for the Sessions page's "open flat list"
+   affordance (rendered as `data-open-href`, used by `laneDetail.js`), but the
+   page it points at was deleted in the rebuild. Confirmed live: the link is in
+   the rendered page and the target returns **404**.
+2. **The live tail is dead-but-working.** `TailHandler` serves
+   `/admin/ui/requests/tail` and returns 200, and `live.js` implements the whole
+   polling client — but `live.js` only activates on a `[data-tail-src]` element
+   and **nothing in the template tree renders one**. Its only mount point was
+   the deleted requests page. The server half is tested and unchanged, so
+   re-mounting is cheap when the rebuilt request list lands.
+
+**Docs refreshed in this session** (README endpoint table + Admin web UI +
+live-tail + grouping + Overview sections; REQUIREMENTS 7b-1/7b-3a/7b-3b;
+DESIGN.md Overview and landing page; this file's §6 batch table). The
+administrative shape of that pass: **the README had five passages describing the
+deleted requests page as if it were live**, and REQUIREMENTS still marked the
+**pivot** Overview "BUILT, COMMITTED" and 7b-3b (uPlot) as merely pending — the
+pivot was deleted, so 7b-3b is *dropped*, not deferred. Anything in an older doc
+that describes `/admin/ui/requests` as a page is stale.
+
+**Still open / next steps:**
+1. **Do not close #50/#52/#53/#55** — batched, and #54 now joins them. The user's
+   own full-UI pass is the gate, and every page is built, so that pass is the
+   immediate next step.
+2. **The two defects above** (dead flat-list links; unmounted live tail) are the
+   most concrete known-broken things in the UI. Neither has a ticket.
+3. Housekeeping the user has been offered and not yet greenlit:
+   `build/livecheck.db` (1.2GB, gitignored, safe to delete) and a stale
+   `.claude/worktrees/*` checkout.
+4. Branch `newui` still has no upstream configured — ask before pushing.

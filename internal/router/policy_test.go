@@ -301,3 +301,41 @@ func TestChainedRouterStillFallsThroughOnOrdinaryMiss(t *testing.T) {
 		t.Errorf("provider = %q, want gpt4 (fallen through to SimpleRouter)", route.Provider)
 	}
 }
+
+// #11: RequestKind matches like any other condition field — first-match-wins,
+// exact string equality against signals.RequestKind. A rule with RequestKind
+// set must not match a request whose kind differs, even when every other
+// field (here, none) is a wildcard.
+func TestPolicyConditionMatchesRequestKind(t *testing.T) {
+	rules := []PolicyRule{
+		{When: PolicyCondition{RequestKind: "title"}, Provider: "gpt4"},
+		{When: PolicyCondition{}, Provider: "claude"}, // wildcard catch-all
+	}
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
+
+	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{RequestKind: "title"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if route.Provider != "gpt4" {
+		t.Fatalf("provider = %q, want gpt4 (matched on request_kind)", route.Provider)
+	}
+}
+
+// A request whose kind does NOT match a RequestKind-guarded rule must skip
+// it and fall through, exactly like every other condition field.
+func TestPolicyConditionSkipsRuleOnRequestKindMismatch(t *testing.T) {
+	rules := []PolicyRule{
+		{When: PolicyCondition{RequestKind: "title"}, Provider: "gpt4"},
+		{When: PolicyCondition{}, Provider: "claude"},
+	}
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
+
+	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if route.Provider != "claude" {
+		t.Fatalf("provider = %q, want claude (ordinary request skips the title-only rule)", route.Provider)
+	}
+}

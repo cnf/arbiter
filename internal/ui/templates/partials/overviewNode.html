@@ -1,0 +1,93 @@
+{{/* overviewNode.html — the Overview page's per-node drawer (#54).
+
+Fetched by htmx when a sankey node is clicked, rather than shipped as a JS data
+blob in the page: the numbers are formatted by the same Go helpers the KPI strip
+uses, and the initial page does not carry detail for two dozen nodes nobody
+clicked. Same pattern as Discovery's workspace pane (#50).
+
+Three columns, per the mockup: rate/efficiency with the cache gauge, the routes
+behind this node, and the content-mix panel that is deliberately still a labelled
+placeholder — see flowNodeDetail.ContentMixDeferred for why it is shown as
+missing rather than dropped. */}}
+{{define "overview-node"}}
+<div class="drawer-head">
+  <div class="dot" style="background:{{.Color}}"></div>
+  <div>
+    <div class="title">{{.Label}}</div>
+    <div class="sub">{{.Sub}}</div>
+  </div>
+  <button class="close" type="button"
+          hx-get="/admin/ui/overview/node/close" hx-target="#flow-drawer"
+          hx-swap="innerHTML">✕ close</button>
+</div>
+
+<div class="drawer-grid">
+  <div class="dcol">
+    <div class="l">Rate &amp; efficiency</div>
+    {{range .Stats}}
+    <div class="mstat"><span class="k">{{.Label}}</span><span class="v {{.Class}}">{{.Value}}</span></div>
+    {{end}}
+
+    {{/* The gauge is omitted entirely when nothing here was cacheable: a 0%
+    bar and "no cacheable tokens moved" look identical and mean opposite
+    things. */}}
+    {{if ge .CacheHit 0.0}}
+    <div class="gauge-row">
+      <span class="lbl">cache hit</span>
+      <div class="gauge-bg">
+        <div class="gauge-fill {{cacheClass .CacheHit}}" style="width:{{pctWidth .CacheHit}}"></div>
+      </div>
+      <span class="gauge-val">{{pct .CacheHit}}</span>
+    </div>
+    {{else}}
+    <div class="gauge-row"><span class="lbl">cache hit</span>
+      <span class="placeholder">no cacheable tokens moved on this node</span></div>
+    {{end}}
+  </div>
+
+  <div class="dcol">
+    <div class="l">Routes</div>
+    {{if .Routes}}
+    <table class="routes">
+      <thead><tr><th>route</th><th>req</th><th>cost</th><th>$/1M</th><th>cache</th><th>err</th></tr></thead>
+      <tbody>
+        {{range .Routes}}
+        <tr{{if .Bad}} class="bad"{{end}}>
+          <td class="mono">{{.Label}}</td>
+          <td class="num">{{tokens .Requests}}</td>
+          <td class="num">{{.Cost}}</td>
+          <td class="num">{{.Per1M}}</td>
+          <td class="num">{{.Cache}}</td>
+          <td class="num">{{.Errors}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="placeholder">No routes recorded for this node in this window.</div>
+    {{end}}
+  </div>
+
+  <div class="dcol">
+    <div class="l">Content mix <span class="qual">(not yet computed)</span></div>
+    {{if .ContentMixDeferred}}
+    <div class="placeholder">
+      The captured-bytes breakdown by role and block type (tool results vs. tool calls
+      vs. system vs. user vs. assistant text) is not wired up yet. It needs an aggregate
+      over <code>content_refs</code>, which is a separate piece of work — and it would be
+      a byte-length <i>proxy</i> for token share either way, since Arbiter does not tag
+      tokens by kind.
+    </div>
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{/* The empty state, served by the close button so dismissing the drawer is a
+fragment swap like every other state change on the page rather than JS reaching
+into the DOM. */}}
+{{define "overview-node-empty"}}
+<div class="drawer-empty">
+  Click any alias or model in the diagram for its cost, cache and error detail.
+</div>
+{{end}}

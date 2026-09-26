@@ -63,6 +63,7 @@ build/
 # replaced — they belong on disk, not in git. `sources:` in the mapping file
 # points at paths in here.
 support/downloads/
+support/design/
 
 # secretspec's file-provider store (see devenv.yaml). Plaintext secrets —
 # never commit. `keyring://` (the previous provider) kept them in a daemon

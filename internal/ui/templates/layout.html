@@ -1,37 +1,67 @@
 {{define "layout"}}<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Arbiter{{with .Title}} — {{.}}{{end}}</title>
 <link rel="stylesheet" href="/admin/ui/static/app.css?v={{.AssetVersion}}">
-<link rel="stylesheet" href="/admin/ui/static/uplot.min.css?v={{.AssetVersion}}">
 <script src="/admin/ui/static/htmx.min.js?v={{.AssetVersion}}" defer></script>
-<script src="/admin/ui/static/uplot.min.js?v={{.AssetVersion}}" defer></script>
-<script src="/admin/ui/static/chart.js?v={{.AssetVersion}}" defer></script>
-<script src="/admin/ui/static/live.js?v={{.AssetVersion}}" defer></script>
+<script src="/admin/ui/static/popover.js?v={{.AssetVersion}}" defer></script>
+<script src="/admin/ui/static/showmore.js?v={{.AssetVersion}}" defer></script>
+<script src="/admin/ui/static/laneDetail.js?v={{.AssetVersion}}" defer></script>
+<script src="/admin/ui/static/laneLive.js?v={{.AssetVersion}}" defer></script>
+<script src="/admin/ui/static/laneTimeline.js?v={{.AssetVersion}}" defer></script>
+<script src="/admin/ui/static/transcript.js?v={{.AssetVersion}}" defer></script>
+<script src="/admin/ui/static/discovery.js?v={{.AssetVersion}}" defer></script>
 </head>
 <body>
-<header class="top">
-  <a class="brand" href="/admin/ui/requests">Arbiter</a>
-  <nav>
-    {{range .Nav}}<a href="{{.Href}}"{{if eq .Name $.Active}} class="on"{{end}}>{{.Name}}</a>{{end}}
-  </nav>
-  <form class="reload" hx-post="/admin/reload" hx-swap="none"
-        hx-on::after-request="this.querySelector('.note').textContent =
-          (event.detail.successful ? 'routing config reloaded' : 'reload rejected — see logs')">
-    <button type="submit">reload config</button>
-    <span class="note" role="status"></span>
-  </form>
-  <span class="clock">all times UTC · {{.Now.Format "2006-01-02 15:04"}}</span>
-</header>
-{{if .StoreDisabled}}<p class="banner">{{.StoreDisabledReason}}</p>{{end}}
-<main>
-{{template "content" .}}
-</main>
-<footer>
-  <span>Arbiter admin</span>
-  <span class="muted">data read live from the event store; nothing on this page is cached</span>
-</footer>
+<div class="app">
+  <header class="top">
+    <a class="brand" href="/admin/ui/overview" title="Arbiter — home">
+      <span class="mark"><svg viewBox="0 0 24 24"><path d="M4 17l5-9 4 6 3-4 4 3"/></svg></span>
+      arbiter<span>·</span>
+    </a>
+    <nav>
+      {{range .Nav}}<a href="{{.Href}}"{{if eq .Name $.Active}} class="on"{{end}}>
+        <span class="lbl">{{.Name}}</span>
+        <span class="stat{{if .ErrVal}} errval{{end}}"{{if eq .Name "Sessions"}} data-nav-stat="sessions"{{end}}>{{.Stat}}<span class="u">{{.Unit}}</span></span>
+      </a>{{end}}
+    </nav>
+    <div class="actions">
+      <button class="themebtn" id="themeToggle" type="button">
+        <svg id="themeIcon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <span id="themeLabel">dark</span>
+      </button>
+    </div>
+  </header>
+  {{if .StoreDisabled}}<p class="banner">{{.StoreDisabledReason}}</p>{{end}}
+  {{template "content" .}}
+  <footer class="appfoot">
+    <form class="reload" hx-post="/admin/reload" hx-swap="none"
+          hx-on::after-request="this.querySelector('.note').textContent =
+            (event.detail.successful ? 'routing config reloaded' : 'reload rejected — see logs');
+            this.querySelector('.note').className = 'note' + (event.detail.successful ? ' ok' : '')">
+      <button type="submit">reload config</button>
+      <span class="note" role="status"></span>
+    </form>
+    <span class="clock">all times UTC · {{.Now.Format "2006-01-02 15:04"}}</span>
+    <div class="spacer"></div>
+    <span>data read live from the event store; nothing on this page is cached</span>
+  </footer>
+</div>
+<script>
+(function () {
+  "use strict";
+  var btn = document.getElementById("themeToggle");
+  var label = document.getElementById("themeLabel");
+  if (!btn || !label) { return; }
+  btn.addEventListener("click", function () {
+    var cur = document.documentElement.getAttribute("data-theme");
+    var next = cur === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    label.textContent = next;
+  });
+})();
+</script>
 </body>
 </html>{{end}}

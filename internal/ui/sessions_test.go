@@ -1,369 +1,347 @@
 package ui
 
 import (
-	"regexp"
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/cnf/arbiter/internal/logging"
 	"github.com/cnf/arbiter/internal/store"
 )
 
-// A session key is opaque and can be 64 hex characters, so it is shown
-// truncated while the full value does the linking. The truncation must be
-// display-only: a shortened key in an href would fetch the wrong session.
-func TestSessionKeyTruncatedForDisplayOnly(t *testing.T) {
-	full := strings.Repeat("a1b2c3d4", 8) // 64 chars, the content-derived shape
-	if got := shortSessionKey(full); len(got) != sessionKeyDisplayLen {
-		t.Errorf("shortSessionKey(%d chars) = %d chars, want %d", len(full), len(got), sessionKeyDisplayLen)
-	}
-	// Short and empty keys pass through rather than being padded or cut.
-	for _, key := range []string{"", "short", strings.Repeat("x", sessionKeyDisplayLen)} {
-		if got := shortSessionKey(key); got != key {
-			t.Errorf("shortSessionKey(%q) = %q, want it unchanged", key, got)
+// The lane view is what #52 actually changes: one conversation renders as one
+// lane (session id header + a timeline of its own requests) instead of a
+// separate sessions index cross-referenced against a flat requests list. This
+// exercises the whole render path — the real reader queries, foldRequestLines/
+// attachTraceChildren, and the lane/node templates — over a seeded store, not
+// a zero-data render (TestEveryPageRendersWithZeroData already covers that).
+func TestSessionsLaneRendersRequestsAndSatellites(t *testing.T) {
+	now := time.Now().UTC()
+	mk := func(kind, traceID, sessionKey, provider string, status int, offset time.Duration) store.Event {
+		return store.Event{
+			TraceID: traceID, SessionKey: sessionKey, Kind: kind,
+			Provider: provider, Model: "m", StatusCode: status,
+			Ts: now.Add(offset), LatencyMs: 100,
 		}
 	}
+	events := []store.Event{
+		// A lane with a client request and a classifier satellite sharing its
+		// trace_id — the satellite must nest under the client node, not
+		// appear as a second top-level line (attachTraceChildren's job).
+		mk("classifier", "tr-1", "sess-one", "openrouter-decisions", 200, 0),
+		mk("client", "tr-1", "sess-one", "anthropic", 200, 1*time.Second),
+		// A second, separate lane so the page renders more than one row.
+		mk("client", "tr-2", "sess-two", "anthropic", 500, 2*time.Second),
+	}
+	h, _ := newSeededHandler(t, events...)
 
-	h, _ := newSeededHandler(t,
-		store.Event{TraceID: "t", Provider: whichProviderA, Model: "m", StatusCode: 200,
-			LatencyMs: 1, SessionKey: full},
-		store.Event{TraceID: "t2", Provider: whichProviderA, Model: "m", StatusCode: 200,
-			LatencyMs: 1, Ts: timeAt(), SessionKey: full},
-	)
+	// live_only=0: these lanes carry no affinity pin, so the live-only
+	// filter (on by default) would hide them before this test ever gets
+	// to check the render — this test is about foldRequestLines/
+	// attachTraceChildren's node classes, not the filter.
+	body := serve(t, h, "GET", "/admin/ui/sessions?live_only=0", false).Body.String()
 
-	index := serve(t, h, "GET", "/admin/ui/sessions", false).Body.String()
-	if !strings.Contains(index, shortSessionKey(full)) {
-		t.Error("the index does not show the shortened key")
-	}
-	// The visible text is shortened; every href and tooltip that carries the key
-	// carries all of it, because a truncated key fetches the wrong session.
-	if strings.Contains(index, ">"+full+"<") {
-		t.Error("the index renders the full key as visible text; it should be shortened")
-	}
-	if !strings.Contains(index, "/admin/ui/session?key="+full) {
-		t.Error("the index link does not carry the full session key")
-	}
-	if !strings.Contains(index, `title="`+full+`"`) {
-		t.Error("the full key is not available as a tooltip")
-	}
-
-	detail := serve(t, h, "GET", "/admin/ui/session?key="+full, false).Body.String()
-	if !strings.Contains(detail, full) {
-		t.Error("the transcript page does not carry the full key")
-	}
-	if !strings.Contains(detail, shortSessionKey(full)) {
-		t.Error("the transcript page does not show the shortened key")
-	}
-}
-
-// A conversation sent twice appears as one session with two turns, and its
-// transcript reads in order with each turn linked to its own request — which is
-// what makes a single point in a conversation reachable.
-func TestSessionIndexAndTranscript(t *testing.T) {
-	key := "conv-abc"
-	base := timeAt()
-	h, _ := newSeededHandler(t,
-		store.Event{TraceID: "t1", Provider: "alpha", Model: "m1", StatusCode: 200,
-			LatencyMs: 5, Ts: base, SessionKey: key,
-			Content: &store.CapturedContent{Request: []store.Block{
-				{MsgIndex: 0, Position: 0, Role: "user", Kind: "text", Body: []byte("first question")}}}},
-		store.Event{TraceID: "t2", Provider: "beta", Model: "m2", StatusCode: 200,
-			LatencyMs: 7, Ts: base.Add(time.Minute), SessionKey: key,
-			Content: &store.CapturedContent{
-				Request: []store.Block{
-					{MsgIndex: 0, Position: 0, Role: "user", Kind: "text", Body: []byte("first question")},
-					{MsgIndex: 1, Position: 0, Role: "user", Kind: "text", Body: []byte("second question")}},
-				Response: []store.Block{
-					{MsgIndex: 0, Position: 0, Role: "assistant", Kind: "text", Body: []byte("the answer")}},
-			}},
-		// An unrelated conversation, and one request with no key at all.
-		store.Event{TraceID: "t3", Provider: "alpha", Model: "m1", StatusCode: 200,
-			LatencyMs: 1, Ts: base.Add(2 * time.Minute), SessionKey: "other-conv"},
-		store.Event{TraceID: "t4", Provider: "alpha", Model: "m1", StatusCode: 200,
-			LatencyMs: 1, Ts: base.Add(3 * time.Minute)},
-	)
-
-	index := serve(t, h, "GET", "/admin/ui/sessions", false).Body.String()
-	if strings.Count(index, "/admin/ui/session?key="+key) != 1 {
-		t.Errorf("the conversation does not appear exactly once on the index")
-	}
-	if !strings.Contains(index, `class="num">2</td>`) {
-		t.Errorf("the turn count is not rendered; body = %s", firstLine(index))
-	}
-	// Both providers that served it are listed.
-	if !strings.Contains(index, "alpha") || !strings.Contains(index, "beta") {
-		t.Error("the index does not list every provider the conversation used")
-	}
-	// The sessionless request is not a conversation, so it is counted
-	// separately rather than folded into the list.
-	if !strings.Contains(index, "with no session key") {
-		t.Error("the index does not report the sessionless requests")
-	}
-	if strings.Contains(index, "other-conv") == false {
-		t.Error("the second conversation is missing from the index")
-	}
-
-	transcript := serve(t, h, "GET", "/admin/ui/session?key="+key, false).Body.String()
-	if !strings.Contains(transcript, "2 turns") {
-		t.Errorf("the transcript does not report its turn count; body = %s", firstLine(transcript))
-	}
-	// Turn by turn: each turn's blocks are together, and every turn links to its
-	// own request so a point in the conversation can be pulled out.
-	for _, want := range []string{"second question", "the answer", "/admin/ui/requests/2"} {
-		if !strings.Contains(transcript, want) {
-			t.Errorf("the transcript is missing %q", want)
+	for _, want := range []string{
+		// Both lanes rendered, each under its own session id (both keys are
+		// short enough that shortSessionKey returns them unchanged).
+		"sess-one",
+		"sess-two",
+		// The classifier satellite's own node class, distinct from a client node.
+		`class="node sat classifier`,
+		// The client node for the same lane.
+		`class="node client`,
+		// The failed lane's error status reaches the page (s-err from statusClass).
+		"s-err",
+		// The persistent detail panel, present on load with no selection.
+		"default-panel",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("sessions page missing %q\n--- body ---\n%s", want, body)
 		}
 	}
-	// Turn order: the second turn's marker must come after the first's.
-	if strings.Index(transcript, `id="turn-1"`) > strings.Index(transcript, `id="turn-2"`) {
-		t.Error("turns are not rendered in order")
-	}
-	// The unrelated conversation's content must not leak into this transcript.
-	if strings.Contains(transcript, "other-conv") {
-		t.Error("content from another session leaked into the transcript")
+}
+
+// A session whose only client row has no captured content (capture off) must
+// say so in the lane header rather than rendering an empty preview — the
+// three-way distinction lanePreview exists for (see noClientBodyPreview).
+func TestSessionsLanePreviewNoteWhenCaptureOff(t *testing.T) {
+	now := time.Now().UTC()
+	h, _ := newSeededHandler(t, store.Event{
+		TraceID: "t", SessionKey: "sess-nocap", Kind: "client",
+		Provider: "p", Model: "m", StatusCode: 200, Ts: now, LatencyMs: 1,
+	})
+	// captureContent defaults to false on a fresh Handler/newSeededHandler
+	// (no pipeline sets it), which is exactly the case lanePreview's first
+	// branch handles.
+
+	// live_only=0: this session has no affinity pin, and the live-only
+	// filter (on by default) would hide it before this test could check
+	// the preview-note rendering, which is what it's actually about.
+	body := serve(t, h, "GET", "/admin/ui/sessions?live_only=0", false).Body.String()
+	if !strings.Contains(body, "content capture is off") {
+		t.Errorf("expected the capture-off preview note, got:\n%s", body)
 	}
 }
 
-// A conversation re-sends its whole context every turn, so the transcript must
-// show what each turn *introduced* and collapse what it merely repeated —
-// otherwise the page is a multiple of the conversation rather than a record of
-// it. The split is by content hash, so it is exact.
-func TestTranscriptSeparatesNewContentFromReplay(t *testing.T) {
-	key := "growing"
-	base := timeAt()
-
-	// One block reused verbatim across all three turns (a client preamble), one
-	// system block, and a fresh user turn each time.
-	sysBlock := store.Block{MsgIndex: 0, Position: 0, Role: "system", Kind: "text",
-		Body: []byte("you are a helpful assistant, always answer briefly")}
-	first := store.Block{MsgIndex: 1, Position: 0, Role: "user", Kind: "text",
-		Body: []byte("first question please")}
-	second := store.Block{MsgIndex: 2, Position: 0, Role: "user", Kind: "text",
-		Body: []byte("second question please")}
-	reply := func(s string) store.Block {
-		return store.Block{MsgIndex: 0, Position: 0, Role: "assistant", Kind: "text", Body: []byte(s)}
-	}
-
-	h, _ := newSeededHandler(t,
-		// Turn 1: system + first user turn, and a reply.
-		store.Event{TraceID: "t1", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
-			Ts: base, SessionKey: key,
-			Content: &store.CapturedContent{Request: []store.Block{sysBlock, first}, Response: []store.Block{reply("answer one")}}},
-		// Turn 2: the same system block plus turn 1 replayed, and a new user turn.
-		store.Event{TraceID: "t2", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
-			Ts: base.Add(time.Minute), SessionKey: key,
-			Content: &store.CapturedContent{Request: []store.Block{sysBlock, first,
-				{MsgIndex: 2, Position: 0, Role: "assistant", Kind: "text", Body: []byte("answer one")},
-				second}, Response: []store.Block{reply("answer two")}}},
-		// Turn 3: everything again, one more user turn.
-		store.Event{TraceID: "t3", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
-			Ts: base.Add(2 * time.Minute), SessionKey: key,
-			Content: &store.CapturedContent{Request: []store.Block{sysBlock, first,
-				{MsgIndex: 2, Position: 0, Role: "assistant", Kind: "text", Body: []byte("answer one")},
-				second,
-				{MsgIndex: 3, Position: 0, Role: "assistant", Kind: "text", Body: []byte("answer two")},
-				{MsgIndex: 4, Position: 0, Role: "user", Kind: "text", Body: []byte("third question please")}},
-				Response: []store.Block{reply("answer three")}}},
-	)
-
-	body := serve(t, h, "GET", "/admin/ui/session?key="+key, false).Body.String()
-
-	// The shared system block is rendered exactly ONCE in the whole page — not
-	// once per turn behind a collapsed <details>, which would ship the same
-	// bytes to the browser and leave the page just as large.
-	preCount := 0
-	for _, m := range regexp.MustCompile(`(?s)<pre>(.*?)</pre>`).FindAllStringSubmatch(body, -1) {
-		if strings.Contains(m[1], "you are a helpful assistant") {
-			preCount++
+// Every lane node's "open" link (data-open-href) must point at the session's
+// own transcript page — the old destination (a flat, filtered requests list)
+// was removed along with the requests page (#54); a node whose href still
+// pointed there would be a dead link with no way to reach the request it
+// names. This covers all three node shapes: a plain client node, a
+// classifier satellite nested under it, and (implicitly, via the same code
+// path) a folded stack — sessionNodeHref does not special-case any of them.
+func TestSessionsLaneNodeOpenHrefPointsAtTranscript(t *testing.T) {
+	now := time.Now().UTC()
+	mk := func(kind, traceID, sessionKey, provider string, status int, offset time.Duration) store.Event {
+		return store.Event{
+			TraceID: traceID, SessionKey: sessionKey, Kind: kind,
+			Provider: provider, Model: "m", StatusCode: status,
+			Ts: now.Add(offset), LatencyMs: 100,
 		}
 	}
-	if preCount != 1 {
-		t.Errorf("the shared system block appears in %d <pre> blocks; want exactly 1", preCount)
+	events := []store.Event{
+		mk("classifier", "tr-1", "sess-one", "openrouter-decisions", 200, 0),
+		mk("client", "tr-1", "sess-one", "anthropic", 200, 1*time.Second),
 	}
-	if strings.Count(body, "you are a helpful assistant") != 1 {
-		t.Errorf("the shared system block appears %d times in the HTML at all; want 1",
-			strings.Count(body, "you are a helpful assistant"))
-	}
-	// The same for a replayed conversation turn.
-	if n := strings.Count(body, "answer one"); n != 1 {
-		t.Errorf("a replayed reply appears %d times; want only where it was introduced", n)
-	}
+	h, _ := newSeededHandler(t, events...)
 
-	// Every turn's own new question and answer are rendered at full size.
-	for _, want := range []string{"first question please", "second question please", "third question please",
-		"answer one", "answer two", "answer three"} {
-		found := false
-		for _, m := range regexp.MustCompile(`(?s)<pre>(.*?)</pre>`).FindAllStringSubmatch(body, -1) {
-			if strings.Contains(m[1], want) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("%q is not rendered at full size anywhere", want)
-		}
-	}
+	body := serve(t, h, "GET", "/admin/ui/sessions?live_only=0", false).Body.String()
 
-	// Replay is NOT announced per turn: the text is already on the page at the
-	// turn that introduced it, so a pointer at every turn is noise.
-	if strings.Contains(body, "see turn #") {
-		t.Error("replay pointers are rendered; they are redundant noise")
+	if strings.Contains(body, "/admin/ui/requests") {
+		t.Errorf("a lane node still links to the removed requests page:\n%s", body)
 	}
-	if strings.Contains(body, `class="replayref"`) {
-		t.Error("the replay pointer markup is still rendered")
+	if n := strings.Count(body, "data-open-href=\"/admin/ui/session?"); n != 2 {
+		t.Errorf("got %d nodes linking to /admin/ui/session, want 2 (the client node and its satellite)\n%s", n, body)
 	}
-	// But the turn header still reports how much it replayed.
-	if !strings.Contains(body, "replayed") {
-		t.Error("no turn header reports how much it replayed")
-	}
-	// The preamble is its own collapsible field.
-	if !strings.Contains(body, `class="preamble"`) {
-		t.Error("the system preamble is not its own collapsible field")
-	}
-	// The header reports how much was replayed for that turn.
-	if !strings.Contains(body, "replayed") {
-		t.Error("no turn reports how much it replayed")
-	}
-
-	// Turn 1 introduces everything it sends, so its header reports no replay.
-	firstTurn := body[strings.Index(body, `id="turn-1"`):strings.Index(body, `id="turn-2"`)]
-	if strings.Contains(firstTurn, "replayed") {
-		t.Error("the opening turn reports replay, but it introduced everything it sent")
-	}
-	if !strings.Contains(firstTurn, `class="preamble"`) {
-		t.Error("the opening turn does not show the system preamble it introduced")
+	if !strings.Contains(body, "key=sess-one") {
+		t.Errorf("a node's open href does not carry the session key:\n%s", body)
 	}
 }
 
-// One turn can contribute BOTH its preamble and some conversation history to a
-// later turn's replay. Those must stay separate groups: merging them mislabels
-// the history as preamble and undercounts neither while misdescribing both.
-func TestReplayKeepsPreambleAndHistoryApart(t *testing.T) {
-	key := "both-kinds"
-	base := timeAt()
-	sys := store.Block{MsgIndex: 0, Position: 0, Role: "system", Kind: "text", Body: []byte("THE PREAMBLE TEXT")}
-	q1 := store.Block{MsgIndex: 1, Position: 0, Role: "user", Kind: "text", Body: []byte("question one")}
-	a1 := store.Block{MsgIndex: 2, Position: 0, Role: "assistant", Kind: "text", Body: []byte("answer one")}
-	q2 := store.Block{MsgIndex: 3, Position: 0, Role: "user", Kind: "text", Body: []byte("question two")}
-
+// The toolbar's "all"/"errors only" radio pair must round-trip both ways:
+// selecting "all" (?errors=, empty value) has to actually clear the filter,
+// and "errors only" (?errors=1) has to be reversible by going back to "all".
+// Regression for a bug where ErrorsOnly was q.Has("errors") — true for both
+// states, since the "all" radio still submits the key with an empty value —
+// so "all" never worked and "errors only" could never be turned back off.
+func TestSessionsErrorsFilterRoundTrips(t *testing.T) {
+	now := time.Now().UTC()
 	h, _ := newSeededHandler(t,
-		// Turn 1 introduces the preamble and the first exchange.
-		store.Event{TraceID: "t1", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
-			Ts: base, SessionKey: key,
-			Content: &store.CapturedContent{Request: []store.Block{sys, q1},
-				Response: []store.Block{a1}}},
-		// Turn 2 re-sends all of it and adds one question.
-		store.Event{TraceID: "t2", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
-			Ts: base.Add(time.Minute), SessionKey: key,
-			Content: &store.CapturedContent{Request: []store.Block{sys, q1, a1, q2}}},
+		store.Event{TraceID: "ok", SessionKey: "sess-ok", Kind: "client",
+			Provider: "p", Model: "m", StatusCode: 200, Ts: now, LatencyMs: 1},
+		store.Event{TraceID: "bad", SessionKey: "sess-bad", Kind: "client",
+			Provider: "p", Model: "m", StatusCode: 500, Ts: now.Add(time.Second), LatencyMs: 1},
 	)
 
-	body := serve(t, h, "GET", "/admin/ui/session?key="+key, false).Body.String()
-	turn2 := body[strings.Index(body, `id="turn-2"`):]
+	// live_only=0 on every request here: this test is about the
+	// errors-only radio, and neither seeded session has an affinity pin,
+	// so the live-only filter (on by default) would hide both regardless
+	// of the errors filter under test.
+	// Default (no ?errors param at all): both lanes present.
+	body := serve(t, h, "GET", "/admin/ui/sessions?live_only=0", false).Body.String()
+	if !strings.Contains(body, "sess-ok") || !strings.Contains(body, "sess-bad") {
+		t.Fatalf("default view should show both sessions, got:\n%s", body)
+	}
 
-	// The preamble belongs to the turn that introduced it, so the second turn
-	// does not re-show it...
-	if strings.Contains(turn2, `class="preamble"`) {
-		t.Error("turn 2 re-shows the system preamble; it belongs to the turn that introduced it")
+	// "errors only" (?errors=1): only the errored lane.
+	body = serve(t, h, "GET", "/admin/ui/sessions?errors=1&live_only=0", false).Body.String()
+	if strings.Contains(body, "sess-ok") {
+		t.Errorf("errors=1 should hide the clean session, got:\n%s", body)
 	}
-	// ...but it *did* re-send it, so the count includes it: preamble + question
-	// one + answer one. The count is a statement about what went over the wire,
-	// which is why it covers everything re-sent and not only the history.
-	want := len("THE PREAMBLE TEXT") + len("question one") + len("answer one")
-	if !strings.Contains(turn2, charsText(want)+" replayed") {
-		t.Errorf("turn 2's replay count is not %s; got %s", charsText(want), firstLine(turn2))
+	if !strings.Contains(body, "sess-bad") {
+		t.Errorf("errors=1 should still show the errored session, got:\n%s", body)
 	}
-	// The content this turn *introduced* must not be counted as replayed.
-	if strings.Contains(turn2, charsText(want+len("question two"))+" replayed") {
-		t.Error("turn 2's replay count includes the question it introduced")
+
+	// "all" (?errors=, empty value — what the toolbar's own radio submits):
+	// must behave identically to no param at all, showing both lanes again.
+	body = serve(t, h, "GET", "/admin/ui/sessions?errors=&live_only=0", false).Body.String()
+	if !strings.Contains(body, "sess-ok") || !strings.Contains(body, "sess-bad") {
+		t.Errorf("errors= (the toolbar's \"all\" radio) should show both sessions again, got:\n%s", body)
 	}
 }
 
-// charsText renders a character count the way the template does, so a test can
-// assert on what a reader sees rather than on a number it computed itself.
-func charsText(n int) string { return fmtChars(n) }
+// The nav bar's "N active" Sessions stat (Handler.base) must reflect real
+// affinity_pins rows still inside their TTL, not the "3" literal the mockup
+// shipped with. This seeds a pin directly (bypassing the pipeline, which is
+// the only other writer of affinity_pins) and checks the rendered nav.
+func TestNavSessionsStatReflectsActivePins(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	logger := logging.NewStdoutLogger("error")
 
-// A turn introducing a block that an *earlier* turn also had must not be
-// mistaken for introducing it: only the first appearance counts as new.
-func TestReplaySplitGoesByFirstAppearance(t *testing.T) {
-	key := "reordered"
-	base := timeAt()
-	shared := store.Block{MsgIndex: 0, Position: 0, Role: "user", Kind: "text", Body: []byte("the shared question")}
-
-	h, _ := newSeededHandler(t,
-		store.Event{TraceID: "t1", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
-			Ts: base, SessionKey: key,
-			Content: &store.CapturedContent{Request: []store.Block{shared}}},
-		store.Event{TraceID: "t2", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
-			Ts: base.Add(time.Minute), SessionKey: key,
-			Content: &store.CapturedContent{Request: []store.Block{shared}}},
-	)
-	body := serve(t, h, "GET", "/admin/ui/session?key="+key, false).Body.String()
-
-	// Turn 1 shows it; turn 2 collapses it.
-	turn1 := body[strings.Index(body, `id="turn-1"`):strings.Index(body, `id="turn-2"`)]
-	turn2 := body[strings.Index(body, `id="turn-2"`):]
-	if strings.Contains(turn1, "replayed") {
-		t.Error("the first appearance was counted as replay")
+	w, err := store.NewSQLiteWriter(path, logger)
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
 	}
-	if !strings.Contains(turn2, "replayed") {
-		t.Error("the second appearance was not counted as replay; the split ignores history")
+	if err := w.SavePin(context.Background(), store.AffinityPin{
+		SessionKey: "sess-live", RequestedModel: "auto", Provider: "anthropic", Model: "m",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SavePin: %v", err)
 	}
-	// The text itself renders once, at its origin, and is not repeated.
-	if strings.Count(body, "the shared question") != 1 {
-		t.Errorf("the shared block appears %d times; want once, at its origin turn",
-			strings.Count(body, "the shared question"))
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	r, err := store.OpenReader(path)
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	h := New(r, logger)
+
+	body := serve(t, h, "GET", "/admin/ui/sessions", false).Body.String()
+	if !strings.Contains(body, `<span class="stat" data-nav-stat="sessions">1<span class="u">active</span></span>`) {
+		t.Errorf("nav bar's Sessions stat should read 1 active (one live pin), got:\n%s", body)
 	}
 }
 
-// An unknown key is an empty transcript, not an error: a link from an old
-// request may point at a key whose requests have aged out of the store.
-func TestUnknownSessionKeyIsEmptyNotError(t *testing.T) {
-	h, _ := newSeededHandler(t, store.Event{TraceID: "t", Provider: "p", Model: "m",
-		StatusCode: 200, LatencyMs: 1})
-	rec := serve(t, h, "GET", "/admin/ui/session?key=nope", false)
-	if rec.Code != 200 {
-		t.Errorf("unknown key = %d, want 200 with an empty transcript", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "No turns for that session key") {
-		t.Errorf("the empty transcript does not explain itself; body = %s", firstLine(rec.Body.String()))
-	}
-	// A missing key is a malformed request, not an empty result.
-	if got := serve(t, h, "GET", "/admin/ui/session", false).Code; got != 400 {
-		t.Errorf("missing key = %d, want 400", got)
-	}
-}
+// The lane list's "hot" dot must appear only on a lane whose session has a
+// live affinity pin, and only for the duration that pin is live — the same
+// "still within cache TTL" definition the nav bar's "N active" stat and
+// store.ActiveSessionKeys use. Seeds a client request for two sessions and a
+// pin for only one of them, so the dot's presence/absence is a real
+// discriminator, not just "always on" or "always off".
+func TestSessionsLaneHotDotReflectsActivePin(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	logger := logging.NewStdoutLogger("error")
 
-// A turn whose content was never captured says so rather than rendering as an
-// empty turn, and a turn with hash-only blocks still shows the block.
-func TestTranscriptTurnWithoutContentExplainsItself(t *testing.T) {
-	h, _ := newSeededHandler(t, store.Event{TraceID: "t", Provider: "p", Model: "m",
-		StatusCode: 200, LatencyMs: 1, SessionKey: "nocontent"})
-	body := serve(t, h, "GET", "/admin/ui/session?key=nocontent", false).Body.String()
-	if !strings.Contains(body, "No content stored for this turn") {
-		t.Errorf("a turn with no content does not explain itself; body = %s", firstLine(body))
+	w, err := store.NewSQLiteWriter(path, logger)
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
 	}
-}
+	now := time.Now().UTC()
+	w.Record(store.Event{TraceID: "t1", SessionKey: "sess-hot", Kind: "client",
+		Provider: "p", Model: "m", StatusCode: 200, Ts: now, LatencyMs: 1})
+	w.Record(store.Event{TraceID: "t2", SessionKey: "sess-cold", Kind: "client",
+		Provider: "p", Model: "m", StatusCode: 200, Ts: now.Add(time.Second), LatencyMs: 1})
 
-// The transcript's per-turn links and the request detail page must agree on the
-// handle, or "pull one point out" lands somewhere else.
-func TestTranscriptLinksResolveToTurnRequests(t *testing.T) {
-	key := "linked"
-	base := timeAt()
-	h, _ := newSeededHandler(t,
-		store.Event{TraceID: "t1", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
-			Ts: base, SessionKey: key},
-		store.Event{TraceID: "t2", Provider: "p", Model: "m", StatusCode: 200, LatencyMs: 1,
-			Ts: base.Add(time.Second), SessionKey: key},
-	)
-	transcript := serve(t, h, "GET", "/admin/ui/session?key="+key, false).Body.String()
-	for _, id := range []string{"/admin/ui/requests/1", "/admin/ui/requests/2"} {
-		if !strings.Contains(transcript, id) {
-			t.Fatalf("the transcript does not link to %s", id)
+	if err := w.SavePin(context.Background(), store.AffinityPin{
+		SessionKey: "sess-hot", RequestedModel: "auto", Provider: "p", Model: "m",
+		ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SavePin: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	r, err := store.OpenReader(path)
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	h := New(r, logger)
+
+	// live_only=0: this test is about the hot dot, not the live-only
+	// filter, and sess-cold (no pin at all) would otherwise be dropped by
+	// the filter's new default-on behavior before it ever got a chance to
+	// prove the dot is absent.
+	body := serve(t, h, "GET", "/admin/ui/sessions?live_only=0", false).Body.String()
+
+	hotIdx := strings.Index(body, "sess-hot")
+	coldIdx := strings.Index(body, "sess-cold")
+	if hotIdx == -1 || coldIdx == -1 {
+		t.Fatalf("expected both lanes rendered, got:\n%s", body)
+	}
+	// Each lane's own head line is a bounded window right after its sid
+	// chip — checking for "hot" class within that window (up to the next
+	// lane, or a generous cap) rather than a whole-page substring check,
+	// since the legend itself also contains a "hot" span.
+	laneSlice := func(start int) string {
+		end := start + 400
+		if end > len(body) {
+			end = len(body)
 		}
-		// Follow it: the link must resolve, not 404.
-		if got := serve(t, h, "GET", id, false).Code; got != 200 {
-			t.Errorf("%s = %d, want 200", id, got)
+		return body[start:end]
+	}
+	if !strings.Contains(laneSlice(hotIdx), `class="hot"`) {
+		t.Errorf("sess-hot's lane should carry the hot dot, got:\n%s", laneSlice(hotIdx))
+	}
+	if strings.Contains(laneSlice(coldIdx), `class="hot"`) {
+		t.Errorf("sess-cold has no live pin and must not carry the hot dot, got:\n%s", laneSlice(coldIdx))
+	}
+}
+
+// "live only" (default on, per its own doc comment on sessionsView.LiveOnly)
+// must show a lane with a live pin, keep showing a lane whose pin expired
+// recently enough to be inside liveOnlyGraceWindow, and drop a lane whose
+// pin expired before that window (or that never had one) — then explicit
+// live_only=0 must bring everything back, including the one with no pin at
+// all. This is the filter itself, not the hot dot (TestSessionsLaneHotDotReflectsActivePin
+// covers that instead — the dot and the filter share a data source but ask
+// two different questions about it).
+func TestSessionsLiveOnlyFilter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	logger := logging.NewStdoutLogger("error")
+
+	w, err := store.NewSQLiteWriter(path, logger)
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	now := time.Now().UTC()
+	w.Record(store.Event{TraceID: "t1", SessionKey: "sess-live", Kind: "client",
+		Provider: "p", Model: "m", StatusCode: 200, Ts: now, LatencyMs: 1})
+	w.Record(store.Event{TraceID: "t2", SessionKey: "sess-lingering", Kind: "client",
+		Provider: "p", Model: "m", StatusCode: 200, Ts: now.Add(time.Second), LatencyMs: 1})
+	w.Record(store.Event{TraceID: "t3", SessionKey: "sess-longgone", Kind: "client",
+		Provider: "p", Model: "m", StatusCode: 200, Ts: now.Add(2 * time.Second), LatencyMs: 1})
+	w.Record(store.Event{TraceID: "t4", SessionKey: "sess-nopin", Kind: "client",
+		Provider: "p", Model: "m", StatusCode: 200, Ts: now.Add(3 * time.Second), LatencyMs: 1})
+
+	if err := w.SavePin(context.Background(), store.AffinityPin{
+		SessionKey: "sess-live", RequestedModel: "auto", Provider: "p", Model: "m",
+		ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SavePin sess-live: %v", err)
+	}
+	if err := w.SavePin(context.Background(), store.AffinityPin{
+		SessionKey: "sess-lingering", RequestedModel: "auto", Provider: "p", Model: "m",
+		ExpiresAt: now.Add(-liveOnlyGraceWindow / 2),
+	}); err != nil {
+		t.Fatalf("SavePin sess-lingering: %v", err)
+	}
+	if err := w.SavePin(context.Background(), store.AffinityPin{
+		SessionKey: "sess-longgone", RequestedModel: "auto", Provider: "p", Model: "m",
+		ExpiresAt: now.Add(-liveOnlyGraceWindow * 2),
+	}); err != nil {
+		t.Fatalf("SavePin sess-longgone: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	r, err := store.OpenReader(path)
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	h := New(r, logger)
+
+	// Default (no live_only param at all): on, per LiveOnly's own default.
+	body := serve(t, h, "GET", "/admin/ui/sessions", false).Body.String()
+	if !strings.Contains(body, "sess-live") {
+		t.Errorf("default (live-only on) should show a lane with a live pin, got:\n%s", body)
+	}
+	if !strings.Contains(body, "sess-lingering") {
+		t.Errorf("default (live-only on) should still show a lane inside its grace window, got:\n%s", body)
+	}
+	if strings.Contains(body, "sess-longgone") {
+		t.Errorf("default (live-only on) must hide a lane whose pin expired past the grace window, got:\n%s", body)
+	}
+	if strings.Contains(body, "sess-nopin") {
+		t.Errorf("default (live-only on) must hide a lane with no pin at all, got:\n%s", body)
+	}
+
+	// Explicit live_only=0: everything, including the never-pinned lane.
+	body = serve(t, h, "GET", "/admin/ui/sessions?live_only=0", false).Body.String()
+	for _, want := range []string{"sess-live", "sess-lingering", "sess-longgone", "sess-nopin"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("live_only=0 should show every lane regardless of pin state, missing %q in:\n%s", want, body)
 		}
 	}
 }

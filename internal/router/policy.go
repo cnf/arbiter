@@ -19,6 +19,15 @@ type PolicyCondition struct {
 	Capabilities []string // every entry must appear in signals.RequiredCapabilities
 	CostClass    string
 
+	// RequestKind matches types.Signals.RequestKind exactly ("title", later
+	// "subagent"). Unlike Domain/Effort/CostClass this is not a contested
+	// routing axis — it carries no confidence and no force-alias can
+	// override it — but it is still a legitimate thing to route ON: a
+	// title-generation call is who's asking, not what the request is about,
+	// and #11 exists to send that traffic to a cheap/fast alias instead of
+	// whatever model the client happened to name.
+	RequestKind string
+
 	// RequiresInputModalities guards the rule's *target* rather than matching
 	// the request: every entry must be something the target model accepts
 	// ("text", "image", "file"). A rule whose target cannot satisfy it is
@@ -42,6 +51,9 @@ func (c PolicyCondition) Matches(sig types.Signals) bool {
 		return false
 	}
 	if c.CostClass != "" && c.CostClass != sig.CostClass {
+		return false
+	}
+	if c.RequestKind != "" && c.RequestKind != sig.RequestKind {
 		return false
 	}
 	for _, want := range c.Capabilities {

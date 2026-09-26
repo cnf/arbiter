@@ -23,6 +23,8 @@ var funcs = stdhtml.FuncMap{
 	"statusClass": statusClass,
 	"trunc":       truncBody,
 	"wasCut":      wasCut,
+	"clampLong":   visualClampLen,
+	"clampSnip":   snippetClampLen,
 	"pct":         fmtPct,
 	"inc":         func(i int) int { return i + 1 },
 	"avgCost":     fmtAvgCost,
@@ -35,18 +37,41 @@ var funcs = stdhtml.FuncMap{
 	// rather than a precomputed field because it is used with a key that is
 	// already in the view model, in two different templates.
 	"requestsForSession": requestsForSession,
-	"pivotLimit":         pivotLimitNote,
-	"seriesURL":          seriesURL,
-	"singleValuedHint":   func() string { return singleValuedHint },
+	"trace8":             fmtTrace,
+	// Overview (#54). cacheClass/pctWidth exist so the drawer's gauge can be
+	// coloured and sized without the template doing arithmetic or holding the
+	// thresholds; overviewURL/nodeURL keep query-string assembly out of the
+	// template, same reason requestsForBlock does.
+	"cacheClass":    cacheGaugeClass,
+	"pctWidth":      pctWidth,
+	"overviewURL":   overviewURL,
+	"nodeURL":       nodeURL,
+	"sinceChoices":  sinceChoices,
+	"activeSince":   activeSince,
+	"sinceLabelFor": sinceLabelFor,
 	// requestsForBlock builds the drill-down link from a repeated block to the
 	// requests containing it. A func rather than an inline expression because a
 	// template must not be assembling a query string by hand.
 	"requestsForBlock": requestsForBlockURL,
+	// discoveryState builds the state-cycle POST url for one block — see
+	// discoveryStateURL's own comment for why it takes two explicit args.
+	"discoveryState": discoveryStateURL,
 	// blockPreviewBytes is the truncation cap as a number, so the block page can
 	// say what it cut at instead of naming a constant in prose that could drift.
 	"blockPreviewBytes": func() int { return blockPreviewBytes },
 	"preview":           previewText,
 	"whitespaceOnly":    isWhitespaceOnly,
+}
+
+// fmtTrace returns a trace id's short form for display. A trace id is a
+// client-supplied identifier and may be long; the inspector shows a prefix
+// because the full value is not meant to be read, and the tooltip carries the
+// whole one (see the template).
+func fmtTrace(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
 }
 
 // fmtChars renders a character count compactly ("9.2k chars"). Transcript
@@ -116,6 +141,37 @@ func fmtUSD(v float64) string {
 
 // fmtPct renders a 0–1 ratio as a percentage.
 func fmtPct(v float64) string { return fmt.Sprintf("%.1f%%", v*100) }
+
+// cacheGaugeClass grades a cache-hit rate for the Overview drawer's gauge.
+//
+// The thresholds are a judgement about this deployment's traffic, not styling,
+// which is why they live in Go: on the live store a well-cached route sits above
+// 95% and the deepseek routes sit near 48%, so "good" starts high deliberately —
+// a 60% cache hit on a hot route is real money left on the table, and colouring
+// it green would defeat the point of showing the number.
+func cacheGaugeClass(rate float64) string {
+	switch {
+	case rate >= 0.7:
+		return "ok"
+	case rate >= 0.35:
+		return "warn"
+	default:
+		return "err"
+	}
+}
+
+// pctWidth renders a 0–1 ratio as a CSS width, clamped so a rounding artefact
+// cannot push a gauge fill past its track.
+func pctWidth(v float64) string {
+	switch {
+	case v <= 0:
+		return "0%"
+	case v >= 1:
+		return "100%"
+	default:
+		return fmt.Sprintf("%.1f%%", v*100)
+	}
+}
 
 // fmtTokens abbreviates a token count: exact below 10k, then 12.3k / 1.2M.
 // Exactness matters at the low end (a 300-token request is a different animal
@@ -242,6 +298,20 @@ func truncBody(s string) string {
 // wasCut reports whether a body was truncated, so the template can offer the
 // full text only when there is more of it.
 func wasCut(s string) bool { return len(s) > blockPreviewBytes }
+
+// visualClampLen is how long a rendered body has to be before the inspector
+// clips it to a fixed height with a fade and an expand-link — independent of
+// wasCut/blockPreviewBytes, which caps what goes on the wire (8KB) for an
+// entirely different reason (never bloat the document with a multi-megabyte
+// body). Gating the visual clip on wasCut, as an earlier version of this
+// file did, meant almost nothing ever qualified: a body has to run past 8KB
+// before the class — and therefore the only way to un-clip it — appeared at
+// all, so a merely-long user message or reasoning block sat clipped inside a
+// 220px box with no "show full" link. These are the mockup's own numbers
+// (clampedBlock/clampedBlockPre): 900 characters for a message or reasoning
+// block, 500 for a tool call's snippet.
+func visualClampLen(s string) bool  { return len(s) > 900 }
+func snippetClampLen(s string) bool { return len(s) > 500 }
 
 // whitespaceOnlyNote stands in for a body that carries no printable text.
 //

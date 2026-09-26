@@ -14,6 +14,7 @@ import (
 	"github.com/cnf/arbiter/internal/logging"
 	"github.com/cnf/arbiter/internal/pipeline"
 	"github.com/cnf/arbiter/internal/store"
+	"github.com/cnf/arbiter/internal/ui"
 )
 
 // reloadDebounce coalesces the burst of events a single save produces. Most
@@ -34,7 +35,7 @@ const reloadDebounce = 150 * time.Millisecond
 // built. Anything short of that — a syntax error mid-save, an invalid router,
 // an unset ${ENV_VAR} — logs and leaves the current runtime serving, so a bad
 // edit never takes Arbiter down.
-func watchConfig(ctx context.Context, path string, handler *arbiterhttp.Handler, logger logging.Logger, writer store.Writer, cooldowns *pipeline.CooldownStore, reader *store.Reader) error {
+func watchConfig(ctx context.Context, path string, handler *arbiterhttp.Handler, logger logging.Logger, writer store.Writer, cooldowns *pipeline.CooldownStore, reader *store.Reader, adminUI *ui.Handler) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("create config watcher: %w", err)
@@ -86,7 +87,7 @@ func watchConfig(ctx context.Context, path string, handler *arbiterhttp.Handler,
 
 		case <-timerC:
 			timerC = nil
-			_ = reload(ctx, path, handler, logger, writer, cooldowns, reader)
+			_ = reload(ctx, path, handler, logger, writer, cooldowns, reader, adminUI)
 		}
 	}
 }
@@ -95,7 +96,7 @@ func watchConfig(ctx context.Context, path string, handler *arbiterhttp.Handler,
 // On any failure the previous runtime is left untouched and the error is
 // returned so the caller can report it — the file watcher only logs it,
 // while POST /admin/reload surfaces it to whoever asked.
-func reload(ctx context.Context, path string, handler *arbiterhttp.Handler, logger logging.Logger, writer store.Writer, cooldowns *pipeline.CooldownStore, reader *store.Reader) error {
+func reload(ctx context.Context, path string, handler *arbiterhttp.Handler, logger logging.Logger, writer store.Writer, cooldowns *pipeline.CooldownStore, reader *store.Reader, adminUI *ui.Handler) error {
 	cfg, err := config.Load(path)
 	if err != nil {
 		logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "config_reload"})
@@ -112,6 +113,15 @@ func reload(ctx context.Context, path string, handler *arbiterhttp.Handler, logg
 
 	models := configuredModels(cfg)
 	handler.Swap(arbiterhttp.NewRuntime(p, models, cfg.SessionAffinity.Header))
+	// adminUI is not rebuilt on reload (it holds no config-derived state
+	// besides this), so its copy of capture_content needs the same update
+	// buildPipeline just gave the new pipeline's copy — see main.go's
+	// matching call at startup. nil is accepted (tests that don't exercise
+	// the admin UI pass it that way) rather than forcing every caller to
+	// construct one just to satisfy this line.
+	if adminUI != nil {
+		adminUI.SetCaptureContent(cfg.Storage.CaptureContent)
+	}
 	slog.Info("config reloaded", "config", path, "providers", len(cfg.Providers), "models", len(models))
 	return nil
 }

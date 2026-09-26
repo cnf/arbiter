@@ -1,3 +1,15 @@
+// The request view-model layer: the row/line/fold/tree helpers that turn
+// store.RequestRow into something a page can render.
+//
+// The standalone requests *page* was deleted in #54's rip-out — the merged
+// Sessions page (#52) replaced it, and the newui rebuild is greenfield. The
+// old flat-list live tail (TailHandler, live.js) followed it into the rip-out
+// once the Sessions page grew its own tail (#52/laneLive.js) — see #56/#57.
+// What survives here is the view-model machinery Sessions and Discovery still
+// consume: foldRequestLines/attachTraceChildren (Sessions' lane timelines),
+// requestRowView/RoutingChain (Sessions, Discovery's drill-down), the keyset
+// cursor codec, and the guardrail-diff fragment (the session transcript).
+// Deleting the file wholesale to "finish the rip-out" would break all four.
 package ui
 
 import (
@@ -6,74 +18,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gorilla/mux"
 
 	"github.com/cnf/arbiter/internal/store"
 )
-
-// defaultListLimit is the UI's own default page size. It is *below* the
-// reader's cap (maxRequestListLimit, 500) deliberately: paging in 100-row
-// steps means the cap is rarely reached, so the "list is capped" note is an
-// exception rather than the normal case.
-const defaultListLimit = 100
-
-// requestKindFilter turns the optional ?kind= query parameter into a
-// store.RequestFilter.Kind value. Absent means "client" — the default view
-// is real traffic only, not Arbiter's own internal requests (classifier
-// calls today; title-gen/subagent calls later, same column). The literal
-// value "all" means no filter at all; anything else is used verbatim as an
-// exact match.
-func requestKindFilter(raw string) string {
-	switch raw {
-	case "":
-		return "client"
-	case "all":
-		return ""
-	default:
-		return raw
-	}
-}
-
-// requestFilterView is the filter form's state. Raw strings are kept for the
-// fields the operator types, so an invalid value is echoed back into the form
-// beside the error instead of being silently normalised away.
-type requestFilterView struct {
-	SinceRaw       string
-	Provider       string
-	Alias          string
-	StatusRaw      string
-	SessionKey     string
-	SessionKeyless bool
-	ErrorsOnly     bool
-	LimitRaw       string
-
-	// KindRaw is the query param exactly as given ("" for the default
-	// "client"-only view, "all", or an explicit kind) — not the resolved
-	// filter value, which collapses "" and "all" to the same "no filter"
-	// meaning and would make the form unable to tell them apart when
-	// re-rendering which option is selected.
-	KindRaw string
-
-	// ReqKindRaw is ?request_kind= as typed: what the request IS ("title",
-	// later "subagent"), which is a different question from KindRaw's who
-	// sent it. Free text rather than a fixed list, because the set of kinds
-	// is open — a new one is a config edit, not a code change.
-	ReqKindRaw string
-
-	// Flat is ?flat=1: render one row per request instead of collapsing runs
-	// of streamed turns. It is part of the filter form's state because it is
-	// part of what the reader is looking at, and the form re-renders from it.
-	Flat bool
-
-	// Any records whether any filter is set, so the empty state can offer
-	// "widen" only when there is something to widen.
-	Any bool
-}
 
 // maxRequestRows is the page size for the two readers that need every row the
 // store will give them: Flat mode, and a kind selection where the grouping is
@@ -94,6 +45,38 @@ const maxRequestRows = 500
 type requestRowView struct {
 	store.RequestRow
 	ShortSession string
+}
+
+// RoutingChain collapses a request's routing facts into the fewest segments
+// that carry information, per DESIGN.md's "Request rows" spec:
+//
+//	literal: anthropic claude-opus-4-6                                (one segment, no divergence)
+//	debug: openrouter preset/bugspray → google/gemma-4-26b-a4b-it:free (two, upstream diverged)
+//
+// The qualifier is the alias name the client asked for (AliasUsed), or the
+// word "literal" when req.Model was used as-is — AliasUsed/Model are the two
+// fields the store actually records per request (see store.Event's own
+// comment: "alias_used TEXT, -- NULL if req.Model was literal"). A named
+// routing-rule/policy label is not a separate stored field today — the
+// closest per-request fact is RoutingRationale's free text — so this does
+// not attempt to reproduce DESIGN.md's "debug"-style rule-name qualifier;
+// "literal" / the alias name are what the two stored fields actually give.
+//
+// The second segment (ActualModel) appears only when the upstream reported a
+// model other than the one routed to — never a redundant "X → X".
+//
+// This lives on requestRowView (not a free function taking store.RequestRow)
+// so the template can call it as a zero-arg method: {{.Head.RoutingChain}}.
+func (r requestRowView) RoutingChain() []string {
+	qualifier := "literal"
+	if r.AliasUsed != "" {
+		qualifier = r.AliasUsed
+	}
+	first := strings.TrimSpace(qualifier + ": " + strings.TrimSpace(r.Provider+" "+r.Model))
+	if r.ActualModel == "" || r.ActualModel == r.Model {
+		return []string{first}
+	}
+	return []string{first, r.ActualModel}
 }
 
 // requestLineView is one displayed line: either a single request, or a run of
@@ -127,6 +110,24 @@ type requestLineView struct {
 	// therefore a collapsed line rather than an ordinary request row.
 	Run bool
 
+	// Children holds non-client rows (classifier calls today) tied to this
+	// line by trace_id — see attachTraceChildren. They render immediately
+	// beneath their parent regardless of `ts`, which is the whole point:
+	// the classifier that serves a request routinely *finishes* before its
+	// parent (a fast child call inside a slower still-running request), and
+	// sorting by finish time alone put it above the row that caused it. A
+	// child is rendered, never re-sorted into the top-level list, so the
+	// list's own newest-first order (a separate, unrelated axis — see #8)
+	// is undisturbed by this.
+	Children []requestLineView
+
+	// IsChild marks a line rendered inside another line's Children. It only
+	// changes markup (indentation, a quieter row style); it is not a
+	// grouping identity and the tail does not need to know about it, since
+	// the live tail does not yet nest arrivals under their parent (#8's
+	// current scope is a static-page concern, not a live one).
+	IsChild bool
+
 	// Attr is Key reduced to a short, attribute-safe identifier, so the live
 	// tail can find the line a newly-arrived request belongs to instead of
 	// appending a second line beside it. A group key contains a NUL separator
@@ -137,6 +138,64 @@ type requestLineView struct {
 	// the "you can still open it up" affordance. It is a real URL, not a DOM
 	// toggle, because the page's filters are the address bar.
 	OpenHref string
+
+	// TitleParentState says why a request_kind="title" line is or is not
+	// nested under a parent — see attachTitleChildren and titleParentState.
+	// Empty for every other line: the whole question ("why isn't this
+	// nested") only makes sense for a title line, and Children/IsChild alone
+	// already say everything a classifier line needs to say.
+	TitleParentState titleParentState
+}
+
+// titleParentState is the three-way answer a title line needs and a
+// classifier line does not: a classifier's trace_id link is exact and always
+// resolvable when its parent is on the page, so "not nested" only ever means
+// "orphan, parent not on this page". A title line's link is inferred, and
+// the inference itself can fail in a way that is not a data gap — capture
+// being off is a config state, not a missing fact — so the reader needs to
+// know which of the three happened rather than seeing an unnested title line
+// and assuming the feature is broken.
+type titleParentState int
+
+const (
+	// titleParentNested means attachTitleChildren placed this line under a
+	// parent; TitleParentState is not rendered in this case (Children/IsChild
+	// on the parent already show it).
+	titleParentNested titleParentState = iota
+
+	// titleParentFound means ParentSessionForTitle resolved a session, but
+	// that session has no line on the current page (a different filter
+	// window, or paged out) — a data-availability gap, not a capture gap.
+	titleParentFound
+
+	// titleParentNotFoundCaptureOff means neither tier of
+	// ParentSessionForTitle matched, and storage.capture_content is off —
+	// tier 2 (content-hash) could not have run, so this is expected, not a
+	// failure of the join.
+	titleParentNotFoundCaptureOff
+
+	// titleParentNotFound means neither tier matched even though capture is
+	// on — tier 2 genuinely searched and found nothing (e.g. the client
+	// wrapped/expanded the text before the real send, so no verbatim block
+	// reappears — see PICKUP.md §17).
+	titleParentNotFound
+)
+
+// Note is the human-readable explanation for TitleParentState, rendered next
+// to an unnested title line so a reader sees *why* rather than assuming the
+// feature silently failed. Empty for titleParentNested — Children/IsChild on
+// the parent already say everything in that case.
+func (s titleParentState) Note() string {
+	switch s {
+	case titleParentFound:
+		return "parent session not on this page"
+	case titleParentNotFoundCaptureOff:
+		return "no parent found — capture_content is off, so only the session-id link could be tried"
+	case titleParentNotFound:
+		return "no parent found"
+	default:
+		return ""
+	}
 }
 
 // lineKeySeparator splits the parts of a group key. A NUL cannot occur in any
@@ -267,9 +326,6 @@ func foldRequestLines(rows []requestRowView) []requestLineView {
 	for i := range lines {
 		lines[i].Count = len(lines[i].Rows)
 		lines[i].Run = lines[i].Count > 1 && allStreamed(lines[i].Rows)
-		if lines[i].Run {
-			lines[i].OpenHref = flatLineHref(lines[i].Head)
-		}
 	}
 
 	// A group that does not fold expands back into one line per row, in page
@@ -298,6 +354,144 @@ func foldRequestLines(rows []requestRowView) []requestLineView {
 			})
 		}
 	}
+	return attachTraceChildren(out)
+}
+
+// attachTraceChildren nests each non-client line (a classifier call today)
+// under the client line sharing its trace_id, so a request and the one
+// classifier call `trace_id` ties to it (#19 confirmed this is always 1:1 —
+// every trace with a classifier call holds exactly one) render as one visual
+// unit instead of two unrelated-looking rows.
+//
+// This exists because ordering alone does not fix legibility (#8): a
+// classifier call frequently *finishes* before the request that spawned it —
+// it is a fast detour inside a slower still-running request — so `ts DESC`
+// can put the child above or below its own cause depending on timing.
+// Nesting sidesteps the sort question entirely: a child always renders under
+// its parent, wherever the parent sits in the list. The top-level list order
+// (#8's derived-arrival-vs-finish-time question) is untouched here; this only
+// changes what happens once a row and its cause are both on the page.
+//
+// A client *line* can be a folded run of several streamed turns (see
+// foldRequestLines), and only its Head's row is shown — but each turn folded
+// into it is its own request with its own trace_id, and a classifier can
+// belong to any of them, not just the newest. So the match is keyed on every
+// row inside every client line, not just Head, or a classifier tied to an
+// older turn of a folded run would show up as unmatched.
+//
+// A non-client line with no client sibling on this page (its parent fell off
+// the page, or never got a client row at all — #19 found 65 such traces,
+// consistent with a rejected/failed request whose client row was never
+// written) stays at the top level, in its original position, rather than
+// being dropped or moved: this is a summary of the list, not a filter on it,
+// matching foldRequestLines's own rule.
+func attachTraceChildren(lines []requestLineView) []requestLineView {
+	byTrace := make(map[string]int, len(lines)) // trace_id -> line's own index in `lines`
+	for i, line := range lines {
+		if line.Head.Kind != "client" {
+			continue
+		}
+		for _, row := range line.Rows {
+			if row.TraceID != "" {
+				byTrace[row.TraceID] = i
+			}
+		}
+	}
+
+	children := make(map[int][]requestLineView, len(lines)) // parent's index in `lines` -> its children
+	origToOut := make(map[int]int, len(lines))              // index in `lines` -> index in `out`, client lines only
+	out := make([]requestLineView, 0, len(lines))
+	for i, line := range lines {
+		if line.Head.Kind == "client" {
+			origToOut[i] = len(out)
+			out = append(out, line)
+			continue
+		}
+		if parent, ok := byTrace[line.Head.TraceID]; ok && line.Head.TraceID != "" {
+			line.IsChild = true
+			children[parent] = append(children[parent], line)
+			continue
+		}
+		// No client sibling on this page: keep it where it was.
+		origToOut[i] = len(out)
+		out = append(out, line)
+	}
+
+	for parent, kids := range children {
+		out[origToOut[parent]].Children = kids
+	}
+	return out
+}
+
+// attachTitleChildren nests a request_kind="title" line under a line sharing
+// its resolved parent session, the same rendering pattern attachTraceChildren
+// uses for a classifier call (#8) — but it cannot reuse that function's
+// trace_id match: a title-gen request is its own top-level HTTP call with no
+// trace_id in common with the session it titles. The link instead comes from
+// resolveParent (store.Reader.ParentSessionForTitle), called once per title
+// line on the page.
+//
+// Only titles the page can actually place are nested: a resolved parent
+// session_key with no line on this page keeps the title line top-level,
+// exactly like attachTraceChildren's orphaned-classifier case — folding is a
+// summary of the list, not a filter on it, so an unplaceable title still
+// renders, just unnested.
+//
+// This shares the classifier nesting's known display quirk with streamed
+// runs (grouping/stream-collapsing) — tracked separately, not addressed
+// here; see PICKUP.md.
+func attachTitleChildren(lines []requestLineView, captureContent bool, resolveParent func(requestID int64) (sessionKey string, ok bool)) []requestLineView {
+	bySession := make(map[string]int, len(lines)) // session_key -> line's own index in `lines`, non-title client lines only
+	for i, line := range lines {
+		if line.Head.Kind != "client" || line.Head.RequestKind == "title" {
+			continue
+		}
+		if line.Head.SessionKey == "" {
+			continue
+		}
+		if _, ok := bySession[line.Head.SessionKey]; !ok {
+			bySession[line.Head.SessionKey] = i
+		}
+	}
+
+	children := make(map[int][]requestLineView, len(lines))
+	origToOut := make(map[int]int, len(lines))
+	out := make([]requestLineView, 0, len(lines))
+	for i, line := range lines {
+		if line.Head.Kind != "client" || line.Head.RequestKind != "title" {
+			origToOut[i] = len(out)
+			out = append(out, line)
+			continue
+		}
+		sk, ok := resolveParent(line.Head.ID)
+		if ok && sk != "" {
+			if parent, ok := bySession[sk]; ok {
+				line.IsChild = true
+				children[parent] = append(children[parent], line)
+				continue
+			}
+			// Resolved to a real session, just not one with a line on this
+			// page (a different filter window, or paged out) — a page-
+			// scoping fact, not a capture-config one.
+			line.TitleParentState = titleParentFound
+		} else if captureContent {
+			// Both tiers ran and neither matched — tier 2 genuinely searched.
+			line.TitleParentState = titleParentNotFound
+		} else {
+			// Tier 1 (session_key) found nothing, and tier 2 (content-hash)
+			// could not run at all with capture off — an expected gap, not
+			// a failed join.
+			line.TitleParentState = titleParentNotFoundCaptureOff
+		}
+		// No resolvable parent, or its session has no line on this page: keep
+		// it where it was.
+		origToOut[i] = len(out)
+		out = append(out, line)
+	}
+
+	for parent, kids := range children {
+		out[origToOut[parent]].Children = append(out[origToOut[parent]].Children, kids...)
+	}
 	return out
 }
 
@@ -310,343 +504,6 @@ func allStreamed(rows []requestRowView) bool {
 		}
 	}
 	return true
-}
-
-// flatLineHref is the flat view of one line's requests: the same list with
-// grouping off, narrowed to the group's own routing facts.
-//
-// It filters on the parameters the list actually supports. `model` is not one of
-// them, so a conversation that switched model inside one line opens slightly
-// wider than the line — the alternative is a link that fetches nothing, and a
-// link that over-shows while the reader can see the model column is the honest
-// error of the two. The count is only ever a link target, never a claim about
-// exactly what will appear.
-func flatLineHref(head requestRowView) string {
-	q := url.Values{}
-	q.Set("flat", "1")
-	if head.SessionKey != "" {
-		q.Set("session", head.SessionKey)
-	} else {
-		// No session to narrow by: the flat list is the only view that can
-		// show an unpinned row at all.
-		q.Set("no_session", "1")
-	}
-	if head.Provider != "" {
-		q.Set("provider", head.Provider)
-	}
-	if head.AliasUsed != "" {
-		q.Set("alias", head.AliasUsed)
-	}
-	if head.StatusCode != 0 {
-		q.Set("status", strconv.FormatInt(head.StatusCode, 10))
-	}
-	if head.RequestKind != "" {
-		q.Set("request_kind", head.RequestKind)
-	}
-	return "/admin/ui/requests?" + q.Encode()
-}
-
-// flatToggleHref is the "every request" / "grouped" switch: the current filter
-// set with grouping flipped, so turning it on keeps the window the reader was
-// looking at. It is a plain URL for the same reason every other filter is —
-// the view a reader is looking at is the address bar, so it can be reloaded,
-// bookmarked and shared.
-func flatToggleHref(q url.Values, flat bool) string {
-	out := url.Values{}
-	for k, vs := range q {
-		if k == "flat" || k == "after" {
-			continue
-		}
-		for _, v := range vs {
-			out.Add(k, v)
-		}
-	}
-	if !flat {
-		out.Set("flat", "1")
-	}
-	if len(out) == 0 {
-		return "/admin/ui/requests"
-	}
-	return "/admin/ui/requests?" + out.Encode()
-}
-
-// rowsView is what the request table renders. It is carried by the page and by
-// the htmx fragment alike, so a swapped table and a loaded page cannot
-// disagree about the rows, the pager, or the filter state.
-type rowsView struct {
-	// Rows is the page's rows as the store returned them, newest first, one
-	// per request. It is what Flat mode renders and what the live tail's
-	// template keeps its `data-id` on — a request is a row there.
-	Rows []requestRowView
-
-	// Lines is the same rows collapsed into one line per "same event happening
-	// again" — see foldRequestLines. It is what the default view renders.
-	Lines []requestLineView
-
-	// Flat turns grouping off: every request gets its own row, exactly as the
-	// list rendered before grouping existed. It is a real query parameter
-	// (?flat=1) rather than a client-side toggle, so the view is shareable and
-	// the count's own link can open the constituents in place.
-	Flat bool
-
-	// FlatHref and GroupedHref are the two halves of that switch, carrying the
-	// current filters so flipping it keeps the window.
-	FlatHref    string
-	GroupedHref string
-
-	// RunsOnPage counts the collapsed lines, so the page can state what it
-	// folded rather than leaving the reader to wonder where rows went.
-	RunsOnPage int
-
-	More    bool
-	MoreURL string
-	F       requestFilterView
-
-	// Tail is the live view's state. It rides on rowsView rather than
-	// requestsView because the tail is about these rows — it appends to the table
-	// the fragment renders — and keeping it here is what lets the same struct
-	// serve both the page and the fragment.
-	Tail tailView
-}
-
-// tailView is the live tail's initial state, rendered into data attributes.
-//
-// The cursor is the *newest* row already on screen, so starting the tail shows
-// what arrives next rather than replaying what is already there — and because it
-// comes from the rows themselves it is the stored `ts` text, which is the only
-// form that compares correctly against the column.
-type tailView struct {
-	// Enabled is false when the store is disabled or the list is not the newest
-	// page, in which case there is nothing sensible to follow.
-	Enabled bool
-
-	// Src is the tail endpoint, with the current window as a parameter. The rest
-	// of the filters are passed separately so the fragment's own query string is
-	// built in one place (see tailFilterQuery).
-	Src string
-
-	// Cursor is the opaque token for "everything after what you are showing".
-	Cursor string
-
-	// FilterQuery is the current filter set as a query string. It is kept opaque
-	// and appended verbatim so the tail follows exactly the list it sits under.
-	FilterQuery string
-}
-
-// requestsView is the full page: the table view plus the chrome.
-type requestsView struct {
-	viewBase
-	rowsView
-}
-
-// RequestsHandler handles GET /admin/ui/requests: the request list, newest
-// first, with the 7a filters as a real form.
-//
-// Query parameters mirror the JSON endpoint's (since, provider, session,
-// alias, status, errors, limit) plus no_session and the keyset cursor
-// (before_ts/before_id). A malformed value is a 400 naming the parameter, never
-// a silently ignored filter: a filter that quietly returns unfiltered data
-// shows wrong numbers with no indication anything was dropped.
-func (h *Handler) RequestsHandler(w http.ResponseWriter, r *http.Request) {
-	if disabled := h.storeDisabled(w, r); disabled && fragmentsRequested(r) {
-		return
-	}
-	q := r.URL.Query()
-	fv := requestFilterView{
-		SinceRaw:   q.Get("since"),
-		Provider:   q.Get("provider"),
-		Alias:      q.Get("alias"),
-		StatusRaw:  q.Get("status"),
-		SessionKey: q.Get("session"),
-		LimitRaw:   q.Get("limit"),
-		KindRaw:    q.Get("kind"),
-		ReqKindRaw: q.Get("request_kind"),
-		Flat:       q.Has("flat"),
-	}
-
-	f := store.RequestFilter{
-		Provider:       fv.Provider,
-		Alias:          fv.Alias,
-		SessionKey:     fv.SessionKey,
-		SessionKeyless: q.Has("no_session"),
-		ErrorsOnly:     q.Has("errors"),
-		Limit:          defaultListLimit,
-		Kind:           requestKindFilter(q.Get("kind")),
-		RequestKind:    fv.ReqKindRaw,
-	}
-	// since: a Go duration, matching the JSON surface's own parameter so the
-	// two read surfaces describe one window the same way.
-	if raw := q.Get("since"); raw != "" {
-		d, err := time.ParseDuration(raw)
-		if err != nil || d <= 0 {
-			h.fail(w, r, http.StatusBadRequest,
-				`since must be a positive Go duration, e.g. "24h" or "168h"`)
-			return
-		}
-		f.Since = time.Now().UTC().Add(-d)
-	}
-	if raw := q.Get("status"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 100 || n > 599 {
-			h.fail(w, r, http.StatusBadRequest, "status must be an HTTP status code (100-599)")
-			return
-		}
-		f.StatusCode = n
-	}
-	if raw := q.Get("limit"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 {
-			h.fail(w, r, http.StatusBadRequest, "limit must be a positive integer")
-			return
-		}
-		f.Limit = n
-	}
-	// The keyset cursor, as one opaque token (see encodeCursor).
-	if raw := q.Get("after"); raw != "" {
-		ts, id, err := decodeCursor(raw)
-		if err != nil {
-			h.fail(w, r, http.StatusBadRequest, "after is not a valid cursor: "+err.Error())
-			return
-		}
-		f.BeforeTs, f.BeforeID = ts, id
-	}
-
-	// The cursor is not part of the filter form's own state, so the form never
-	// shows it; but it *is* part of "is anything filtered", because a cursor
-	// means this is a later page rather than the first.
-	fv.Any = f.Provider != "" || f.Alias != "" || f.SessionKey != "" || f.StatusCode != 0 ||
-		f.ErrorsOnly || f.SessionKeyless || !f.Since.IsZero() || fv.KindRaw != "" || fv.ReqKindRaw != ""
-
-	view := requestsView{viewBase: h.base("Requests"), rowsView: rowsView{F: fv}}
-
-	// Default-list read: the page renders Lines, which fold Rows. Two readers
-	// need the full five-hundred, so they keep the plain fetch:
-	//
-	//   - ?flat=1, which renders one row per request and would otherwise be a
-	//     lie about the store ("every completed request") the moment a page
-	//     needed more rows than were fetched to fill its lines;
-	//   - a classifier/counts-style selection (kind=all or an explicit kind),
-	//     where a line's count is itself the thing being studied.
-	if h.reader != nil {
-		if fv.Flat || f.Kind != "client" {
-			f.Limit = maxRequestRows
-		}
-		rows, err := h.reader.ListRequests(r.Context(), f)
-		if err != nil {
-			h.logger.LogError(r.Context(), "error", err,
-				map[string]interface{}{"phase": "admin_ui_requests"})
-			h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
-			return
-		}
-		for _, row := range rows {
-			view.Rows = append(view.Rows, requestRowView{
-				RequestRow:   row,
-				ShortSession: shortSessionKey(row.SessionKey),
-			})
-		}
-		// moreURL needs the stored rows (it reads the cursor off the last one),
-		// not the view rows.
-		view.MoreURL = moreURL(q, rows, f.Limit)
-		view.More = view.MoreURL != ""
-		view.Tail = tailFor(q, rows)
-	}
-
-	// Grouping is applied after the tail's state, not before: the tail follows
-	// the *rows*, and a poll's payload is rows (see TailHandler). A grouped view
-	// therefore shows half of what its live control reports until the tail grows
-	// the same folding — stated in the README and in the button's own title
-	// rather than left for the reader to work out.
-	view.FlatHref = flatToggleHref(q, true)
-	view.GroupedHref = flatToggleHref(q, false)
-	// The render mode travels with the rows it describes. Leaving this unset made
-	// Flat mode render the *lines* template with no lines — an empty table that
-	// looked like a store with no traffic.
-	view.Flat = fv.Flat
-	if !fv.Flat {
-		view.Lines = foldRequestLines(view.Rows)
-		for _, line := range view.Lines {
-			if line.Run {
-				view.RunsOnPage++
-			}
-		}
-	}
-
-	h.render(w, r, "requests", "req-rows", view)
-}
-
-// tailFor builds the live tail's initial state from the rows on the page.
-//
-// It returns a disabled state when the page is not the newest one. A tail only
-// makes sense on the first page: on a later page the newest row is not on screen,
-// so "everything after what you are showing" would mean starting the view from
-// the middle of history — the tail would then show traffic newer than a page the
-// reader scrolled to, which is not what a live view means. Refusing it is the
-// honest answer; the query-string cursor is what makes the page a later one, and
-// it is not part of the filter form.
-func tailFor(q url.Values, rows []store.RequestRow) tailView {
-	src := "/admin/ui/requests/tail"
-	if q.Get("after") != "" || len(rows) == 0 {
-		return tailView{Src: src, FilterQuery: tailFilterQuery(q)}
-	}
-	ts, id, ok := store.NewestCursor(rows)
-	if !ok {
-		return tailView{Src: src, FilterQuery: tailFilterQuery(q)}
-	}
-	return tailView{
-		Enabled:     true,
-		Src:         src,
-		Cursor:      encodeCursor(ts, id),
-		FilterQuery: tailFilterQuery(q),
-	}
-}
-
-// tailFilterQuery renders the filter set the tail should follow, excluding the
-// paging cursor — the tail is watching the list, not a page of it — and including
-// the window so the tail's `since` does not drift away from the list's.
-//
-// `flat` is included because it is not a filter but a *rendering mode*, and the
-// tail has to follow the mode of the table it appends to: in a grouped list the
-// client places a polled row into an existing line, and in a flat one it prepends
-// a row. A tail that assumed the wrong mode would either duplicate a line or
-// scatter rows.
-func tailFilterQuery(q url.Values) string {
-	out := url.Values{}
-	for _, k := range []string{"since", "provider", "alias", "status", "session", "no_session", "errors", "kind", "flat"} {
-		if v := q.Get(k); v != "" || (k == "errors" || k == "no_session") && q.Has(k) {
-			out.Set(k, v)
-		}
-	}
-	return out.Encode()
-}
-
-// moreURL builds the keyset continuation link: the current filter set plus the
-// cursor from the last row rendered. It returns "" when the list is complete.
-//
-// "Complete" is decided by the page size, not by a COUNT: the reader clamps the
-// limit itself, so a short page is the only signal available without a second
-// query, and an empty page is the definitive end. A full page may therefore
-// offer one more page that turns out to be empty — a harmless extra click,
-// where the alternative (a COUNT over the same filter) costs a query on every
-// page view.
-func moreURL(q url.Values, rows []store.RequestRow, limit int) string {
-	if len(rows) == 0 || len(rows) < limit || limit <= 0 {
-		return ""
-	}
-	last := rows[len(rows)-1]
-	if last.TsRaw == "" {
-		return ""
-	}
-	next := url.Values{}
-	for _, k := range []string{"since", "provider", "alias", "status", "session", "errors", "limit"} {
-		if v := q.Get(k); v != "" || (k == "errors" && q.Has(k)) {
-			next.Set(k, v)
-		}
-	}
-	if q.Has("no_session") {
-		next.Set("no_session", "1")
-	}
-	next.Set("after", encodeCursor(last.TsRaw, last.ID))
-	return "/admin/ui/requests?" + next.Encode()
 }
 
 // blockView pairs a captured block with the request it belongs to, so the
@@ -693,38 +550,23 @@ func decodeCursor(raw string) (string, int64, error) {
 	return parts[0], id, nil
 }
 
-// detailView is the request detail page: metadata, the conversation path
-// through the session, and the captured content when it was asked for.
-type detailView struct {
-	viewBase
-	D store.RequestDetail
-
-	// Turns is the session's requests up to and including this one, so the
-	// page can show where this request sits in a conversation and link to any
-	// other point in it. Empty for a request with no session key, which is not
-	// a conversation.
-	Turns  []store.SessionRequest
-	Blocks []blockView
-
-	// ContentLoaded distinguishes "the content fragment was requested" from
-	// "this request has no captured content" — capture off and nothing
-	// captured are different answers.
-	ContentLoaded bool
-
-	// ShowingAsSent is true when the client's original, pre-guardrail text is
-	// being displayed instead of the default post-guardrail view (see #13).
-	// The template uses it to render the toggle link's other state.
-	ShowingAsSent bool
-
-	// HasGuardrailedVariant is true when this request has a distinct
-	// pre-guardrail capture at all, i.e. a pre-guardrail actually ran. When
-	// false the toggle link is pointless — there is only one version of the
-	// request — and the template omits it.
-	HasGuardrailedVariant bool
+// guardrailDiffView is the diff fragment: one block's before/after text,
+// rendered as a unified line diff. Requested on demand (see #48's "guardrail
+// touch" chip) rather than computed eagerly for every block — almost every
+// request has at most one touched block (the system preamble), so this is cheap
+// even though the mechanism itself is general.
+type guardrailDiffView struct {
+	OK  bool
+	Ops []store.DiffOp
 }
 
-// RequestHandler handles GET /admin/ui/requests/{id}.
-func (h *Handler) RequestHandler(w http.ResponseWriter, r *http.Request) {
+// GuardrailDiffHandler handles GET
+// /admin/ui/requests/{id}/guardrail-diff?msg=N&pos=M: the line-level diff
+// between what the client sent and what actually went upstream for one
+// block. Msg/pos are query parameters, not part of the block itself, because
+// this is reached from a trigger element that only carries the block's
+// position — the same reasoning as the hash-based /content?hash= link.
+func (h *Handler) GuardrailDiffHandler(w http.ResponseWriter, r *http.Request) {
 	if disabled := h.storeDisabled(w, r); disabled && fragmentsRequested(r) {
 		return
 	}
@@ -733,93 +575,29 @@ func (h *Handler) RequestHandler(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, http.StatusBadRequest, "request id must be a positive integer")
 		return
 	}
-	view := detailView{viewBase: h.base("Requests")}
+	msgIndex, err1 := strconv.ParseInt(r.URL.Query().Get("msg"), 10, 64)
+	position, err2 := strconv.ParseInt(r.URL.Query().Get("pos"), 10, 64)
+	if err1 != nil || err2 != nil {
+		h.fail(w, r, http.StatusBadRequest, "msg and pos must be integers")
+		return
+	}
 
+	view := guardrailDiffView{}
 	if h.reader != nil {
-		detail, ok, err := h.reader.GetRequest(r.Context(), id)
+		before, after, ok, err := h.reader.GuardrailDiff(r.Context(), id, msgIndex, position)
 		if err != nil {
 			h.logger.LogError(r.Context(), "error", err,
-				map[string]interface{}{"phase": "admin_ui_request"})
+				map[string]interface{}{"phase": "admin_ui_guardrail_diff"})
 			h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
 			return
 		}
-		if !ok {
-			h.fail(w, r, http.StatusNotFound, "no request with that id")
-			return
-		}
-		view.D = detail
-		view.Turns = h.turnsFor(r, detail)
-	}
-	view.Title = "request " + strconv.FormatInt(id, 10)
-
-	h.render(w, r, "request", "request-content", view)
-}
-
-// turnsFor returns the session's requests in order, truncated at d. It gives
-// the detail page a position in a conversation, which is what makes "which
-// turn was this" answerable; a request with no session key has no such
-// position and gets none. An error here degrades the page rather than failing
-// it — the request's own metadata is already loaded and remains correct.
-func (h *Handler) turnsFor(r *http.Request, d store.RequestDetail) []store.SessionRequest {
-	if d.SessionKey == "" {
-		return nil
-	}
-	rows, err := h.reader.Session(r.Context(), d.SessionKey, 500)
-	if err != nil {
-		h.logger.LogError(r.Context(), "warn", err,
-			map[string]interface{}{"phase": "admin_ui_request_session"})
-		return nil
-	}
-	for i, row := range rows {
-		if row.ID == d.ID {
-			return rows[:i+1]
+		view.OK = ok
+		if ok {
+			view.Ops = store.LineDiff(before, after)
 		}
 	}
-	return nil
-}
-
-// wrapBlocks attaches the owning request id to each block.
-func wrapBlocks(id int64, blocks []store.ContentBlock) []blockView {
-	out := make([]blockView, 0, len(blocks))
-	for _, b := range blocks {
-		out = append(out, blockView{ContentBlock: b, OwnerID: id})
-	}
-	return out
-}
-
-// RequestContentHandler handles GET /admin/ui/requests/{id}/content: the
-// captured blocks, as an htmx fragment loaded lazily so a multi-megabyte
-// prompt never delays the metadata view.
-//
-// It is also the "pull one point out" path: ?turn=N returns the conversation
-// from its start up to turn N, so any earlier point in a session can be read
-// on its own without scrolling a full transcript.
-func (h *Handler) RequestContentHandler(w http.ResponseWriter, r *http.Request) {
-	if disabled := h.storeDisabled(w, r); disabled && fragmentsRequested(r) {
-		return
-	}
-	id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
-	if err != nil || id < 1 {
-		h.fail(w, r, http.StatusBadRequest, "request id must be a positive integer")
-		return
-	}
-	showAsSent := r.URL.Query().Get("as_sent") == "1"
-	view := detailView{viewBase: h.base("Requests"), ContentLoaded: true, ShowingAsSent: showAsSent}
-
-	if h.reader != nil {
-		blocks, hasGuardrailedVariant, err := h.reader.ContentForRequest(r.Context(), id, showAsSent)
-		if err != nil {
-			h.logger.LogError(r.Context(), "error", err,
-				map[string]interface{}{"phase": "admin_ui_request_content"})
-			h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
-			return
-		}
-		view.Blocks = wrapBlocks(id, blocks)
-		view.ContentLoaded = true
-		view.HasGuardrailedVariant = hasGuardrailedVariant
-		if _, ok, err := h.reader.GetRequest(r.Context(), id); err == nil && ok {
-			view.D.ID = id
-		}
-	}
-	h.render(w, r, "request", "request-content", view)
+	// Always a fragment: this is reached only from a "guardrail touch" chip's
+	// htmx fetch, never a page a reader navigates to directly, so there is no
+	// full-page form to fall back to (unlike render's page/fragment split).
+	h.exec(w, r, h.fragments, "fragments", "guardrail-diff", view)
 }

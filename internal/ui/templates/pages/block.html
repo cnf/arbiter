@@ -1,8 +1,12 @@
+{{/* block.html — the Discovery drill-down page (#50): every request that
+contains one repeated block, newest first. Reached from a "view all
+requests" link on the ledger's detail pane. The actual markup lives in
+partials/blockRequests.html's "block-requests" definition — this file only
+supplies the page-level wrapper, so the full-page and htmx-fragment
+responses render from the exact same block (see that file's own comment
+on why the split exists). */}}
 {{define "content"}}
-<h1>Block <span class="mono">{{.ShortHash}}</span></h1>
-<p class="lede">One repeated block, and the requests that contain it. This is the
-drill-down that turns a hash into traffic: which client sends it, and when it
-started.</p>
-
-{{template "block-requests" .}}
+<div class="main">
+  {{template "block-requests" .}}
+</div>
 {{end}}

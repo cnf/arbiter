@@ -107,6 +107,38 @@ CREATE TABLE IF NOT EXISTS content_refs (
 );
 CREATE INDEX IF NOT EXISTS idx_content_refs_owner ON content_refs(owner_kind, owner_id, direction, msg_index, position);
 CREATE INDEX IF NOT EXISTS idx_content_refs_hash ON content_refs(hash);
+-- Covers RepeatedContent/ContentHashCounts (internal/store/reader.go,
+-- discovery.go): both group content_refs by hash, filtered to
+-- owner_kind='request' AND direction='request', joining owner_id to
+-- requests. Without this index SQLite drives off idx_content_refs_owner
+-- (owner_kind first) and, worse, MIN(block_type)/MIN(role) in
+-- RepeatedContent force a rowid lookback into the base table for every
+-- matching row. Measured on a 1.1GB production DB (~4M direction='request'
+-- refs, 30-day window): this index (with block_type/role included, making
+-- it fully covering) took RepeatedContent from ~16s to ~4.4s and
+-- ContentHashCounts from ~7s to ~3.8s.
+CREATE INDEX IF NOT EXISTS idx_content_refs_repeated ON content_refs(owner_kind, direction, hash, owner_id, block_type, role);
+
+-- ---------------------------------------------------------------------------
+-- Discovery state
+-- ---------------------------------------------------------------------------
+-- Operator-set seen/ignored marks on a repeated content block, keyed by the
+-- same hash content_refs/content use. No row means "unseen" — the default and
+-- by far the common state, so this table only ever holds the blocks an
+-- operator actually touched rather than one row per distinct hash.
+--
+-- state is 'seen' or 'ignored', never 'unseen' — see above. marked_at_last_seen
+-- is the block's RepeatedContent.LastSeen value at the moment it was marked,
+-- captured so a 'seen' mark can tell "nothing new since I looked" from "this
+-- reappeared after I saw it": if the live last_seen advances past this value,
+-- the UI reports the block as unseen again despite the stored row. 'ignored'
+-- rows are not re-evaluated this way — an operator who ignores a pattern (e.g.
+-- known boilerplate) means it permanently, not "until it's sent once more".
+CREATE TABLE IF NOT EXISTS discovery_state (
+    hash                BLOB PRIMARY KEY,
+    state               TEXT NOT NULL,  -- 'seen' | 'ignored'
+    marked_at_last_seen TEXT NOT NULL
+);
 
 -- ---------------------------------------------------------------------------
 -- Session-affinity pins

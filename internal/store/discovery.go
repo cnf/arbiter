@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // MaxRepeatedLimit caps a discovery query. It matches the bound RepeatedContent
@@ -19,21 +20,26 @@ const MaxRepeatedLimit = 200
 // page ends up describing a different query than the one on screen.
 const MinRepeatedRequests = 2
 
-// RequestsForContent returns the requests that contain one content block, newest
-// first. It is the drill-down from a repeated block to the traffic it came from,
-// and it is the whole reason the block list is worth having — a hash tells you
-// nothing about which client sends it, and the request rows do.
+// SessionsForContent returns, for one content block, the first request in
+// each distinct session that contains it — newest session-activity first.
+// This is the drill-down from a repeated block to the traffic it came from:
+// a hash tells you nothing about which client sends it, and this answers "how
+// many different sessions, and what did each first look like" rather than
+// "how many times was it sent" (a client resends its whole history every
+// turn, so counting raw references or even raw requests overstates spread —
+// see RepeatedContent's own doc comment on why session count, not request
+// count, is what drives the page).
 //
-// It is `id IN (subquery)` rather than a join against content_refs for two
-// reasons. A join multiplies a request once per matching *reference* — a block
-// re-sent in three messages of one conversation is three rows for one request —
-// so the list would report a request three times. And the subquery lets
-// requestRowColumns and scanRequestRow be reused exactly as ListRequests uses
-// them, so a column added to the list projection cannot land in one query and
-// not the other.
+// A request with no session_key cannot be grouped with anything, so each one
+// is its own singleton "session" in the ranking below — it still shows up
+// once, not deduplicated away.
 //
-// The subquery is served by idx_content_refs_hash.
-func (r *Reader) RequestsForContent(ctx context.Context, hash string, limit int) ([]RequestRow, error) {
+// Implemented as a window function over the already-narrow set of requests
+// that reference this hash (served by idx_content_refs_hash), not over the
+// full requests table — ROW_NUMBER() partitioned by session_key (or the
+// request's own id, when sessionless) picks the earliest request per
+// partition, and the outer query keeps only that row.
+func (r *Reader) SessionsForContent(ctx context.Context, hash string, limit int) ([]RequestRow, error) {
 	raw, err := decodeHash(hash)
 	if err != nil {
 		return nil, err
@@ -42,16 +48,32 @@ func (r *Reader) RequestsForContent(ctx context.Context, hash string, limit int)
 		limit = maxRequestListLimit
 	}
 
-	q := "SELECT" + requestRowColumns + ` FROM requests
-WHERE kind = 'client' AND id IN (
-    SELECT cr.owner_id FROM content_refs cr
-    WHERE cr.owner_kind = 'request' AND cr.hash = ?
+	q := `
+WITH ranked (id, trace_id, ts, ts_text, session_key, format, provider, model, actual_model,
+             alias_used, routing_rationale, domain, effort, cost_class, input_tokens,
+             output_tokens, cost_usd, latency_ms, status_code, error, stream, config_epoch,
+             kind, request_kind, rn) AS (
+    SELECT` + requestRowColumns + `,
+           ROW_NUMBER() OVER (
+             PARTITION BY COALESCE(NULLIF(session_key, ''), 'sessionless:' || id)
+             ORDER BY ts ASC, id ASC
+           )
+    FROM requests
+    WHERE kind = 'client' AND id IN (
+        SELECT cr.owner_id FROM content_refs cr
+        WHERE cr.owner_kind = 'request' AND cr.hash = ?
+    )
 )
+SELECT id, trace_id, ts, ts_text, session_key, format, provider, model, actual_model,
+       alias_used, routing_rationale, domain, effort, cost_class, input_tokens,
+       output_tokens, cost_usd, latency_ms, status_code, error, stream, config_epoch,
+       kind, request_kind
+FROM ranked WHERE rn = 1
 ORDER BY ts DESC, id DESC LIMIT ?`
 
 	rows, err := r.db.QueryContext(ctx, q, raw, limit)
 	if err != nil {
-		return nil, fmt.Errorf("requests for content: %w", err)
+		return nil, fmt.Errorf("sessions for content: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -146,7 +168,10 @@ GROUP BY c.hash, c.kind, c.body`
 func (r *Reader) ContentHashCounts(ctx context.Context, w Window, minRequests, minSessions int) (total, matching int64, err error) {
 	// The HAVING conditions mirror RepeatedContent's; TestContentHashCountsAgree
 	// holds the two together on the same seeded rows, which is what keeps this
-	// from drifting into a different definition of "repeated".
+	// from drifting into a different definition of "repeated". The direction
+	// filter must also mirror RepeatedContent's for the same reason — a count
+	// that includes guardrailed/response rows would disagree with a list that
+	// doesn't.
 	const q = `
 SELECT COUNT(*) AS total,
        COALESCE(SUM(CASE WHEN requests >= ? AND sessions >= ? THEN 1 ELSE 0 END), 0) AS matching
@@ -156,7 +181,7 @@ FROM (
            COUNT(DISTINCT r.session_key) AS sessions
     FROM content_refs cr
     JOIN requests r ON r.id = cr.owner_id AND cr.owner_kind = 'request'
-    WHERE r.ts >= ? AND r.kind = 'client'
+    WHERE r.ts >= ? AND r.kind = 'client' AND cr.direction = 'request'
     GROUP BY cr.hash
 )`
 
@@ -179,4 +204,271 @@ func ContentHashHex(hash []byte) string { return hex.EncodeToString(hash) }
 func RepeatedBoundsNote() string {
 	return fmt.Sprintf("min_requests %d or more, min_sessions 0 or more, limit 1-%d",
 		MinRepeatedRequests, MaxRepeatedLimit)
+}
+
+// DiscoveryState is an operator's seen/ignored mark on one repeated-content
+// hash. See schema.sql's comment on discovery_state for why "unseen" is not a
+// stored value: it is simply the absence of a row.
+const (
+	DiscoverySeen    = "seen"
+	DiscoveryIgnored = "ignored"
+)
+
+// ErrBadDiscoveryState reports a state value that is neither "seen" nor
+// "ignored" — the only two states this table ever stores (see schema.sql).
+var ErrBadDiscoveryState = errors.New("bad discovery state")
+
+// DiscoveryStates returns the stored seen/ignored mark for each of the given
+// hashes, keyed by hex hash. A hash with no row (the common case — most
+// blocks are never marked) is simply absent from the map; it is the caller's
+// job to treat that as unseen, not this method's, because "unseen" is a
+// derived default rather than a value the table stores.
+func (r *Reader) DiscoveryStates(ctx context.Context, hexHashes []string) (map[string]DiscoveryMark, error) {
+	out := map[string]DiscoveryMark{}
+	if len(hexHashes) == 0 {
+		return out, nil
+	}
+
+	placeholders := make([]string, len(hexHashes))
+	args := make([]interface{}, len(hexHashes))
+	for i, h := range hexHashes {
+		raw, err := decodeHash(h)
+		if err != nil {
+			return nil, err
+		}
+		placeholders[i] = "?"
+		args[i] = raw
+	}
+
+	q := `SELECT hash, state, marked_at_last_seen FROM discovery_state WHERE hash IN (` +
+		strings.Join(placeholders, ",") + `)`
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("discovery states: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var hash []byte
+		var mark DiscoveryMark
+		if err := rows.Scan(&hash, &mark.State, &mark.MarkedAtLastSeen); err != nil {
+			return nil, fmt.Errorf("scan discovery state: %w", err)
+		}
+		out[hex.EncodeToString(hash)] = mark
+	}
+	return out, rows.Err()
+}
+
+// DiscoveryMark is one stored discovery_state row's payload (the hash itself
+// is the map key DiscoveryStates returns it under).
+type DiscoveryMark struct {
+	State            string `json:"state"`
+	MarkedAtLastSeen string `json:"marked_at_last_seen"`
+}
+
+// SetDiscoveryState marks hexHash seen or ignored, capturing lastSeen (the
+// block's current RepeatedContent.LastSeen) so a later seen mark can tell
+// "nothing new since I looked" from "this reappeared" — see schema.sql's
+// comment on discovery_state. It is a single-row upsert run synchronously on
+// the reader's own connection: this is an operator action from the admin UI,
+// not request-path traffic, so it does not go through the writer's async
+// event queue (which is explicitly allowed to drop under load — an operator
+// click must not be).
+func (r *Reader) SetDiscoveryState(ctx context.Context, hexHash, state, lastSeen string) error {
+	if state != DiscoverySeen && state != DiscoveryIgnored {
+		return fmt.Errorf("%w: %q", ErrBadDiscoveryState, state)
+	}
+	raw, err := decodeHash(hexHash)
+	if err != nil {
+		return err
+	}
+	const q = `
+INSERT INTO discovery_state (hash, state, marked_at_last_seen)
+VALUES (?, ?, ?)
+ON CONFLICT(hash) DO UPDATE SET
+    state               = excluded.state,
+    marked_at_last_seen = excluded.marked_at_last_seen`
+	if _, err := r.db.ExecContext(ctx, q, raw, state, lastSeen); err != nil {
+		return fmt.Errorf("set discovery state for %q: %w", hexHash, err)
+	}
+	return nil
+}
+
+// ClearDiscoveryState removes any seen/ignored mark, returning the hash to
+// unseen. Used by the state-cycle endpoint's third click (ignored -> unseen).
+func (r *Reader) ClearDiscoveryState(ctx context.Context, hexHash string) error {
+	raw, err := decodeHash(hexHash)
+	if err != nil {
+		return err
+	}
+	if _, err := r.db.ExecContext(ctx, `DELETE FROM discovery_state WHERE hash = ?`, raw); err != nil {
+		return fmt.Errorf("clear discovery state for %q: %w", hexHash, err)
+	}
+	return nil
+}
+
+// BlockPosition is where one content hash sits inside one request: the
+// (msg_index, position) pair GuardrailDiff needs to find the block's
+// before/after text for that specific request.
+type BlockPosition struct {
+	MsgIndex int64
+	Position int64
+}
+
+// PositionsForContent returns, for each request id, where the given hash
+// first appears in that request's 'request' direction — the coordinates the
+// block drill-down needs to link each row into GuardrailDiffHandler. One
+// batched query keyed by owner_id rather than a query per row: the drill-down
+// can list up to MaxRepeatedLimit requests, and this is the same reasoning
+// RequestsForContent already applies to its own subquery.
+//
+// MIN(msg_index), MIN(position) picks a single position when a hash is
+// referenced more than once inside one request (rare — a block resent
+// verbatim within its own request) — a display link needs exactly one
+// coordinate, and the guardrail-touched state does not vary across
+// duplicate positions of the same content within one request.
+func (r *Reader) PositionsForContent(ctx context.Context, hash string, ids []int64) (map[int64]BlockPosition, error) {
+	out := map[int64]BlockPosition{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	raw, err := decodeHash(hash)
+	if err != nil {
+		return nil, err
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, 0, len(ids)+1)
+	args = append(args, raw)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	q := `
+SELECT owner_id, MIN(msg_index), MIN(position)
+FROM content_refs
+WHERE hash = ? AND direction = 'request' AND owner_kind = 'request'
+  AND owner_id IN (` + strings.Join(placeholders, ",") + `)
+GROUP BY owner_id`
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("positions for content: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var id int64
+		var p BlockPosition
+		if err := rows.Scan(&id, &p.MsgIndex, &p.Position); err != nil {
+			return nil, fmt.Errorf("scan block position: %w", err)
+		}
+		out[id] = p
+	}
+	return out, rows.Err()
+}
+
+// ParentSession is the session a title-generation (or other non-client
+// auxiliary) request belongs to, as inferred after the fact — the request
+// itself carries no explicit parent pointer, so this is always a match
+// against other rows, never a stored relationship.
+type ParentSession struct {
+	SessionKey string `json:"session_key"`
+	// Matches is how many client requests support this match. For a
+	// SessionKeyMatch it is every other client row sharing the same
+	// session_key; for a ContentHashMatch it is the count that made
+	// GROUP BY win the tie-break, not a total.
+	Matches int64 `json:"matches"`
+	// Method records which tier produced the match, so a caller (the UI)
+	// can say *how* confident the link is instead of presenting both kinds
+	// identically. See ParentSessionForTitle's doc comment for the two
+	// tiers.
+	Method string `json:"method"`
+}
+
+const (
+	// ParentMatchSessionKey is the exact-match tier: the title request's own
+	// session_key is shared by other client requests, because the client
+	// sent the same session-affinity header on both. See config's
+	// session_affinity.header and Hermes' session_affinity_header.
+	ParentMatchSessionKey = "session_key"
+
+	// ParentMatchContentHash is the fallback tier: no session_key overlap,
+	// so the match is inferred from shared user-turn content blocks
+	// instead (a client resends its history, so an old title's own request
+	// text reappears verbatim in the real conversation's later turns).
+	ParentMatchContentHash = "content_hash"
+)
+
+// ParentSessionForTitle finds the session a request_kind='title' (or other
+// non-client) request most likely belongs to.
+//
+// Two tiers, tried in order:
+//
+//  1. Session-key match: if the request's own session_key is shared by any
+//     client request, that is the parent — exact and free of false
+//     positives, but only fires when the client sent the same
+//     session-affinity header (e.g. X-Session-Id) on the auxiliary call as
+//     on its real turns. Hermes documents doing exactly this.
+//  2. Content-hash fallback: join on the request's own user-role content
+//     blocks against other requests' user-role blocks, excluding itself and
+//     other title requests (two title-gen retries for the same opener would
+//     otherwise "match" each other), and pick the session_key with the most
+//     supporting requests — a client resends its whole history each turn,
+//     so several prior requests in the real session legitimately match.
+//
+// Returns ok=false when neither tier finds anything — a client that sends no
+// session-affinity header and whose title text doesn't verbatim-reappear
+// (e.g. it was expanded/wrapped downstream before the real send) is outside
+// what this method can prove. That is a distinct state from capture_content
+// being off, which the caller must check separately: tier 2 requires content
+// capture, but tier 1 does not, so a capture-off deployment can still resolve
+// a parent through session_key alone.
+func (r *Reader) ParentSessionForTitle(ctx context.Context, requestID int64) (ParentSession, bool, error) {
+	const sessionKeyQuery = `
+SELECT r2.session_key, COUNT(*) AS n
+FROM requests r1
+JOIN requests r2 ON r2.session_key = r1.session_key
+WHERE r1.id = ?
+  AND r1.session_key IS NOT NULL AND r1.session_key != ''
+  AND r2.id != r1.id
+  AND r2.kind = 'client'
+  AND (r2.request_kind IS NULL OR r2.request_kind != 'title')
+GROUP BY r2.session_key`
+
+	var sk sql.NullString
+	var n int64
+	err := r.db.QueryRowContext(ctx, sessionKeyQuery, requestID).Scan(&sk, &n)
+	switch {
+	case err == nil:
+		return ParentSession{SessionKey: sk.String, Matches: n, Method: ParentMatchSessionKey}, true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		// fall through to tier 2
+	default:
+		return ParentSession{}, false, fmt.Errorf("parent session by session_key: %w", err)
+	}
+
+	const contentHashQuery = `
+SELECT r2.session_key, COUNT(*) AS n
+FROM content_refs cr1
+JOIN content_refs cr2 ON cr2.hash = cr1.hash
+JOIN requests r2 ON r2.id = cr2.owner_id
+WHERE cr1.owner_kind = 'request' AND cr1.owner_id = ?
+  AND cr1.direction = 'request' AND cr1.role = 'user'
+  AND cr2.owner_kind = 'request'
+  AND cr2.direction = 'request' AND cr2.role = 'user'
+  AND cr2.owner_id != ?
+  AND r2.kind = 'client'
+  AND (r2.request_kind IS NULL OR r2.request_kind != 'title')
+GROUP BY r2.session_key
+ORDER BY n DESC
+LIMIT 1`
+
+	err = r.db.QueryRowContext(ctx, contentHashQuery, requestID, requestID).Scan(&sk, &n)
+	switch {
+	case err == nil:
+		return ParentSession{SessionKey: sk.String, Matches: n, Method: ParentMatchContentHash}, true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return ParentSession{}, false, nil
+	default:
+		return ParentSession{}, false, fmt.Errorf("parent session by content hash: %w", err)
+	}
 }

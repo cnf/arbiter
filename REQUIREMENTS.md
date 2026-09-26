@@ -275,13 +275,18 @@ step 3 + the 4a query surface is currently greenlit.
 > separately shippable phases: 7b-1 shell + request list/detail, 7b-2 sessions +
 > transcript, 7b-3a pivot table, 7b-3b chart, 7b-4 discovery, 7b-5 live tail.
 >
-> **7b-1 BUILT, COMMITTED** — `internal/ui` (embedded templates + assets, htmx
-> for in-page swaps only), the request list with the 7a filters as a real form,
-> keyset paging, and the request detail page with captured content loaded lazily.
-> Two things landed with it because the page needed them: `?no_session` on
-> `/admin/requests` (the filter `reader.go`'s own doc comment said was missing),
-> and the keyset cursor (`RequestFilter.BeforeTs`/`BeforeID`, rendered as one
-> opaque `?after=` token). Live-verified against fakellm in a scratch config.
+> **7b-1 SUPERSEDED** — the first admin UI: `internal/ui` (embedded templates +
+> assets, htmx for in-page swaps only), the request list with the 7a filters as a
+> real form, keyset paging, and the request detail page with captured content
+> loaded lazily. **The request-list and detail pages no longer exist** — the
+> greenfield rebuild deleted them, and `/admin/ui/requests` is now a 404. The
+> `internal/ui` *package*, the htmx-for-in-page-swaps-only convention, and the
+> asset embedding all survive into the rebuilt pages.
+> Two things landed with it because the page needed them and still stand:
+> `?no_session` on `/admin/requests` (the filter `reader.go`'s own doc comment
+> said was missing), and the keyset cursor (`RequestFilter.BeforeTs`/`BeforeID`,
+> rendered as one opaque `?after=` token) — still used by the live tail.
+> Live-verified against fakellm in a scratch config.
 >
 > Along the way the UI exposed a **pre-existing bug worth noting**: a request
 > whose upstream could not be reached was stored with `status_code = 0`, so
@@ -308,24 +313,34 @@ step 3 + the 4a query surface is currently greenlit.
 > Session keys are shown truncated on both screens, full value in the tooltip and
 > in every link.
 >
-> **7b-3a BUILT, COMMITTED** — `/admin/ui/overview`, an adjustable pivot:
-> window × group-by dimension × rank-by metric, driving one ranked table with
-> headline numbers above it. Every row carries every metric (requests, cost, cost
-> per request, tokens, avg latency, errors, error rate); the metric picks the
-> ordering. Dimension and metric are map keys, never user text in SQL, and an
-> unknown axis is a 400 that lists the valid ones.
->
-> A dimension whose window has only one value is *explained* rather than
-> presented as a finding — on this deployment domain/effort/alias are all empty
-> because the traffic names a concrete model, which routes before classification
+> **7b-3a SUPERSEDED** — `/admin/ui/overview` was first built as an adjustable
+> pivot (window × group-by dimension × rank-by metric over one ranked table).
+> **The whole admin UI was then rebuilt greenfield** (`design/REDESIGN.md`,
+> DESIGN.md, branch `newui`), and that page was deleted rather than adapted; no
+> trace of the pivot survives in the code. The current Overview is a
+> routing-flow diagram with a KPI strip and a config-change compare view — see
+> README's "Admin web UI". The pivot's own design conclusions are kept below
+> only as a record of what was tried, not as a description of anything that
 > runs.
 >
-> **Next: 7b-3b (chart + uPlot)** — deliberately conditional. The test is whether
-> the table proves insufficient in use; if it does not, 7b-3b should be dropped
-> rather than built for completeness. Then **7b-4** (discovery) and **7b-5**
-> (live tail). Subagent and title-generation grouping in the transcript are
-> blocked on the parent/child linkage gap above — Arbiter does not capture that
-> relationship at all.
+> A dimension whose window has only one value was *explained* rather than
+> presented as a finding — on this deployment domain/effort/alias are all empty
+> because the traffic names a concrete model, which routes before classification
+> runs. That reasoning still holds and the new page honours it.
+>
+> **7b-3b (chart + uPlot) is DROPPED, not pending.** It was conditional on the
+> table proving insufficient; the rebuild settled it the other way — the
+> replacement page computes its Sankey geometry server-side in Go
+> (`internal/ui/sankey.go`) and the UI now carries **no charting dependency at
+> all**. uPlot was deleted along with the pivot page it was vendored for.
+> **7b-4** (discovery) and **7b-5** (live tail) both shipped and are described in
+> README; note that the tail's endpoint survives but no rebuilt page mounts it
+> yet.
+>
+> Subagent and title-generation grouping: the title half is now **shipped**
+> (README's "A title request is tied back to the session it named" — two-tier
+> resolution via `Reader.ParentSessionForTitle`). Subagent grouping remains
+> deferred, gated on real multi-agent traffic.
 
 1. ~~Model alias layer + wiring it into the router selection (the "auto /
    auto-coding / pinned model / model group" mechanism).~~ **DONE** —

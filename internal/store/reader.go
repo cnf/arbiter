@@ -38,15 +38,53 @@ func OpenReader(path string) (*Reader, error) {
 // Close releases the reader's database handle.
 func (r *Reader) Close() error { return r.db.Close() }
 
-// Window is a time range for a query. Since is the inclusive lower bound.
+// Window is a time range for a query. Since is the inclusive lower bound;
+// Until is the *exclusive* upper bound, and a zero Until means "open ended" —
+// every row at or after Since, which is what every caller predating the
+// Overview page's compare mode wants and gets without saying so.
+//
+// The half-open shape [Since, Until) is deliberate: it makes two adjacent
+// windows tile without double-counting the row that sits exactly on the
+// boundary, which is precisely what compare mode does (an anchor's before-side
+// ends where its after-side begins). A closed upper bound would count that row
+// twice and quietly inflate both sides of every delta.
+//
+// Both bounds bind as time.Time. The ts column is TEXT holding Go's
+// time.Time.String() layout, and the sqlite driver binds a time.Time to that
+// same layout, so string comparison and chronological order agree — verified
+// against the live store before Until was added (a bound at a known instant
+// partitions the table exactly: the >= and < counts sum to the total).
 type Window struct {
 	Since time.Time
+	Until time.Time
 }
 
 // WindowFrom turns an operator-friendly duration ("24h", "7d" handled by the
-// caller) into a window ending now.
+// caller) into a window ending now. The upper bound is left zero rather than
+// set to time.Now(): "now" moves between the call and the query, and an
+// open-ended window is both cheaper and exactly what a trailing window means.
 func WindowFrom(d time.Duration) Window {
 	return Window{Since: time.Now().UTC().Add(-d)}
+}
+
+// Bounded reports whether the window has an upper bound at all, so a query
+// builder can skip the clause instead of binding a zero time that would match
+// nothing.
+func (w Window) Bounded() bool { return !w.Until.IsZero() }
+
+// tsClause renders the window's own SQL predicate against a ts column, plus
+// the args to bind for it. The column is named by the caller because some
+// queries join and must qualify it (`r.ts`) while most do not.
+//
+// It exists so the half-open convention above is written once. Every query
+// that grew an upper bound got it by calling this rather than by hand-editing
+// its WHERE, which is what keeps "exclusive upper bound" a property of the
+// type instead of a habit each query might break.
+func (w Window) tsClause(col string) (string, []interface{}) {
+	if !w.Bounded() {
+		return col + " >= ?", []interface{}{w.Since}
+	}
+	return col + " >= ? AND " + col + " < ?", []interface{}{w.Since, w.Until}
 }
 
 // OverallStats is the headline over a window.
@@ -400,6 +438,271 @@ LIMIT ?`
 	return out, rows.Err()
 }
 
+// SessionClientPage returns one page of a session's client requests in
+// conversation order — oldest first — starting at offset.
+//
+// It is a separate method from Session rather than a flag on it, because the
+// two answer different questions and return different shapes. Session returns
+// the thinner SessionRequest for the JSON trajectory API and for "where did
+// this request sit in its conversation"; this returns the full list projection
+// the transcript's inspector reads (domain, effort, cost_class, actual_model,
+// request_kind — none of which SessionRequest carries), because the transcript
+// page is a browsing view over one conversation and needs the same per-row
+// facts the flat requests list shows.
+//
+// Client rows only, and that is what makes the transcript's own numbering
+// work: the page numbers each conversation *turn*, and a classifier call is
+// not a turn — it is something a turn did. Its children are attached by
+// trace_id afterwards (see SessionChildren), not by sharing a page of rows, so
+// a classifier that finished *before* its parent (the documented #8 case) can
+// never end up numbered as a turn or stranded on the previous page.
+//
+// Offset paging rather than a keyset cursor is deliberate here, and safe for
+// the same reason it would be wrong on the newest-first requests list: a
+// conversation only ever grows at its tail, so a new turn always arrives with
+// a greater (ts, id) than everything already stored. New turns land beyond the
+// last page a reader has already seen, never behind it, so an offset cannot be
+// invalidated by traffic the way it would be on a list ordered newest-first.
+func (r *Reader) SessionClientPage(ctx context.Context, key string, limit, offset int) ([]RequestRow, error) {
+	if limit <= 0 {
+		limit = maxRequestListLimit
+	}
+	if limit > maxRequestListLimit {
+		limit = maxRequestListLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	// id is the tiebreaker for the same reason ListRequests uses it: ts has
+	// sub-second precision and several turns can share a tick.
+	const q = `SELECT` + requestRowColumns + `
+FROM requests WHERE session_key = ? AND kind = 'client'
+ORDER BY ts ASC, id ASC
+LIMIT ? OFFSET ?`
+
+	rows, err := r.db.QueryContext(ctx, q, key, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("session transcript: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []RequestRow{}
+	for rows.Next() {
+		s, err := scanRequestRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// SessionChildren returns the non-client rows (a classifier call today,
+// title-gen/subagent later) whose trace_id is one of traceIDs — the internal
+// calls that ran inside the given client requests.
+//
+// Keyed on trace_id rather than on "the rows sharing this page" precisely so
+// the child's own timestamp is irrelevant: a classifier call routinely
+// finishes before the request that spawned it, which is the whole reason #8
+// nests by trace rather than sorting by time. One query for a whole page's
+// worth of parents, so attaching children costs a single round trip, not one
+// per row.
+func (r *Reader) SessionChildren(ctx context.Context, traceIDs []string) ([]RequestRow, error) {
+	if len(traceIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(traceIDs))
+	args := make([]interface{}, 0, len(traceIDs))
+	for i, id := range traceIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	q := `SELECT` + requestRowColumns + `
+FROM requests WHERE kind <> 'client' AND trace_id IN (` + strings.Join(placeholders, ", ") + `)
+ORDER BY ts ASC, id ASC`
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("session children: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []RequestRow{}
+	for rows.Next() {
+		s, err := scanRequestRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// SessionTurnAt resolves a turn number to its request id: turn numbers are
+// 1-based positions in the conversation's client-ordered sequence, so turn N is
+// simply the N-th client row. Returning the id rather than the row is what
+// lets the caller load the page turn N falls on in one step — it needs to know
+// which page that is before it reads any rows.
+//
+// The offset scan is cheap here in a way it would not be for the flat request
+// list: a conversation is bounded and appends only at its tail, so a position
+// in it is stable, and the query is an indexed range on one session key.
+func (r *Reader) SessionTurnAt(ctx context.Context, key string, turn int) (int64, bool, error) {
+	if turn < 1 {
+		return 0, false, nil
+	}
+	const q = `SELECT id FROM requests
+WHERE session_key = ? AND kind = 'client'
+ORDER BY ts ASC, id ASC
+LIMIT 1 OFFSET ?`
+
+	var id int64
+	err := r.db.QueryRowContext(ctx, q, key, turn-1).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("session turn at: %w", err)
+	}
+	return id, true, nil
+}
+
+// SessionTurnForRequest resolves the turn a request id belongs to, for the
+// Sessions lane list's "open in transcript" links: a client row's turn is its
+// own position; a non-client row (a classifier call, a title-gen call — see
+// requests.kind) has no position of its own and resolves through its
+// trace_id to the client row that spawned it, exactly as attachTraceChildren
+// nests it in the UI. ok is false when the request id does not exist, or
+// belongs to a session-less request, or (rare — a client row was never
+// written, e.g. a very old pre-#5 rejection) a non-client row whose trace has
+// no client row to resolve through.
+//
+// Returns the session key alongside the turn number because the caller (the
+// lane list) has the id but not necessarily the parent session's key at hand
+// for a satellite node — SessionHandler needs both to build ?key=&seq=.
+func (r *Reader) SessionTurnForRequest(ctx context.Context, id int64) (key string, turn int, ok bool, err error) {
+	var (
+		session sql.NullString
+		kind    string
+		traceID string
+	)
+	err = r.db.QueryRowContext(ctx,
+		`SELECT session_key, kind, trace_id FROM requests WHERE id = ?`, id,
+	).Scan(&session, &kind, &traceID)
+	if err == sql.ErrNoRows {
+		return "", 0, false, nil
+	}
+	if err != nil {
+		return "", 0, false, fmt.Errorf("session turn for request: %w", err)
+	}
+	if !session.Valid || session.String == "" {
+		return "", 0, false, nil
+	}
+	key = session.String
+
+	targetID := id
+	if kind != "client" {
+		if traceID == "" {
+			return "", 0, false, nil
+		}
+		var parentID int64
+		err = r.db.QueryRowContext(ctx,
+			`SELECT id FROM requests WHERE session_key = ? AND kind = 'client' AND trace_id = ?
+LIMIT 1`, key, traceID,
+		).Scan(&parentID)
+		if err == sql.ErrNoRows {
+			return "", 0, false, nil
+		}
+		if err != nil {
+			return "", 0, false, fmt.Errorf("session turn for request (parent lookup): %w", err)
+		}
+		targetID = parentID
+	}
+
+	// The turn is the target client row's rank among the session's client
+	// rows ordered (ts ASC, id ASC) — the same ordering SessionClientPage
+	// and SessionTurnAt use elsewhere in this file. The ts comparison stays
+	// inside a subquery rather than round-tripping the target's ts through
+	// Go as a string: modernc.org/sqlite scans a TIMESTAMP column back as
+	// RFC3339 but stores it in time.Time's default String() layout, so a
+	// value read out and compared back in via `WHERE ts = ?` silently
+	// mismatches format even though it's the same instant.
+	var n int
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM requests r2
+WHERE r2.session_key = ? AND r2.kind = 'client'
+  AND (r2.ts < (SELECT ts FROM requests WHERE id = ?)
+       OR (r2.ts = (SELECT ts FROM requests WHERE id = ?) AND r2.id <= ?))`,
+		key, targetID, targetID, targetID,
+	).Scan(&n); err != nil {
+		return "", 0, false, fmt.Errorf("session turn for request (count): %w", err)
+	}
+	if n == 0 {
+		return "", 0, false, nil
+	}
+	return key, n, true, nil
+}
+
+// SessionFirstClient returns the session's opening client request — the turn
+// that introduced the conversation, and therefore the one whose system
+// preamble the page's preamble modal inspects. ok is false for a session with
+// no client row at all.
+func (r *Reader) SessionFirstClient(ctx context.Context, key string) (RequestRow, bool, error) {
+	const q = `SELECT` + requestRowColumns + `
+FROM requests WHERE session_key = ? AND kind = 'client'
+ORDER BY ts ASC, id ASC
+LIMIT 1`
+
+	rows, err := r.db.QueryContext(ctx, q, key)
+	if err != nil {
+		return RequestRow{}, false, fmt.Errorf("session first client: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	if !rows.Next() {
+		return RequestRow{}, false, rows.Err()
+	}
+	s, err := scanRequestRow(rows)
+	if err != nil {
+		return RequestRow{}, false, err
+	}
+	return s, true, rows.Err()
+}
+
+// SessionTotals is a session's headline numbers: how many turns, how many of
+// them failed, what the whole conversation cost, and how many tokens it moved.
+//
+// Turns and Errors count client rows only — the conversation's own turns, the
+// same unit the transcript list numbers. Cost and Tokens cover every row in
+// the session, because a classifier call is real spend and hiding it would
+// make the header disagree with the bill.
+type SessionTotals struct {
+	Turns   int64   `json:"turns"`
+	Errors  int64   `json:"errors"`
+	Tokens  int64   `json:"tokens"`
+	CostUSD float64 `json:"cost_usd"`
+}
+
+// SessionTotals computes one session's headline numbers. It is deliberately
+// not windowed: a transcript is a conversation, and a conversation that
+// half-falls outside a window is not half a conversation. (The sessions
+// *index* is windowed for the opposite reason — see SessionSummary.)
+func (r *Reader) SessionTotals(ctx context.Context, key string) (SessionTotals, error) {
+	const q = `
+SELECT
+    CAST(COALESCE(SUM(CASE WHEN kind = 'client' THEN 1 ELSE 0 END), 0) AS INTEGER),
+    CAST(COALESCE(SUM(CASE WHEN kind = 'client' AND status_code >= 400 THEN 1 ELSE 0 END), 0) AS INTEGER),
+    CAST(COALESCE(SUM(input_tokens + output_tokens), 0) AS INTEGER),
+    COALESCE(SUM(cost_usd), 0)
+FROM requests WHERE session_key = ?`
+
+	var t SessionTotals
+	if err := r.db.QueryRowContext(ctx, q, key).Scan(&t.Turns, &t.Errors, &t.Tokens, &t.CostUSD); err != nil {
+		return SessionTotals{}, fmt.Errorf("session totals: %w", err)
+	}
+	return t, nil
+}
+
 // Tools counts tool-name occurrences over a window. tool_calls_json holds a
 // JSON array per row; json_each expands it, so a request that used two tools
 // contributes one to each. Rows with no tool calls are excluded by the NOT
@@ -506,6 +809,51 @@ LIMIT ?`
 	return out, rows.Err()
 }
 
+// SessionSummaryFor is Sessions' per-row aggregate for exactly one session
+// key, over the same window shape (ts >= since, kind = 'client').
+//
+// It exists for the live-tail poller (see ui.SessionsTailHandler): Sessions
+// itself is a bulk, windowed group-by over every conversation, which is the
+// right query for a full page load but the wrong one for "refresh this one
+// lane whose pin just moved" — running the whole index every 5 seconds to
+// pick one row back out of it would scale with total session count instead
+// of with the (small, single-digit) number of currently-pinned sessions a
+// poll actually needs. ok is false when the session has no client rows in
+// the window at all (a pin can outlive the window that produced it, or name
+// a session whose only rows are non-client and therefore excluded here, same
+// as Sessions).
+func (r *Reader) SessionSummaryFor(ctx context.Context, key string, since time.Time) (SessionSummary, bool, error) {
+	const q = `
+SELECT session_key,
+    COUNT(*),
+    MIN(ts), MAX(ts),
+    CAST(COALESCE(SUM(input_tokens), 0)  AS INTEGER),
+    CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER),
+    COALESCE(SUM(cost_usd), 0),
+    CAST(COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS INTEGER),
+    COALESCE(group_concat(DISTINCT provider), ''),
+    COUNT(DISTINCT provider || '/' || model)
+FROM requests
+WHERE ts >= ? AND session_key = ? AND kind = 'client'
+GROUP BY session_key`
+
+	var (
+		s              SessionSummary
+		first, lastRaw interface{}
+	)
+	err := r.db.QueryRowContext(ctx, q, since, key).Scan(&s.Key, &s.Turns, &first, &lastRaw,
+		&s.InputTokens, &s.OutputTokens, &s.CostUSD, &s.Errors, &s.Providers, &s.Models)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SessionSummary{}, false, nil
+	}
+	if err != nil {
+		return SessionSummary{}, false, fmt.Errorf("session summary for %q: %w", key, err)
+	}
+	s.FirstSeen = formatTime(first)
+	s.LastSeen = formatTime(lastRaw)
+	return s, true, nil
+}
+
 // SessionlessRequestCount counts the requests in a window that have no session
 // key at all. It is what keeps those requests visible in the sessions index
 // rather than silently absent from it.
@@ -518,6 +866,69 @@ WHERE ts >= ? AND (session_key IS NULL OR session_key = '') AND kind = 'client'`
 		return 0, fmt.Errorf("sessionless request count: %w", err)
 	}
 	return n, nil
+}
+
+// ActiveSessionCount counts sessions with a live affinity pin — i.e. still
+// inside the TTL that keeps them routed to the same provider/model for
+// prompt-cache reuse (see pipeline.affinityStore, affinity_pins.expires_at).
+// It backs the nav bar's "N active" Sessions stat (see Handler.base): "active"
+// means "still within its cache TTL", not merely "had a request recently" —
+// a session can easily see no traffic for hours and still be a real ongoing
+// conversation, while an expired pin means the next turn (if there is one)
+// re-routes from scratch anyway. This is the one nav-item number that is a
+// real query rather than the header's other "fake live" literals
+// (design/REDESIGN.md §8 item 5), per an explicit user callout that the
+// sessions count specifically should stop being a placeholder.
+//
+// A store with no affinity_pins rows (session affinity never pinned anything,
+// or nothing is currently live) reports 0, not an error — an empty table is
+// a legitimate steady state, not a broken query.
+func (r *Reader) ActiveSessionCount(ctx context.Context) (int64, error) {
+	const q = `SELECT COUNT(*) FROM affinity_pins WHERE expires_at >= ?`
+
+	var n int64
+	if err := r.db.QueryRowContext(ctx, q, time.Now().UTC()).Scan(&n); err != nil {
+		return 0, fmt.Errorf("active session count: %w", err)
+	}
+	return n, nil
+}
+
+// SessionPinExpiry returns every session's pin expiry, for pins that expired
+// no earlier than since — i.e. still live, or expired but recently enough to
+// be within a caller-chosen grace window. It is the one query that answers
+// both "is this session still active" (expires_at in the result is >= now)
+// and "is this session still within its post-expiry grace window" (present
+// in the result at all), without a second round trip for each question.
+//
+// This is the Sessions lane list's data source for both the "hot" dot and
+// the "live only" filter: a lane whose key is absent from the result (its
+// pin expired earlier than since, or it was never pinned) drops out of the
+// filtered view entirely, while one still present but past its own expiry
+// lingers — see sessions.go's liveGraceWindow for why a session does not
+// vanish from the list the instant its pin expires.
+//
+// A store with no matching affinity_pins rows returns an empty, non-nil map
+// — the caller does not need to special-case "nothing is live" separately
+// from "the query failed".
+func (r *Reader) SessionPinExpiry(ctx context.Context, since time.Time) (map[string]time.Time, error) {
+	const q = `SELECT session_key, expires_at FROM affinity_pins WHERE expires_at >= ?`
+
+	rows, err := r.db.QueryContext(ctx, q, since.UTC())
+	if err != nil {
+		return nil, fmt.Errorf("session pin expiry: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var key string
+		var expiresAt time.Time
+		if err := rows.Scan(&key, &expiresAt); err != nil {
+			return nil, fmt.Errorf("scan session pin expiry: %w", err)
+		}
+		out[key] = expiresAt
+	}
+	return out, rows.Err()
 }
 
 // MaxSessionListLimit caps the sessions index. Higher than the request list's
@@ -543,6 +954,17 @@ type ContentBlock struct {
 	BlockType string `json:"block_type"`
 	Body      string `json:"body,omitempty"`
 	Captured  bool   `json:"captured"`
+
+	// GuardrailTouched is true when a pre-guardrail ran on this request and
+	// left a distinct byte-for-byte-different capture at this block's
+	// (MsgIndex, Position) — the block the client sent differs from the block
+	// that actually went upstream. It is cheap to compute (both directions
+	// are already fetched by contentFor for every request) so it is set on
+	// every block rather than only the system preamble, even though the
+	// preamble is by far the common case in practice. The UI renders it as a
+	// "guardrail touch" chip; the diff itself is fetched on demand via
+	// GuardrailDiff, not eagerly — see #48.
+	GuardrailTouched bool `json:"guardrail_touched,omitempty"`
 }
 
 // ContentForRequest returns the captured blocks belonging to one request, in
@@ -586,6 +1008,13 @@ func (r *Reader) ContentForRequest(ctx context.Context, id int64, showAsSent boo
 // request side", not which of the two captures produced it. Without this
 // relabel, any turn where a pre-guardrail actually ran would silently skip
 // those checks — they all match on the literal string "request".
+//
+// It also marks GuardrailTouched on any kept block whose hash differs from
+// its counterpart in the direction being dropped — the block the client sent
+// is not byte-identical to what went upstream at that (MsgIndex, Position).
+// This runs over data already fetched for every request, so it costs nothing
+// extra to check every block rather than special-casing the system preamble,
+// even though the preamble is by far the common real-world case (#48).
 func filterRequestDirection(blocks []ContentBlock, hasGuardrailed, showAsSent bool) []ContentBlock {
 	if !hasGuardrailed {
 		// Nothing to filter: either no pre-guardrail ran, or capture never
@@ -597,10 +1026,23 @@ func filterRequestDirection(blocks []ContentBlock, hasGuardrailed, showAsSent bo
 	if showAsSent {
 		drop = "request_guardrailed"
 	}
+	// otherHash indexes the dropped direction's blocks by position, so the
+	// kept direction can tell "same bytes" from "guardrail touched" without a
+	// second query.
+	type key struct{ msgIndex, position int64 }
+	otherHash := make(map[key]string, len(blocks))
+	for _, b := range blocks {
+		if b.Direction == drop {
+			otherHash[key{b.MsgIndex, b.Position}] = b.Hash
+		}
+	}
 	out := make([]ContentBlock, 0, len(blocks))
 	for _, b := range blocks {
 		if b.Direction == drop {
 			continue
+		}
+		if h, ok := otherHash[key{b.MsgIndex, b.Position}]; ok && h != b.Hash {
+			b.GuardrailTouched = true
 		}
 		if b.Direction == "request_guardrailed" {
 			b.Direction = "request"
@@ -608,6 +1050,35 @@ func filterRequestDirection(blocks []ContentBlock, hasGuardrailed, showAsSent bo
 		out = append(out, b)
 	}
 	return out
+}
+
+// GuardrailDiff returns the before/after text for one request-side block, so
+// the UI can render an inline line-level diff on demand — see #48. before is
+// the client's original text (Direction "request"), after is what actually
+// went upstream (Direction "request_guardrailed"). ok is false when either
+// side is missing (no pre-guardrail ran on this request, no block at this
+// position, or one side was not captured as text), in which case there is
+// nothing to diff.
+func (r *Reader) GuardrailDiff(ctx context.Context, id int64, msgIndex, position int64) (before, after string, ok bool, err error) {
+	rows, err := r.contentFor(ctx, "request", id)
+	if err != nil {
+		return "", "", false, err
+	}
+	var haveBefore, haveAfter bool
+	for _, b := range rows {
+		if b.MsgIndex != msgIndex || b.Position != position {
+			continue
+		}
+		switch b.Direction {
+		case "request":
+			before = b.Body
+			haveBefore = b.Captured
+		case "request_guardrailed":
+			after = b.Body
+			haveAfter = b.Captured
+		}
+	}
+	return before, after, haveBefore && haveAfter, nil
 }
 
 // contentFor is the shared body behind ContentForRequest and (once rejected
@@ -686,23 +1157,48 @@ func (r *Reader) RepeatedContent(ctx context.Context, w Window, minRequests, min
 	// Sessions are counted with COUNT(DISTINCT) because session_key is
 	// nullable: rows with no session key collapse into one group rather than
 	// inflating the count, which is the honest reading of "distinct sessions".
+	//
+	// direction = 'request' restricts this to what the client actually sent,
+	// pre-guardrail. request_guardrailed (the post-rewrite text a guardrail
+	// rule already produced) and response (the model's own reply) are
+	// excluded: discovery exists to find new patterns worth writing a rule
+	// against, and mixing in a rule's own output would silently double-count
+	// a pattern that already has one (or misreport its reach) instead of
+	// showing what the client is sending.
+	//
+	// Ordered by session count alone: how many requests share a block only
+	// measures how long one conversation ran (a resent block appears once per
+	// owner_id it's referenced from), which is not itself a finding — see
+	// RepeatedContent's doc comment above.
+	// The content join is deliberately pulled outside the aggregation. If
+	// LEFT JOIN content sits in the FROM clause before GROUP BY, SQLite
+	// dereferences every matching content row (millions of content_refs rows
+	// in a real deployment) before the HAVING/LIMIT gets a chance to discard
+	// almost all of them. Measured against a 1.1GB production database
+	// (~4M direction='request' refs): with the join inlined the query took
+	// ~108s; aggregating first and joining content only for the ~50
+	// surviving rows took ~6s. Same result set, ~17x faster.
 	const q = `
-SELECT cr.hash,
-       MIN(cr.block_type),
-       COALESCE(MIN(cr.role), ''),
+SELECT h.hash, h.block_type, h.role,
        COALESCE(SUBSTR(c.body, 1, 200), ''),
-       COUNT(DISTINCT cr.owner_id) AS requests,
-       COUNT(DISTINCT r.session_key) AS sessions,
-       MIN(r.ts), MAX(r.ts)
-FROM content_refs cr
-JOIN requests r ON r.id = cr.owner_id AND cr.owner_kind = 'request'
-LEFT JOIN content c ON c.hash = cr.hash
-WHERE r.ts >= ? AND r.kind = 'client'
-GROUP BY cr.hash
-HAVING COUNT(DISTINCT cr.owner_id) >= ?
-   AND COUNT(DISTINCT r.session_key) >= ?
-ORDER BY requests DESC, sessions DESC
-LIMIT ?`
+       h.requests, h.sessions, h.first_ts, h.last_ts
+FROM (
+    SELECT cr.hash AS hash,
+           MIN(cr.block_type) AS block_type,
+           COALESCE(MIN(cr.role), '') AS role,
+           COUNT(DISTINCT cr.owner_id) AS requests,
+           COUNT(DISTINCT r.session_key) AS sessions,
+           MIN(r.ts) AS first_ts, MAX(r.ts) AS last_ts
+    FROM content_refs cr
+    JOIN requests r ON r.id = cr.owner_id AND cr.owner_kind = 'request'
+    WHERE r.ts >= ? AND r.kind = 'client' AND cr.direction = 'request'
+    GROUP BY cr.hash
+    HAVING COUNT(DISTINCT cr.owner_id) >= ?
+       AND COUNT(DISTINCT r.session_key) >= ?
+    ORDER BY sessions DESC
+    LIMIT ?
+) h
+LEFT JOIN content c ON c.hash = h.hash`
 
 	rows, err := r.db.QueryContext(ctx, q, w.Since, minRequests, minSessions, limit)
 	if err != nil {

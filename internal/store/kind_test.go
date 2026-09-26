@@ -105,16 +105,34 @@ func TestAggregatesExcludeNonClientKind(t *testing.T) {
 		t.Fatalf("Sessions = %+v, want one session with 1 turn costing $1", sessions)
 	}
 
-	rows, err := r.PivotTotals(context.Background(), WindowFrom(time.Hour), DimProvider, MetricRequests, 10)
+	// The pivot table this used to check was deleted with the old Overview
+	// (#54). Its replacements carry the same contract, so the assertion moved
+	// rather than being dropped: the flow diagram and the KPI strip are exactly
+	// the surfaces where a classifier call's 9,999 tokens would do the damage
+	// this test exists to prevent.
+	edges, err := r.RoutingFlow(context.Background(), WindowFrom(time.Hour), MaxRoutingEdges)
 	if err != nil {
-		t.Fatalf("PivotTotals: %v", err)
+		t.Fatalf("RoutingFlow: %v", err)
 	}
 	var total int64
-	for _, p := range rows {
-		total += p.Requests
+	for _, e := range edges {
+		total += e.Requests
 	}
 	if total != 1 {
-		t.Errorf("PivotTotals summed to %v requests, want 1 (classifier row excluded)", total)
+		t.Errorf("RoutingFlow summed to %v requests, want 1 (classifier row excluded)", total)
+	}
+
+	sum, err := r.SummarizeWindow(context.Background(), WindowFrom(time.Hour))
+	if err != nil {
+		t.Fatalf("SummarizeWindow: %v", err)
+	}
+	if sum.Requests != 1 || sum.CostUSD != 1 {
+		t.Errorf("SummarizeWindow = %d requests / $%.2f, want 1/$1 (classifier row excluded)",
+			sum.Requests, sum.CostUSD)
+	}
+	if sum.InputTokens != 100 {
+		t.Errorf("SummarizeWindow counted %d input tokens, want 100 — the classifier row's "+
+			"9,999 would dominate the cost-per-1M metric", sum.InputTokens)
 	}
 }
 

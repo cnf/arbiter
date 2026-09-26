@@ -30,11 +30,11 @@ func newTestRouter(t *testing.T, configPath, forwardAuthHeader string) (*arbiter
 		t.Fatalf("build pipeline: %v", err)
 	}
 	h := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg), cfg.SessionAffinity.Header), logger)
+	adminUI := ui.New(nil, logger)
 	admin := arbiterhttp.NewAdminHandler(func(ctx context.Context) error {
-		return reload(ctx, configPath, h, logger, store.NoopWriter{}, nil, nil)
+		return reload(ctx, configPath, h, logger, store.NoopWriter{}, nil, nil, adminUI)
 	}, logger)
 	stats := arbiterhttp.NewStatsHandler(nil, logger)
-	adminUI := ui.New(nil, logger)
 	return h, newRouter(h, admin, stats, adminUI, forwardAuthHeader)
 }
 
@@ -54,13 +54,20 @@ func TestAdminUIRoutesAreGated(t *testing.T) {
 
 	for _, target := range []string{
 		"/admin/ui/",
-		"/admin/ui/requests",
-		"/admin/ui/requests/1",
-		"/admin/ui/requests/1/content",
+		"/admin/ui/sessions/tail",
+		"/admin/ui/requests/1/guardrail-diff",
 		"/admin/ui/sessions",
 		"/admin/ui/session?key=abc",
 		"/admin/ui/overview",
-		"/admin/ui/overview/series.json",
+		// #54's new fragment endpoints. They are listed for the same reason
+		// every other route is: the gate is per-route, so a route added without
+		// one is silently open, and the deleted requests-page/series.json
+		// entries used to be this test's proof of that.
+		"/admin/ui/overview/node?id=alias:x",
+		"/admin/ui/overview/node/close",
+		"/admin/ui/content/repeated",
+		"/admin/ui/content/block?hash=abc",
+		"/admin/ui/content/block/body?hash=abc",
 		"/admin/ui/static/htmx.min.js",
 		"/admin/ui/static/app.css",
 	} {
@@ -69,39 +76,6 @@ func TestAdminUIRoutesAreGated(t *testing.T) {
 		if resp.Code != http.StatusUnauthorized {
 			t.Errorf("ungated GET %s = %d, want 401", target, resp.Code)
 		}
-	}
-}
-
-// With the header present the UI is reachable, and with no store configured it
-// still returns a page rather than an error: "store disabled" is explained, not
-// reported as a failure.
-func TestAdminUIReachableWithHeaderAndNoStore(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "arbiter.yaml")
-	if err := os.WriteFile(path, []byte(validConfigA), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, r := newTestRouter(t, path, "X-Forwarded-User")
-
-	for _, target := range []string{"/admin/ui/requests", "/admin/ui/static/app.css"} {
-		req := httptest.NewRequest(http.MethodGet, target, nil)
-		req.Header.Set("X-Forwarded-User", "op")
-		resp := httptest.NewRecorder()
-		r.ServeHTTP(resp, req)
-		if resp.Code != http.StatusOK {
-			t.Errorf("gated GET %s = %d, want 200", target, resp.Code)
-		}
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/admin/ui/", nil)
-	req.Header.Set("X-Forwarded-User", "op")
-	resp := httptest.NewRecorder()
-	r.ServeHTTP(resp, req)
-	if resp.Code != http.StatusFound {
-		t.Errorf("GET /admin/ui/ = %d, want 302 to the requests page", resp.Code)
-	}
-	if loc := resp.Header().Get("Location"); loc != "/admin/ui/requests" {
-		t.Errorf("redirect Location = %q", loc)
 	}
 }
 

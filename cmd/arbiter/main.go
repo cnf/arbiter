@@ -10,6 +10,7 @@ import (
 	stdhttp "net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"syscall"
@@ -45,6 +46,8 @@ func main() {
 	}
 
 	logger := logging.NewStdoutLogger(cfg.Logging.Level)
+	revision, modified, buildTime := buildVersion()
+	slog.Info("Arbiter version", "revision", revision, "modified", modified, "build_time", buildTime)
 	slog.Info("Arbiter starting", "config", *configPath, "port", *port)
 
 	// The event store is opened once, here, and shared across reloads: a
@@ -93,19 +96,28 @@ func main() {
 		os.Exit(1)
 	}
 	handler := arbiterhttp.NewHandler(arbiterhttp.NewRuntime(p, configuredModels(cfg), cfg.SessionAffinity.Header), logger)
+
+	// The admin UI reads the same Reader as the JSON surface. It is a separate
+	// package rather than more handlers on stats because it brings its own
+	// embedded templates and assets; its dependencies are identical. Built
+	// here, ahead of admin's reload closure, because that closure captures it.
+	adminUI := ui.New(reader, logger)
+	// See buildPipeline's matching SetCaptureContent call: the UI needs its
+	// own copy of the same wiring-time policy, not a read through the
+	// pipeline, because piece 3 of #11 uses it to explain a title-gen line
+	// with no resolvable parent (tier 2 of ParentSessionForTitle cannot run
+	// with capture off, and that is a different situation from tier 2
+	// running and finding nothing).
+	adminUI.SetCaptureContent(cfg.Storage.CaptureContent)
+
 	admin := arbiterhttp.NewAdminHandler(func(ctx context.Context) error {
-		return reload(ctx, *configPath, handler, logger, writer, cooldowns, reader)
+		return reload(ctx, *configPath, handler, logger, writer, cooldowns, reader, adminUI)
 	}, logger)
 	// The cooldown reset is bound to the shared store, so it clears the state the
 	// live pipeline is actually using.
 	admin.SetClearCooldowns(cooldowns.ClearForAdmin)
 
 	stats := arbiterhttp.NewStatsHandler(reader, logger)
-
-	// The admin UI reads the same Reader as the JSON surface. It is a separate
-	// package rather than more handlers on stats because it brings its own
-	// embedded templates and assets; its dependencies are identical.
-	adminUI := ui.New(reader, logger)
 
 	// Content retention runs on its own goroutine and its own connection, so an
 	// expiry sweep never blocks a request. With no TTL configured, content never
@@ -148,7 +160,7 @@ func main() {
 	watchCtx, stopWatch := context.WithCancel(context.Background())
 	defer stopWatch()
 	go func() {
-		if err := watchConfig(watchCtx, *configPath, handler, logger, writer, cooldowns, reader); err != nil {
+		if err := watchConfig(watchCtx, *configPath, handler, logger, writer, cooldowns, reader, adminUI); err != nil {
 			slog.Error("config watcher stopped", "error", err)
 		}
 	}()
@@ -233,35 +245,26 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	// set gets an unstyled 401 on everything including the CSS — see the
 	// README's admin section.
 	r.HandleFunc("/admin/ui/", arbiterhttp.Gate(forwardAuthHeader, func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-		stdhttp.Redirect(w, req, "/admin/ui/requests", stdhttp.StatusFound)
+		stdhttp.Redirect(w, req, "/admin/ui/overview", stdhttp.StatusFound)
 	})).Methods("GET")
-	r.HandleFunc("/admin/ui/requests", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestsHandler)).Methods("GET")
-	// The live tail's poll endpoint. Polled by live.js rather than by htmx, for
-	// the reasons in that file; it returns JSON carrying a rendered row fragment,
-	// so the cursor stays an opaque token and the row markup has one definition.
-	//
-	// It is registered *before* /requests/{id} because gorilla/mux matches in
-	// registration order, and {id} happily matches the literal "tail" — so the
-	// other order routes every poll into the detail handler, which then refuses
-	// "tail" as a request id and answers 400.
-	r.HandleFunc("/admin/ui/requests/tail", arbiterhttp.Gate(forwardAuthHeader, adminUI.TailHandler)).Methods("GET")
-	r.HandleFunc("/admin/ui/requests/{id}", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestHandler)).Methods("GET")
-	r.HandleFunc("/admin/ui/requests/{id}/content", arbiterhttp.Gate(forwardAuthHeader, adminUI.RequestContentHandler)).Methods("GET")
+	r.HandleFunc("/admin/ui/requests/{id}/guardrail-diff", arbiterhttp.Gate(forwardAuthHeader, adminUI.GuardrailDiffHandler)).Methods("GET")
 
 	// Conversations. The key is a query parameter, not a path segment: session
 	// keys are opaque and may be arbitrary client-supplied header values, so a
 	// `/` or a `:` in one would break the route. This mirrors /admin/stats/session.
 	r.HandleFunc("/admin/ui/sessions", arbiterhttp.Gate(forwardAuthHeader, adminUI.SessionsHandler)).Methods("GET")
+	r.HandleFunc("/admin/ui/sessions/tail", arbiterhttp.Gate(forwardAuthHeader, adminUI.SessionsTailHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/session", arbiterhttp.Gate(forwardAuthHeader, adminUI.SessionHandler)).Methods("GET")
 
-	// The pivot explorer. No /series.json yet: 7b-3a is the table, and the chart
-	// endpoint arrives with the chart (and with a query that does not exist).
+	// Overview (#54): the routing-flow page. The old pivot explorer and its
+	// series.json chart endpoint were deleted with it — the rebuild is
+	// greenfield, so nothing of that page survives to route to.
 	r.HandleFunc("/admin/ui/overview", arbiterhttp.Gate(forwardAuthHeader, adminUI.OverviewHandler)).Methods("GET")
-
-	// The chart's data. UI-internal and explicitly unstable: the shape can change
-	// with the chart, which is why it is not under /admin/stats/* with the
-	// documented read surface. Under the same gate as everything else.
-	r.HandleFunc("/admin/ui/overview/series.json", arbiterhttp.Gate(forwardAuthHeader, adminUI.SeriesHandler)).Methods("GET")
+	// The per-node drawer, fetched on click. Registered before nothing in
+	// particular, but kept adjacent to its page: it is a fragment-only endpoint
+	// and has no full-page form.
+	r.HandleFunc("/admin/ui/overview/node", arbiterhttp.Gate(forwardAuthHeader, adminUI.OverviewNodeHandler)).Methods("GET")
+	r.HandleFunc("/admin/ui/overview/node/close", arbiterhttp.Gate(forwardAuthHeader, adminUI.OverviewNodeCloseHandler)).Methods("GET")
 
 	// Discovery: the blocks that recur across requests, and the drill-down from
 	// one block to the requests containing it. The block page takes ?hash= rather
@@ -269,6 +272,16 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	// would need its own escaping rules for a value that is already opaque.
 	r.HandleFunc("/admin/ui/content/repeated", arbiterhttp.Gate(forwardAuthHeader, adminUI.DiscoveryHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/content/block", arbiterhttp.Gate(forwardAuthHeader, adminUI.BlockRequestsHandler)).Methods("GET")
+	// The workspace pane's on-demand full-body fetch (#50 follow-up):
+	// fragment-only, no full-page form, since the row's own htmx entry into
+	// workspace mode is its only caller.
+	r.HandleFunc("/admin/ui/content/block/body", arbiterhttp.Gate(forwardAuthHeader, adminUI.DiscoveryBlockBodyHandler)).Methods("GET")
+	// The state-cycle endpoint: the first POST under /admin/ui/ — every other
+	// route here is a read. Registered with its own Methods("POST") the same
+	// way /admin/reload is, so a fronting proxy's forward_auth gate can allow
+	// every GET under /admin/ui/ while still denying this one specifically, if
+	// it chooses to draw that line.
+	r.HandleFunc("/admin/ui/content/repeated/state", arbiterhttp.Gate(forwardAuthHeader, adminUI.DiscoverySetStateHandler)).Methods("POST")
 	// PathPrefix, not HandleFunc: gorilla/mux's HandleFunc matches the exact
 	// path, so a static route registered that way serves only "/static/" and
 	// 404s every asset under it — which is exactly what a first version did.
@@ -286,6 +299,39 @@ func notFoundJSON(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(stdhttp.StatusNotFound)
 	_, _ = w.Write([]byte(`{"code":404,"detail":"Not Found"}`))
+}
+
+// buildVersion reads the VCS stamp Go's toolchain embeds automatically (as
+// of Go 1.18, for a `go build` run inside a git checkout — no ldflags, no
+// build step of our own) so a running binary can say which commit it is, not
+// just that it started. revision is truncated to a short hash: full 40-char
+// SHAs are precise but unreadable in a log line, and `git log --oneline`
+// already trained the eye on 7-12 characters elsewhere in this repo's own
+// tooling. modified is true when the tree had uncommitted changes at build
+// time — worth surfacing, since "which commit" is a different question from
+// "was it exactly that commit's code". Not read at package init: a `go test`
+// binary and other non-`go build` invocations may not carry VCS settings, so
+// this fails soft (empty fields) rather than panicking main before it can
+// even load the config.
+func buildVersion() (revision string, modified bool, buildTime time.Time) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "", false, time.Time{}
+	}
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			revision = s.Value
+			if len(revision) > 12 {
+				revision = revision[:12]
+			}
+		case "vcs.modified":
+			modified = s.Value == "true"
+		case "vcs.time":
+			buildTime, _ = time.Parse(time.RFC3339, s.Value)
+		}
+	}
+	return revision, modified, buildTime
 }
 
 // listen opens the server's listener: a unix socket when socketPath is set
@@ -1003,6 +1049,8 @@ func buildRouter(rc config.RouterConfig, providers map[string]types.ProviderConf
 // and deprecated ("intent"/"cost_sensitivity") when-clause key spellings are
 // accepted during the deprecation window; setting both spellings of the same
 // axis on one rule is an error rather than silently picking one.
+// "request_kind" matches types.Signals.RequestKind exactly ("title", later
+// "subagent") — not an axis, but still a legitimate rule condition.
 func policyRules(cfg map[string]interface{}) ([]router.PolicyRule, error) {
 	raw, _ := cfg["rules"].([]interface{})
 	rules := make([]router.PolicyRule, 0, len(raw))
@@ -1069,6 +1117,7 @@ func policyRules(cfg map[string]interface{}) ([]router.PolicyRule, error) {
 			when.CostClass = costClass
 
 			when.Effort, _ = w["effort"].(string)
+			when.RequestKind, _ = w["request_kind"].(string)
 			if caps, ok := w["capabilities"].([]interface{}); ok {
 				for _, c := range caps {
 					if s, ok := c.(string); ok {

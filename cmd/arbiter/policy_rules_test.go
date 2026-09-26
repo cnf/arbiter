@@ -307,3 +307,24 @@ func TestPolicyRulesParsesStopInCatchAllPosition(t *testing.T) {
 		t.Fatalf("rules = %+v, want rule 1 to carry a Stop target", rules)
 	}
 }
+
+// #11: a rule's "when" clause can match on request_kind ("title", later
+// "subagent") — not an axis, but still a legitimate condition, so routing
+// can send title-generation traffic to a cheap/fast alias.
+func TestPolicyRulesParsesRequestKind(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"target": "cheap-claude",
+				"when":   map[string]interface{}{"request_kind": "title"},
+			},
+		},
+	}
+	rules, err := policyRules(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rules[0].When.RequestKind != "title" {
+		t.Fatalf("When.RequestKind = %q, want title", rules[0].When.RequestKind)
+	}
+}

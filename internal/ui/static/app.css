@@ -1,446 +1,1245 @@
-/* Arbiter admin UI.
+/* Arbiter admin UI — newui redesign (branch `newui`).
  *
- * Dense and discovery-oriented: the page exists to be read and scanned, not to
- * be admired. Monospace for anything the store produced, because identifiers,
- * model names, hashes and rationales are read character by character; a
- * proportional face makes them harder to compare down a column.
+ * This file was fully replaced, not edited, as part of #55: the `newui`
+ * thread's mockups (design/mockups/arbiter-redesign-5-lanes-realdata.html,
+ * design/mockups/transcript-D-merged.html, design/overview-mockups/
+ * f3-overview-styled.html) superseded the previous admin UI outright. See
+ * DESIGN.md and design/REDESIGN.md for the design history; nothing in the
+ * pre-newui version of this file carries over — the whole prior admin UI
+ * (HTML/CSS/JS) is being ripped out and rebuilt page by page under
+ * #50/#52/#53/#54, with this file (tokens + shared chrome) landing first so
+ * every later page builds against one vocabulary instead of inventing its
+ * own.
  *
- * Everything is UTC (that is what is stored); the header says so once rather
- * than half-converting. Light and dark are both honoured via color-scheme —
- * a single dark theme would be a choice made for the operator rather than by
- * them.
+ * Token vocabulary is the later mockup lineage's (transcript-D-merged.html /
+ * f3-overview-styled.html), not the earlier one (arbiter-redesign-5/9) —
+ * ticket #55's resolution: same underlying colors in both lineages, this is
+ * the naming that survives. Two border tokens are kept as separate concepts
+ * rather than merged, because they visually do different jobs, confirmed
+ * against every mockup call site:
+ *   --border        the normal hairline
+ *   --border-soft    same hue, low alpha — passive dividers (panel edges,
+ *                    section headers, list rows): fainter than normal
+ *   --border-strong  solid, heavier — interactive control outlines (chips,
+ *                    buttons, tags): the one case that should read as
+ *                    stronger than the passive hairline, not fainter
+ *
+ * Dark is canonical; light is an explicit `data-theme="light"` attribute
+ * swap (an in-page toggle button), not a `prefers-color-scheme` hook — see
+ * DESIGN.md for the reasoning. Monospace for anything the store produced
+ * (identifiers, model names, hashes, rationales) — read character by
+ * character, so a proportional face makes them harder to compare down a
+ * column.
  */
 
 :root {
-  color-scheme: light dark;
-  --fg: #14161a;
-  --bg: #fbfbfc;
-  --muted: #6b7280;
-  --line: #d9dce1;
-  --card: #ffffff;
-  --accent: #1f4fd8;
+  /* ---- surfaces ---- */
+  --bg: #14161c;
+  --panel: #1b1e26;
+  --panel-2: #21242e;
+  --panel-3: #262a35;
+
+  /* ---- borders (three distinct jobs, not one token — see file header) ---- */
+  --border: #2a2e3a;
+  --border-soft: rgba(42, 46, 58, 0.6);
+  --border-strong: #3b4051;
+
+  /* ---- text ---- */
+  --text: #e6e8ec;
+  --text-dim: #9aa1ac;
+  --text-faint: #6b7280;
+
+  /* ---- brand / accent ---- */
+  --primary: #ff6700;
+  --on-primary: #14161a;
+  --accent: #46b4ff;
+  --accent-strong: #0098ff;
+  --accent-dim: #1b3a57;
+
+  /* ---- status ---- */
+  --ok: #5fc98d;
+  --warn: #e0a44a;
+  --err: #ff8a80;
+  --note: #a6a6f0;
+
+  /* ---- request-kind / role colors ---- */
+  --purple: #a996ff; /* classifier */
+  --kind-title: #5fd4d4;
+  --kind-subagent: #e58bcb;
+  --tool: #e0b34a;
+  --user: #e0b34a;
+  --user-dim: #3a2a14;
+  --user-text: #f0dcb0;
+
+  --tab-active-ink: #d6ecff;
+
+  /* ---- type / shape ---- */
+  --mono: "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-pill: 9999px;
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 20px;
+  --space-xl: 32px;
+
+  color-scheme: dark;
+}
+
+html[data-theme="light"] {
+  --bg: #f5f4f1;
+  --panel: #ffffff;
+  --panel-2: #fafaf8;
+  --panel-3: #f0eee9;
+
+  --border: #e5e3dd;
+  --border-soft: rgba(210, 207, 198, 0.6);
+  --border-strong: #d2cfc6;
+
+  --text: #17181b;
+  --text-dim: #6e6a61;
+  --text-faint: #a5a196;
+
+  --accent: #0072cc;
+  --accent-strong: #0072cc;
+  --accent-dim: #d6ecff;
+
   --ok: #16794a;
   --warn: #a35a00;
   --err: #b3261e;
   --note: #3f3f8f;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --purple: #7c5cfc;
+  --kind-title: #0ea5a5;
+  --kind-subagent: #c2419c;
+  --tool: #8a6215;
+  --user: #8a6215;
+  --user-dim: #fbf0dc;
+  --user-text: #6b4a0f;
+
+  --tab-active-ink: #003a66;
+
+  color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --fg: #e6e8ec;
-    --bg: #15171b;
-    --muted: #9aa1ac;
-    --line: #2b2f36;
-    --card: #1b1e23;
-    --accent: #7aa2ff;
-    --ok: #5fc98d;
-    --warn: #e0a44a;
-    --err: #ff8a80;
-    --note: #a6a6f0;
-  }
+* {
+  box-sizing: border-box;
 }
 
-* { box-sizing: border-box; }
-
+html,
 body {
   margin: 0;
+  padding: 0;
+  height: 100%;
   background: var(--bg);
-  color: var(--fg);
-  font: 14px/1.45 var(--sans);
+  color: var(--text);
+  font: 0.875rem/1.45 var(--sans);
 }
 
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
 
-.muted { color: var(--muted); }
-.mono, pre, code { font-family: var(--mono); font-size: 12.5px; }
+.mono,
+code,
+pre {
+  font-family: var(--mono);
+  font-size: 0.78125rem;
+  line-height: 1.4;
+}
 
-/* ---------------------------------------------------------------- chrome -- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------------------------------------------------------- site chrome -- */
+/* header.top + footer.appfoot + store-disabled banner: the shared shell,
+ * settled in design/REDESIGN.md §7-§8 and reused verbatim across every
+ * newui mockup (transcript-D-merged.html, f3-overview-styled.html). */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
 
 header.top {
   display: flex;
-  align-items: center;
-  gap: 1.25rem;
-  padding: 0.5rem 1rem;
-  border-bottom: 1px solid var(--line);
-  background: var(--card);
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  flex-wrap: wrap;
+  align-items: stretch;
+  padding: 0 1.2rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex: 0 0 auto;
+  height: 58px;
 }
-
 header.top .brand {
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--fg);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-right: 1.4rem;
+  margin-right: 0.3rem;
+  border-right: 1px solid var(--border);
+  text-decoration: none;
+  color: var(--text);
 }
-
-header.top nav { display: flex; gap: 0.75rem; }
-header.top nav a { color: var(--muted); }
-header.top nav a.on { color: var(--fg); font-weight: 600; }
-
-header.top .reload { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
-header.top .clock { color: var(--muted); font-family: var(--mono); font-size: 12px; }
-
-main { padding: 1rem; max-width: 1600px; }
-h1 { font-size: 1.15rem; margin: 0.25rem 0 0.25rem; }
-h2 { font-size: 0.95rem; margin: 0 0 0.5rem; display: flex; align-items: center; gap: 0.75rem; }
-.lede { margin: 0 0 0.75rem; color: var(--muted); }
+header.top .brand:hover {
+  text-decoration: none;
+}
+header.top .brand .mark {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-lg);
+  flex: 0 0 auto;
+  background: linear-gradient(135deg, var(--primary), var(--accent-strong));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+header.top .brand .mark svg {
+  width: 17px;
+  height: 17px;
+  stroke: #14161a;
+  fill: none;
+  stroke-width: 2.2;
+}
+header.top .brand span {
+  color: var(--primary);
+}
+header.top nav {
+  display: flex;
+  align-items: stretch;
+}
+header.top nav a {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 1.15rem;
+  text-decoration: none;
+  color: var(--text-faint);
+  border-bottom: 2px solid transparent;
+  border-right: 1px solid var(--border);
+  min-width: 98px;
+}
+header.top nav a .lbl {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+header.top nav a .stat {
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+header.top nav a .stat .u {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-weight: 500;
+  margin-left: 3px;
+}
+header.top nav a .stat.errval {
+  color: var(--err);
+}
+header.top nav a.on {
+  border-bottom-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
+}
+header.top nav a.on .lbl {
+  color: var(--primary);
+}
+header.top .actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+header.top .live {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+header.top .themebtn {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-faint);
+  font-size: 11px;
+  padding: 5px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+}
+header.top .themebtn:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+header.top .themebtn svg {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+}
 
 .banner {
   margin: 0;
   padding: 0.5rem 1rem;
   background: color-mix(in srgb, var(--warn) 14%, transparent);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--border);
   color: var(--warn);
+  font-size: 0.8125rem;
 }
 
-footer {
+footer.appfoot {
   display: flex;
-  gap: 1rem;
-  padding: 0.75rem 1rem 2rem;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-/* ----------------------------------------------------------------- forms -- */
-
-.filters {
-  display: flex;
+  align-items: center;
+  gap: 1.2rem;
   flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 0.6rem;
-  padding: 0.6rem 0.75rem;
-  margin-bottom: 0.75rem;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--card);
+  padding: 0.6rem 1.6rem;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-faint);
+  font-size: 11.5px;
+  flex: 0 0 auto;
 }
-
-.filters label {
+footer.appfoot .reload {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: lowercase;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  border: 0;
 }
-
-.filters input[type="text"] {
-  font: 12.5px var(--mono);
-  padding: 3px 5px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: var(--bg);
-  color: var(--fg);
-}
-
-.filters label.check { flex-direction: row; align-items: center; gap: 4px; }
-
-button, .filters button, .load, .more {
-  font: 12px var(--sans);
-  padding: 4px 9px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: var(--bg);
-  color: var(--fg);
+footer.appfoot .reload button {
+  all: unset;
   cursor: pointer;
+  font: 700 11px var(--sans);
+  color: var(--text-faint);
+  padding: 5px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
 }
-button:hover { border-color: var(--accent); color: var(--accent); }
-.filters a.reset { font-size: 12px; color: var(--muted); }
-
-.htmx-indicator { opacity: 0; transition: opacity 120ms; }
-.htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; }
-#rows > [data-tail-indicator] { opacity: 0; transition: opacity 120ms; }
-
-/* The live tail control. It sits above the table inside #rows so an htmx filter
-change swaps it along with the rows it follows. */
-.tail {
-  display: flex; align-items: center; gap: 0.6rem;
-  margin: 0 0 0.6rem; font-size: 12px; color: var(--muted);
+footer.appfoot .reload button:hover {
+  color: var(--text);
+  border-color: var(--accent-strong);
 }
-.tail button {
-  font-family: inherit; font-size: 12px; cursor: pointer;
-  padding: 3px 10px; border-radius: 4px;
-  border: 1px solid var(--line); background: var(--card); color: var(--fg);
+footer.appfoot .reload .note {
+  font-family: var(--mono);
+  font-size: 11px;
 }
-.tail button[aria-pressed="true"] {
-  border-color: color-mix(in srgb, var(--ok) 55%, var(--line));
+footer.appfoot .reload .note.ok {
   color: var(--ok);
 }
-.tail .tailstatus { font-family: var(--mono); }
-.tail .tailstatus:not(.new):not(.warn):not(.bad) { color: var(--muted); }
-/* The status carries the state: a quiet store and a stopped tail look the same
-   without it, which is why the timestamp is part of every message. */
-.tail .tailstatus.new { color: var(--ok); }
-.tail .tailstatus.warn { color: var(--warn); }
-.tail .tailstatus.bad { color: var(--err); }
-
-/* ---------------------------------------------------------------- tables -- */
-
-table.grid {
-  width: 100%;
-  border-collapse: collapse;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  overflow: hidden;
+footer.appfoot .clock {
+  font-family: var(--mono);
+  color: var(--text-faint);
+}
+footer.appfoot .spacer {
+  flex: 1 1 auto;
 }
 
-table.grid th {
-  text-align: left;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: lowercase;
-  color: var(--muted);
-  padding: 5px 8px;
-  border-bottom: 1px solid var(--line);
+/* ---------------------------------------------------------------------- */
+/* Sessions (#52): lanes list + persistent detail panel. Ported from
+ * design/mockups/arbiter-redesign-5-lanes-realdata.html — token names
+ * translated to this file's vocabulary (--panel/--border/--text-* etc,
+ * per #55's reconciliation), layout and behavior unchanged. Node status
+ * colors reuse statusClass's existing s-ok/s-warn/s-err/s-note classes
+ * (format.go) rather than inventing new ones, so a node's ring color is
+ * driven by the same function the flat requests page already uses. */
+
+/* .main is a flex child of .app's column flex; its default min-height is its
+ * content's natural height (the same flex trap documented below for
+ * .list-pane/.focus-pane), so a tall transcript grows .main instead of
+ * letting .list-pane's own overflow-y:auto engage — the whole page scrolls
+ * and the list pane never does. min-height: 0 lets .main actually shrink to
+ * its flex-basis so descendants' own overflow rules take over. */
+.main { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+
+.lanes-col { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+/* #lane-list is the whole htmx-swapped fragment (toolbar down through the
+ * legend) — it has to be a flex column too, or .lane-scroll's `flex: 1;
+ * overflow-y: auto` below has no bounded parent to size against and the
+ * lane list just grows the page instead of scrolling in place (the toolbar
+ * scrolling out of view along with it). */
+#lane-list { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+.toolbar {
+  display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap;
+  padding: 0.7rem 1.6rem; border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.toolbar input.search {
+  flex: 1; min-width: 200px; max-width: 420px; font: 12.5px var(--mono);
+  padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+  background: var(--panel); color: var(--text);
+}
+.toolbar select, .toolbar .chip {
+  font: 12px var(--sans); padding: 5px 10px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md); background: var(--panel); color: var(--text-dim); cursor: pointer;
+}
+.toolbar .chip.on {
+  background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent); font-weight: 600;
+}
+.toolbar .spacer { flex: 1 1 auto; min-width: 0; }
+.toolbar .count { color: var(--text-faint); font-size: 11.5px; white-space: nowrap; }
+
+.lane-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0.4rem 0 3rem; }
+
+/* ---- swimlane: full-width row — head line (sid+meta left / preview+cost
+ * right), then a full-width timeline below ---- */
+.lane-row {
+  display: flex; flex-direction: column; gap: 10px;
+  border-bottom: 1px solid var(--border);
+  padding: 14px 1.6rem;
+  transition: background .1s;
+}
+.lane-row:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.lane-row.selected { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+
+.lane-head { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; }
+.lane-head-left {
+  display: flex; align-items: baseline; gap: 10px;
+  /* Fixed, never shrunk: the request/satellite/age stats must never be
+   * squeezed or truncated. flex:1 1 auto + min-width:0 here previously let
+   * the outer row shrink this box under space pressure — but .meta (below)
+   * has white-space:nowrap and no min-width override, so it refused to
+   * actually shrink and instead overflowed rightward, visually bleeding
+   * into the preview text sitting in .lane-head-right. All shrink pressure
+   * must land on the preview (right side) instead — see .lane-head-right. */
+  flex: 0 0 auto;
+}
+.lane-head-left .sid {
+  font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent); padding: 2px 8px;
+  border-radius: var(--radius-sm); flex: 0 0 auto;
+}
+/* .hot marks a lane whose session still has a live affinity pin — i.e. is
+ * within its prompt-cache TTL (store.ActiveSessionKeys; same definition as
+ * the nav bar's "N active" stat). A small dot rather than a badge/label:
+ * this is a courtesy annotation on top of the lane's own stats, not a
+ * fact worth competing with them for attention. The soft pulse is slow and
+ * low-amplitude on purpose — meant to read as "still alive" at a glance,
+ * not to flicker or demand the eye the way an alert would. */
+.hot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ok); flex: 0 0 auto;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 20%, transparent);
+  animation: lane-hot-pulse 2.4s ease-in-out infinite;
+}
+@keyframes lane-hot-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+.lane-head-left .meta { font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
+.lane-head-left .meta b { color: var(--text-dim); font-weight: 600; }
+
+.lane-head-right {
+  display: flex; align-items: baseline; gap: 14px; justify-content: flex-end;
+  min-width: 0; flex: 1 1 auto; text-align: right;
+}
+.lane-head-right .preview {
+  font-size: 12.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; min-width: 0;
+  /* This is where all the row's shrink pressure lands, now that
+   * .lane-head-left is fixed-width: flex:1 1 auto + min-width:0 lets the
+   * excerpt shrink all the way down (ellipsis engaging) rather than push
+   * into the stats on the left or the cost figure on the right. */
+  flex: 1 1 auto;
+}
+.lane-head-right .preview.muted { color: var(--text-faint); font-style: italic; }
+.lane-head-right .cost { font-family: var(--mono); font-weight: 700; font-size: 13px; color: var(--text); flex: 0 0 auto; }
+
+.lane-timeline { position: relative; display: flex; align-items: center; min-height: 40px; padding-left: 4px; width: 100%; max-width: 100%; overflow: hidden; }
+.lane-timeline::before {
+  content: ""; position: absolute; left: 0; right: 12px; top: 50%; height: 2px;
+  background: var(--border-strong); transform: translateY(-1px);
+}
+/* Node/pill sizes are always natural/fixed — never scaled down, so a
+ * stream-pill's count label stays legible regardless of lane density.
+ * laneTimeline.js is the only thing that ever changes spacing: it sets an
+ * explicit margin-right (px) on each node directly. Stage 1 shrinks every
+ * gap uniformly down to a small floor; only if that still doesn't fit does
+ * stage 2 kick in, overlapping consecutive plain/green client nodes only
+ * (see isPlainOk in laneTimeline.js) — a satellite, a stream pill, or an
+ * errored/warned/noted client node is never overlapped or resized, only
+ * ever pushed closer by a neighboring green node's margin shrinking. */
+.node { position: relative; z-index: 2; cursor: pointer; flex: 0 0 auto; border: 0; }
+/* Invisible, larger-than-the-node hit area so clicking near a marker (not
+ * exactly on its few-pixel-wide circle) still activates it. Absolutely
+ * positioned, so it doesn't affect layout/flex sizing of .node.stack's own
+ * centered content; painted with no visible fill, so it changes nothing
+ * about how a node LOOKS, only how forgiving it is to click. When two
+ * nodes' hit zones overlap (dense/overlapping lanes), normal paint order
+ * means the later (frontmost) node wins the click — matching what's
+ * visually on top.
+ *
+ * inset is measured from the padding box, which sits INSIDE the node's own
+ * border — a plain -5px inset on a 3px-bordered .node.client would only
+ * reach 2px past the visible edge, not 5px. Each subtype below sets its
+ * own inset as -(5px target reach + that subtype's own border-width), so
+ * every node gets the same actual 5px of extra reach past what's drawn. */
+.node::before { content: ""; position: absolute; z-index: 1; }
+.node.client::before { inset: -8px; }   /* 5px reach + 3px border */
+.node.sat::before { inset: -7px; }      /* 5px reach + 2px border */
+.node.stack::before { inset: -7px; }    /* 5px reach + 2px border */
+.node.client {
+  width: 18px; height: 18px;
+  border-radius: 50%; background: var(--panel);
+  border: 3px solid var(--ok); margin-right: 38px;
+}
+.node.client.s-err { border-color: var(--err); }
+.node.client.s-warn { border-color: var(--warn); }
+.node.client.s-note { border-color: var(--note); }
+.node.client.is-selected { background: var(--ok); }
+.node.client.s-err.is-selected { background: var(--err); }
+.node.client.s-warn.is-selected { background: var(--warn); }
+.node.sat {
+  width: 10px; height: 10px;
+  margin-right: 26px; margin-top: -24px;
+  border: 2px solid var(--text-faint); background: var(--panel);
+}
+.node.sat::after {
+  content: ""; position: absolute; left: 2px; top: 9px;
+  width: 2px; height: 18px;
+  background: var(--border-strong); opacity: 0.65;
+}
+.node.sat.classifier { border-color: var(--purple); }
+.node.sat.title { border-color: var(--kind-title); }
+.node.sat.subagent { border-color: var(--kind-subagent); }
+.node.sat.is-selected { background: currentColor; }
+.node.stack {
+  width: auto; min-width: 34px; height: 22px;
+  padding: 0 8px; border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  border: 2px solid var(--accent); margin-right: 34px;
+  display: flex; align-items: center; justify-content: center;
+}
+.node.stack .stackn { font-family: var(--mono); font-size: 10.5px; font-weight: 700; color: var(--accent); }
+.node.stack.is-selected { background: var(--accent); }
+.node.stack.is-selected .stackn { color: var(--on-primary); }
+.node .tip {
+  position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+  white-space: nowrap; font-size: 10.5px; font-family: var(--mono); color: var(--text-dim);
+  background: var(--panel); border: 1px solid var(--border); padding: 2px 6px; border-radius: var(--radius-sm);
+  opacity: 0; transition: opacity .1s; pointer-events: none;
+}
+.node:hover .tip, .node:focus-visible .tip { opacity: 1; }
+.node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.axistags { display: flex; gap: 5px; margin-left: 10px; position: relative; z-index: 3; }
+.axistags span, .axistags .tag {
+  font-family: var(--mono); font-size: 10px; color: var(--text-dim);
+  background: var(--panel); border: 1px solid var(--border); padding: 1px 6px; border-radius: var(--radius-sm);
   white-space: nowrap;
 }
+.axistags .tag.err { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
 
-table.grid td {
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--line);
-  vertical-align: top;
+/* ---- right detail panel — persistent, page-native (not a modal/dock) ---- */
+.detail-col {
+  flex: 0 0 380px; border-left: 1px solid var(--border); background: var(--panel);
+  overflow-y: auto; padding: 20px;
+}
+.detail-col h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); margin: 0 0 14px; font-weight: 700; }
+
+.default-panel .stat-grid, .node-panel .stat-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px 10px; margin-bottom: 20px;
+}
+.default-panel .stat dt, .node-panel .stat dt { font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3px; }
+.default-panel .stat dd, .node-panel .stat dd { margin: 0; font-family: var(--mono); font-size: 19px; color: var(--text); font-weight: 700; }
+.default-panel .hint, .node-panel .hint {
+  color: var(--text-dim); font-size: 12px; line-height: 1.6; border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.default-panel .hint b { color: var(--text); }
+.node-panel .open-link { display: inline-block; margin-top: 14px; font-size: 12px; font-weight: 600; }
+
+.legend {
+  display: flex; gap: 10px; flex-wrap: wrap; font-size: 10.5px; color: var(--text-faint);
+  padding: 8px 1.6rem; border-top: 1px solid var(--border); background: var(--panel);
+}
+.legend .dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%; border: 2px solid;
+  margin-right: 3px; vertical-align: -1px; background: var(--panel);
+}
+.legend .dot.ok { border-color: var(--ok); }
+.legend .dot.err { border-color: var(--err); }
+.legend .dot.warn { border-color: var(--warn); }
+.legend .dot.classifier { border-color: var(--purple); }
+.legend .dot.title { border-color: var(--kind-title); }
+.legend .dot.subagent { border-color: var(--kind-subagent); }
+
+.empty { color: var(--text-dim); padding: 1.2rem 1.6rem; margin: 0; font-size: 13px; }
+.capped { color: var(--text-faint); padding: 0 1.6rem 0.6rem; margin: 0; font-size: 11.5px; }
+
+/* ---------------------------------------------------------------------- */
+/* Session transcript (#53): turn list + persistent inspector. Ported from
+ * design/mockups/transcript-D-merged.html, which is this page's look-and-feel
+ * spec (values and grid shapes, not its client-side JSON-fetch mechanism —
+ * content here is server-rendered). Genuinely shared controls reuse what #55
+ * already defined (.toolbar's base rule, .empty, the modal .box/.box-head
+ * troika, statusClass's s-* / dot ring convention for a turn's own status).
+ * Everything the mockup defines that is specific to this page — the list
+ * row grid, the child-row grid, meta-grid's wrapping chip layout, the
+ * classifier-verdict block, the clamp-with-fade treatment on captured
+ * bodies — is taken at the mockup's own values, not re-derived, so this page
+ * matches transcript-D-merged rather than approximating it through
+ * unrelated components. Colors are the shared token set throughout (the
+ * mockup's --purple/--user/--tool/etc. are byte-identical to this file's),
+ * so a classifier call reads as the same purple here as in the Sessions lane
+ * view — never the mockup's literal hex. */
+
+.transcript { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+/* Toolbar: reuses .toolbar's base rule (height/padding/border come from
+ * there); only the content specific to this page is added. */
+.transcript .toolbar .crumb { color: var(--text-faint); font-size: 12px; white-space: nowrap; }
+.transcript .toolbar .crumb a { color: var(--text-dim); }
+.transcript .toolbar .stats {
+  margin-left: auto; display: flex; gap: 14px; font-size: 11.5px; color: var(--text-faint);
+  white-space: nowrap; font-family: var(--mono);
+}
+.transcript .toolbar .stats b { color: var(--text); font-weight: 600; }
+.transcript .toolbar .stats .err-count b { color: var(--err); }
+
+.preamble-btn {
+  background: transparent; border: 1px dashed var(--border); border-radius: var(--radius-md);
+  padding: 4px 10px; font-family: var(--mono); font-size: 10.5px; color: var(--text-faint);
+  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+}
+.preamble-btn:hover { color: var(--text-dim); border-color: var(--text-faint); }
+.preamble-btn:disabled { opacity: 0.45; cursor: default; }
+.preamble-btn .touched-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--warn); display: none;
+}
+.preamble-btn.touched .touched-dot { display: inline-block; }
+
+/* jump-trigger is the mockup's one deliberately loud control on this page —
+ * solid --primary, the same treatment the mockup gives it. Marked for your
+ * pass: I kept it exactly as designed rather than softening it to an
+ * outline button (my previous version did, silently). */
+.jump-trigger {
+  background: var(--primary); border: 1px solid var(--primary); color: var(--on-primary);
+  border-radius: var(--radius-md); padding: 4px 10px; font-size: 11px; font-weight: 600;
+  font-family: var(--sans); cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+}
+.jump-trigger:hover { filter: brightness(1.08); }
+.jump-trigger kbd {
+  background: rgba(20, 22, 26, 0.25); border-radius: 3px; padding: 0 5px;
+  font-family: var(--mono); font-size: 10px;
 }
 
-table.grid tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
-table.grid tr.here { background: color-mix(in srgb, var(--accent) 10%, transparent); }
-
-td.num, th.num { text-align: right; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
-td.when { white-space: nowrap; font-family: var(--mono); font-size: 12px; }
-td.when .sub, td .sub { display: block; color: var(--muted); font-size: 11px; font-family: var(--sans); }
-td.why { color: var(--muted); font-size: 12px; max-width: 34ch; }
-td.axes { white-space: nowrap; }
-
-/* A collapsed run of streamed turns. It is deliberately *not* loud: the point of
-   folding is that the eye reaches the distinct events, so the summary line
-   recedes and its count is the one thing that stands forward. The count badge is
-   also the link that opens the constituents (the flat, filtered view), which is
-   why it is styled as a control rather than as text. */
-.grouping {
-  margin: 0 0 0.5rem;
-  color: var(--muted);
-  font-size: 12px;
+/* ---- master-detail: scrollable turn list beside a persistent inspector.
+ * .list-pane/.focus-pane are grid items; a grid item's default minimum size
+ * is its own content's height (not 0), so once the list's content is taller
+ * than the viewport the item refuses to shrink and grows the page instead of
+ * clipping — overflow-y: auto never gets a chance to engage. min-height: 0
+ * overrides that default. This is a latent bug in the mockup's own CSS too
+ * (same omission there); it only surfaces with real data long enough to
+ * overflow, which the mockup's static content never was. */
+.transcript .body { display: grid; grid-template-columns: 420px 1fr; flex: 1; min-height: 0; }
+.list-pane { border-right: 1px solid var(--border-soft); overflow-y: auto; background: var(--bg); min-height: 0; }
+.list-toolbar {
+  position: sticky; top: 0; z-index: 10; background: var(--bg);
+  border-bottom: 1px solid var(--border-soft); padding: 8px 10px; display: flex; gap: 6px; align-items: center;
 }
-table.grid tr.run td { color: var(--muted); }
-table.grid tr.run .count {
-  color: var(--accent);
-  text-decoration: none;
-  font-family: var(--sans);
-  font-size: 11px;
-  padding: 0 4px;
-  margin-left: 3px;
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
-  border-radius: 9px;
+.list-toolbar input {
+  width: 100%; background: var(--panel); border: 1px solid var(--border); color: var(--text);
+  border-radius: 5px; padding: 5px 8px; font-family: var(--mono); font-size: 11.5px;
 }
-table.grid tr.run .count:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.list-toolbar input::placeholder { color: var(--text-faint); }
+#list { min-height: 0; }
 
-.pager { display: flex; align-items: center; gap: 0.75rem; margin: 0.6rem 0 0; color: var(--muted); font-size: 12px; }
-
-.status {
-  display: inline-block;
-  min-width: 3ch;
-  text-align: center;
-  font-family: var(--mono);
-  font-size: 12px;
-  padding: 0 4px;
-  border-radius: 3px;
-  border: 1px solid transparent;
+/* ---- one turn. Two of .row's four grid tracks — .side and (in .child-row)
+ * the summary column — must be a fixed width, not auto/1fr: each .row is its
+ * own grid container (one per entry, not one shared table), so an `auto`
+ * track sizes to that row's own content. With .side auto-sized, a shorter
+ * cost/latency string ("$0.03 800ms") pulls the boundary in from a longer
+ * one ("$0.0412 4.2s") on the very next row — the "right side jumps" bug.
+ * The mockup's own layout has the same four-track grid; pinning .side's
+ * width here is what makes independent per-row grids line up as a column. */
+.entry { border-bottom: 1px solid var(--border-soft); }
+.entry .row {
+  display: grid; grid-template-columns: 34px 8px 1fr 92px;
+  gap: 8px; align-items: center; padding: 7px 10px; cursor: pointer;
+  font-family: var(--mono); font-size: 11.5px;
 }
-.s-ok   { color: var(--ok);   border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
-.s-note { color: var(--note); border-color: color-mix(in srgb, var(--note) 40%, transparent); }
-.s-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
-.s-err  { color: var(--err);  border-color: color-mix(in srgb, var(--err) 40%, transparent); }
-.s-none { color: var(--muted); }
-.status[title] { cursor: help; }
-
-.tag {
-  display: inline-block;
-  font-size: 11px;
-  padding: 0 5px;
-  margin-right: 3px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  color: var(--muted);
+.entry .row:hover { background: var(--panel); }
+.entry .row.selected { background: var(--panel-2); box-shadow: inset 2px 0 0 0 var(--accent); }
+.entry .row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.entry .row .seq { color: var(--text-faint); text-align: right; }
+/* .dot's own status colors are a fill here (mockup: ok/err/user), distinct
+ * from the outlined-ring convention statusClass's s-* classes use elsewhere
+ * — the two read differently on purpose: a swimlane node is a status ring
+ * around empty space, a list row's dot is a small solid status light. */
+.entry .row .dot { width: 7px; height: 7px; border-radius: 50%; }
+.entry .row .dot.ok { background: var(--ok); }
+.entry .row .dot.err { background: var(--err); }
+.entry .row .dot.user { background: var(--user); }
+/* Deliberately stacked (not the mockup's cascade-collision version — see
+ * REDESIGN discussion): the mockup's own page-level `.main` sets
+ * flex-direction: column and leaks it into `.row .main` by class-name
+ * accident, but the *visual result* it produces — preview / badge /
+ * summary each on their own line, giving the list room to breathe — is
+ * what was approved. Reproduced here intentionally and scoped so it can't
+ * leak into the unrelated page-level `.main` layout container. */
+.entry .row .main {
+  color: var(--text-dim); display: flex; flex-direction: column; align-items: flex-start;
+  gap: 2px; min-width: 0; padding: 2px 0;
 }
-.tag.kind { color: var(--note); border-color: color-mix(in srgb, var(--note) 40%, transparent); }
-
-/* A request kind is not an axis. It sits in the same column because that is
-   where "what is this row" is read, but it is coloured as its own thing so a
-   `title` is never mistaken for a domain the router matched on. */
-.tag.reqkind { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
-
-.empty { padding: 1rem; border: 1px dashed var(--line); border-radius: 4px; color: var(--muted); }
-.fail h1 { font-size: 2rem; margin: 2rem 1rem 0; }
-.fail p.error { margin: 0.5rem 1rem; font-family: var(--mono); }
-
-/* --------------------------------------------------------------- detail -- */
-
-.crumbs { color: var(--muted); font-size: 12px; margin-bottom: 0.25rem; }
-
-.facts {
-  display: grid;
-  /* auto-fit, not auto-fill: auto-fill keeps an empty column track when the item
-     count does not fill the row, and because this grid's own background is the
-     line colour, that track renders as a solid empty cell — a metric that looks
-     like it failed to load. auto-fit collapses the empties and stretches the
-     last item instead. */
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 1px;
-  margin: 0 0 1rem;
-  background: var(--line);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  overflow: hidden;
+.entry .row .main .u-preview,
+.entry .row .main .summary {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
 }
-.facts > div { background: var(--card); padding: 5px 8px; }
-.facts dt { font-size: 11px; color: var(--muted); }
-.facts dd { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.entry .row .main .u-preview { color: var(--user-text); }
+.entry .row .main .badge { color: var(--text-faint); font-size: 10.5px; }
+.entry .row .side { display: flex; gap: 8px; justify-content: flex-end; color: var(--text-faint); font-size: 10.5px; align-self: center; }
+.entry .row.error-row .main .summary { color: var(--err); }
+.entry .row.error-row .dot { background: var(--err); }
 
-.panel {
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--card);
-  padding: 0.6rem 0.75rem;
-  margin-bottom: 0.75rem;
+/* internal calls a turn spawned (classifier/title/subagent today), indented
+ * under their parent — one row each, own selectable inspector. */
+.entry .children { margin-left: 34px; border-left: 1px dashed var(--border); }
+.entry .child-row {
+  display: grid; grid-template-columns: 14px 1fr 70px;
+  gap: 8px; align-items: center; padding: 5px 10px 5px 12px; cursor: pointer;
+  font-family: var(--mono); font-size: 11px; color: var(--text-faint);
 }
-.panel.bad { border-color: color-mix(in srgb, var(--err) 50%, var(--line)); }
-.panel pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.entry .child-row:hover { background: var(--panel); }
+.entry .child-row.selected { background: var(--panel-2); box-shadow: inset 2px 0 0 0 var(--purple); }
+.entry .child-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.entry .child-row .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--purple); }
+.entry .child-row .badge { color: var(--purple); flex: none; }
+.entry .child-row .summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entry .child-row .side { text-align: right; }
 
-.content .block { border-top: 1px solid var(--line); padding-top: 0.5rem; margin-top: 0.5rem; }
-.content .block:first-child { border-top: 0; margin-top: 0; }
-.blockmeta { display: flex; align-items: center; gap: 0.5rem; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
-.blockmeta .role { font-weight: 600; color: var(--fg); }
-.block pre {
-  margin: 0;
-  max-height: 22rem;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  padding: 6px 8px;
+.more-row { padding: 12px 1rem; text-align: center; }
+.more-btn {
+  font: 12px var(--sans); font-weight: 600; padding: 7px 14px; cursor: pointer;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+  background: var(--panel); color: var(--accent);
 }
-.block .binary { color: var(--muted); font-size: 12px; margin: 0; }
+.more-btn:hover { border-color: var(--accent-strong); }
+.more-btn .count { color: var(--text-faint); font-weight: 400; }
+.htmx-indicator { color: var(--text-faint); font-size: 11.5px; margin-left: 6px; }
+.list-end { color: var(--text-faint); font-size: 11px; padding: 10px 1rem 20px; margin: 0; text-align: center; }
 
-/* ------------------------------------------------------------ sessions -- */
-
-/* A session key is an opaque handle (64 hex chars when content-derived), so it
-   is monospace, never wrapped, and shown truncated with the full value in the
-   tooltip. Wrapping it would make every row two lines tall for no reader. */
-td.key { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
-
-/* ---------------------------------------------------------- transcript -- */
-
-.turn {
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--card);
-  margin-bottom: 0.6rem;
-  padding: 0.5rem 0.75rem 0.6rem;
+/* ---- the inspector. No background here — it inherits the page's --bg, so
+ * every inner block (.meta-grid/.narration/.call-block, all --panel) reads
+ * as a distinct raised surface against it. Setting --panel here (an earlier
+ * mistake) made every block the same color as its own container — the "one
+ * slab" bug. */
+.focus-pane { overflow-y: auto; padding: 20px 26px 60px; min-height: 0; }
+.focus-pane .empty-state {
+  color: var(--text-faint); font-family: var(--mono); font-size: 12px; padding: 40px 0; text-align: center;
 }
+.inspector { display: block; }
+/* #inspector-src is the hidden shelf the pane's markup is moved out of (see
+ * transcript.js); it must take no layout space at all. */
+.inspector-src { display: none; }
 
-.turnmeta {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  font-size: 12px;
-  padding-bottom: 0.4rem;
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 0.5rem;
+.f-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+.f-head h2 { margin: 0; font-size: 15px; font-family: var(--mono); color: var(--text); }
+.f-head .chip {
+  font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 4px;
+  border: 1px solid var(--border); color: var(--text-dim);
+}
+.f-head .chip.err { border-color: var(--err); color: var(--err); }
+.f-head .chip.warn { border-color: var(--warn); color: var(--warn); }
+.f-sub { color: var(--text-faint); font-size: 11.5px; font-family: var(--mono); margin-bottom: 16px; }
+.f-sub .mono { color: var(--text-dim); }
+
+.f-section { margin-bottom: 18px; }
+.f-section .label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-faint); margin-bottom: 6px; font-family: var(--sans); font-weight: 600;
+}
+.f-note { font-size: 12px; color: var(--text-faint); }
+
+.meta-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px 18px; background: var(--panel); border: 1px solid var(--border-soft); border-radius: 6px;
+  padding: 12px 14px;
+}
+.meta-grid .kv { display: flex; flex-direction: column; gap: 2px; }
+.meta-grid .kv .k { font-size: 10px; color: var(--text-faint); }
+.meta-grid .kv .v { font-size: 12px; font-family: var(--mono); color: var(--text); }
+.meta-grid .kv .v.dim { color: var(--text-dim); }
+.meta-grid .kv .v.err { color: var(--err); }
+/* The model that actually answered differing from the alias served is the
+ * one fact on this grid worth noticing, so it is the only value with color. */
+.meta-grid .kv .v.changed { color: var(--warn); }
+
+.rationale-box {
+  background: var(--panel); border: 1px solid var(--border-soft); border-radius: 6px;
+  padding: 10px 12px; font-family: var(--mono); font-size: 11.5px; color: var(--text-dim);
+  white-space: pre-wrap; overflow-wrap: anywhere;
 }
 
-.turnmeta .turnno a { font-family: var(--mono); font-weight: 600; }
-.turnmeta .openreq { margin-left: auto; }
+.error-block {
+  background: rgba(255, 138, 128, 0.08); border: 1px solid var(--err); border-radius: 6px;
+  padding: 10px 12px; font-family: var(--mono); font-size: 12px; color: var(--err);
+  white-space: pre-wrap; overflow-wrap: anywhere; margin-bottom: 14px;
+}
+.error-block b { text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.06em; }
 
-.turnerror {
-  margin: 0 0 0.5rem;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--err);
-  border-left: 2px solid var(--err);
-  padding-left: 0.5rem;
-  overflow-wrap: anywhere;
+/* classifier verdict: the axes a classifier call decided, plus its words —
+ * always --purple, matching the classifier color used in the Sessions lane
+ * view's nodes/legend. */
+.classifier-verdict {
+  background: var(--panel); border: 1px solid var(--purple); border-left: 3px solid var(--purple);
+  border-radius: 6px; padding: 10px 12px;
+}
+.classifier-verdict .axes { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.classifier-verdict .axis {
+  font-family: var(--mono); font-size: 11px;
+  background: color-mix(in srgb, var(--purple) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--purple) 35%, transparent);
+  color: var(--purple); border-radius: 4px; padding: 2px 8px;
+}
+.classifier-verdict .axis.none { color: var(--text-faint); background: var(--panel-2); border-color: var(--border); }
+.classifier-verdict .rationale { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); }
+
+/* spawned internal calls, inside a parent's inspector */
+.children-strip { display: flex; flex-direction: column; gap: 6px; }
+.child-chip {
+  display: flex; align-items: center; gap: 8px; background: var(--panel);
+  border: 1px solid var(--border-soft); border-radius: 6px; padding: 7px 10px; cursor: pointer;
+  font-family: var(--mono); font-size: 11.5px; color: var(--text-dim);
+}
+.child-chip:hover { border-color: var(--purple); }
+.child-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--purple); flex: none; }
+.child-chip b { color: var(--purple); font-weight: 600; }
+.child-chip .rat { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.child-chip .side { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); flex: none; }
+
+/* captured bodies: user messages get the tinted --user treatment, reasoning
+ * and tool snippets get a neutral panel — two different classes because the
+ * mockup treats them as two different content types, not one shared block.
+ * Clipped with a fade (mask-image reads identically to the mockup's
+ * gradient-over-solid overlay, and survives a variable background), not
+ * shortened — "show full" is a reveal over markup already on the page. */
+.user-message {
+  background: var(--user-dim); border: 1px solid color-mix(in srgb, var(--user) 35%, transparent);
+  border-left: 3px solid var(--user); border-radius: 6px; padding: 10px 12px;
+  font-family: var(--mono); font-size: 12px; color: var(--user-text);
+  white-space: pre-wrap; overflow-wrap: anywhere; position: relative;
+}
+.narration, .snippet-block {
+  background: var(--panel); border: 1px solid var(--border-soft); border-radius: 6px;
+  padding: 10px 12px; font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+  white-space: pre-wrap; overflow-wrap: anywhere; position: relative;
+}
+/* the height clamp itself lives here, scoped to .clamped, alongside the fade
+ * — both must come off together on expand. Putting max-height on the base
+ * rule (as this used to) makes "show full" only strip the fade, leaving the
+ * block still visually clipped at 220px no matter what expand-link does. */
+.user-message.clamped, .narration.clamped, .snippet-block.clamped {
+  max-height: 220px; overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, #000 70%, transparent);
+  mask-image: linear-gradient(180deg, #000 70%, transparent);
+}
+.expand-link {
+  display: inline-block; margin-top: 6px; font-family: var(--mono); font-size: 11px;
+  color: var(--accent); cursor: pointer;
 }
 
-.turnempty { margin: 0; font-size: 12px; }
+.call-block { border: 1px solid var(--border-soft); border-radius: 6px; margin-bottom: 10px; overflow: hidden; }
+.call-block .call-head {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: var(--panel-2); font-family: var(--mono); font-size: 11.5px;
+}
+.call-block .call-head .name { color: var(--tool); font-weight: 600; }
+.call-block .call-head .err-tag { color: var(--err); margin-left: auto; }
+.call-block .call-head .no-result { color: var(--text-faint); margin-left: auto; font-size: 10.5px; }
+.call-block .call-body { padding: 10px 12px; background: var(--panel); }
+.call-block .call-body .kv-line { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-bottom: 6px; overflow-wrap: anywhere; }
 
-/* Inside a turn the direction is the label that matters: it is what turns two
-   parallel streams of blocks into a dialogue. */
-.blockmeta .dir {
-  font-weight: 600;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  padding: 0 4px;
+/* client headers: collapsed by default, toggled in place */
+.headers-toggle {
+  background: transparent; border: 1px dashed var(--border); border-radius: 5px;
+  padding: 5px 10px; font-family: var(--mono); font-size: 11px; color: var(--text-faint); cursor: pointer;
+}
+.headers-toggle:hover { color: var(--text-dim); }
+.headers-box {
+  display: none; margin-top: 8px; background: var(--panel); border: 1px solid var(--border-soft);
+  border-radius: 6px; padding: 10px 12px; font-family: var(--mono); font-size: 11px; color: var(--text-faint);
+}
+.headers-box.open { display: block; }
+.headers-box .h-row { display: flex; gap: 8px; padding: 2px 0; }
+.headers-box .h-row .hk { color: var(--text-dim); min-width: 200px; }
+
+.jump-link { font-size: 12px; color: var(--accent); cursor: pointer; font-weight: 600; }
+.jump-link:hover { text-decoration: underline; }
+
+/* ---- modals: content peek, preamble, jump. Nothing in #55's shell defines
+ * a modal, so all three are introduced here — one shared base rule (open
+ * state, box chrome, box-head) plus each modal's own size, matching the
+ * mockup's own three rules exactly rather than one merged guess. */
+.content-modal, .preamble-modal, .jump-modal {
+  display: none; position: fixed; inset: 0; z-index: 300;
+  background: rgba(0, 0, 0, 0.65); align-items: center; justify-content: center;
+}
+.content-modal.open, .preamble-modal.open, .jump-modal.open { display: flex; }
+.content-modal .box, .preamble-modal .box, .jump-modal .box {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  display: flex; flex-direction: column;
+}
+.content-modal .box { width: min(880px, 92vw); max-height: 84vh; }
+.preamble-modal .box { width: min(900px, 92vw); max-height: 86vh; }
+.jump-modal { align-items: flex-start; padding-top: 14vh; }
+.jump-modal .box { width: min(420px, 90vw); border-color: var(--primary); }
+
+.box-head {
+  display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+  border-bottom: 1px solid var(--border-soft); font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+}
+.box-head .x { margin-left: auto; cursor: pointer; color: var(--text-faint); font-size: 18px; line-height: 1; }
+.box-head .x:hover { color: var(--text); }
+.box-body {
+  padding: 14px 16px; overflow-y: auto; font-family: var(--mono); font-size: 12px;
+  color: var(--text-dim); white-space: pre-wrap; overflow-wrap: anywhere;
 }
 
-/* The system preamble is its own field: a client's standing instructions are
-   worth having apart from the conversation, and they are usually the largest
-   single thing in a turn. Closed by default — it is context, not the message. */
-details.preamble {
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: var(--bg);
-  margin-bottom: 0.4rem;
-  padding: 0.3rem 0.5rem;
+.preamble-modal .tabs { display: flex; gap: 6px; }
+.preamble-modal .tab {
+  background: transparent; border: 1px solid var(--border); border-radius: 5px;
+  padding: 4px 10px; font-family: var(--sans); font-size: 11.5px; color: var(--text-dim); cursor: pointer;
 }
-details.preamble > summary {
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--muted);
+.preamble-modal .tab.active { background: var(--accent-dim); border-color: var(--accent); color: var(--tab-active-ink); }
+.preamble-untouched { color: var(--text-faint); font-style: italic; }
+
+/* diff rendering — the preamble modal's inline diff, fed by the store's own
+ * LineDiff (diff.go), so these three classes mirror DiffOp.Kind exactly:
+ * "add" | "del" | "eq". */
+.diff-del { background: rgba(255, 138, 128, 0.16); color: var(--err); text-decoration: line-through; display: block; padding: 1px 4px; }
+.diff-add { background: rgba(95, 201, 141, 0.16); color: var(--ok); display: block; padding: 1px 4px; }
+.diff-eq { color: var(--text-faint); display: block; padding: 1px 4px; }
+
+.jump-modal input {
+  width: 100%; background: transparent; border: none; outline: none; color: var(--text);
+  font-family: var(--mono); font-size: 15px; padding: 14px 16px;
 }
-details.preamble > summary::marker { color: var(--muted); }
-details.preamble[open] > summary { margin-bottom: 0.4rem; }
+.jump-hint { padding: 0 14px 10px; font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+.jump-hint b { color: var(--primary); font-family: var(--mono); }
+.jump-status { padding: 0 14px 10px; font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); }
+.jump-status.err { color: var(--err); }
 
-/* A replay pointer. It replaced the replayed text rather than hiding it: a
-   <details> would still ship the same bytes to the browser every turn. */
-.replayref {
-  margin: 0.3rem 0 0;
-  font-size: 11px;
-  color: var(--muted);
-  border-left: 2px solid var(--line);
-  padding-left: 0.5rem;
+/* ---- Discovery page (#50): the ledger table, its state dot, and the
+ * workspace-mode detail pane. Structurally ported from
+ * design/mockups/discovery-B-ledger.html's .table-wrap/.detail-pane split,
+ * but reusing .toolbar/.lanes-col/.detail-col/.empty/.capped/.default-panel
+ * from the rest of the shell rather than the mockup's own duplicate
+ * definitions of the same ideas (see discovery.html's own comment). */
+#repeated-list { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.toolbar h1 { font-size: 13px; font-weight: 600; margin: 0; color: var(--text); white-space: nowrap; }
+#repeated-list .toolbar .stats { margin-left: auto; display: flex; gap: 14px; font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
+#repeated-list .toolbar .stats b { color: var(--text); font-weight: 600; }
+.block-stats { margin-left: auto; font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
+.block-stats b { color: var(--text); font-weight: 600; }
+
+#discoveryTableWrap { flex: 1; min-height: 0; overflow-y: auto; }
+#discoveryTableWrap table { width: 100%; border-collapse: collapse; }
+#discoveryTableWrap thead th {
+  position: sticky; top: 0; background: var(--panel); z-index: 1;
+  text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-faint); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--border);
 }
-
-/* The new content is the point of the turn, so it is not boxed like the rest:
-   no border, no background, just the blocks and their labels. */
-.newcontent { margin-top: 0.2rem; }
-.newcontent .block:first-child { margin-top: 0; }
-
-/* The response half is what the reader is usually looking for; give it the
-   accent so a turn reads as question-then-answer at a glance. */
-.block:has(> .blockmeta > .dir) { }
-.turnmeta .openreq { margin-left: auto; font-size: 11px; }
-
-/* How much of a turn was context it re-sent rather than new. Kept in the header
-   because it is the answer to "why is this turn 8k input tokens", but it is not
-   repeated content: the text itself lives once, at the turn that introduced it. */
-.replaynote { font-size: 11px; }
-
-/* -------------------------------------------------------------- chart -- */
-
-/* The chart is a sibling of the table, never a replacement: the table is exact
-   and the chart is a shape, and either alone answers a different question. */
-#chart {
-  width: 100%;
-  min-height: 260px;
-  margin: 0 0 0.75rem;
-  padding: 0.25rem 0 0;
+.repeated-row { border-bottom: 1px solid var(--border-soft); cursor: pointer; }
+.repeated-row:hover { background: var(--panel-2); }
+.repeated-row.selected { background: var(--accent-dim); }
+.repeated-row td { padding: 7px 10px; font-size: 12px; vertical-align: middle; }
+.repeated-row .preview-cell {
+  font-family: var(--mono); font-size: 11px; color: var(--text-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 1px;
 }
-#chart .muted { padding: 1rem; }
+.repeated-row .num-cell { font-family: var(--mono); text-align: right; color: var(--text-dim); }
+.repeated-row .time-cell { font-family: var(--mono); font-size: 11px; color: var(--text-faint); white-space: nowrap; }
 
-/* uPlot's own stylesheet is scoped to .uplot; only the legend needs aligning
-   with the page's type scale. */
-.uplot { font-family: var(--mono); font-size: 11px; }
-.u-legend { font-size: 11px; }
-.u-legend .u-marker { border-width: 1px; }
+.row-inner { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.lbl-wrap { min-width: 0; line-height: 1.3; }
+.lbl-top { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 172px; }
+.lbl-sub { font-size: 10.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 172px; }
+
+/* state-dot mirrors the mockup's own three states exactly: unseen is the
+ * loud one (a pattern nobody has looked at yet), seen and ignored both fade
+ * — ignored more, since it is a permanent dismissal rather than a to-do
+ * crossed off. A row's own fade for ignored/seen keys off the dot's class
+ * via :has(), since the fragment response only ever replaces the button
+ * (see discoveryRow.html's own comment). */
+.state-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; cursor: pointer; border: none; padding: 0; }
+.state-dot.st-unseen { background: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent); }
+.state-dot.st-seen { background: var(--text-faint); opacity: 0.5; }
+.state-dot.st-ignored { background: var(--text-faint); opacity: 0.22; }
+.repeated-row:has(.state-dot.st-ignored) { opacity: 0.55; }
+
+/* ---- detail pane: default/selected/workspace states, ported from the
+ * mockup's .detail-pane but reusing .detail-col for the panel chrome
+ * itself. */
+#discoveryDetail .meta-row { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--text-faint); font-family: var(--mono); margin-bottom: 14px; }
+#discoveryDetail .meta-row b { color: var(--text-dim); font-weight: 600; }
+#discoveryDetail .section-label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint);
+  font-weight: 700; margin: 16px 0 6px; display: flex; align-items: center; gap: 10px;
+}
+#discoveryDetail .body-text {
+  font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); white-space: pre-wrap;
+  line-height: 1.55; background: var(--panel-3); border-radius: var(--radius-md); padding: 10px 12px;
+  max-height: 220px; overflow-y: auto;
+}
+/* .ws-full is workspace mode's full-body fragment (#50 follow-up): the
+ * inline pane's .body-text stays clamped to 220px (it is a preview beside a
+ * table row), but workspace mode exists precisely to give the text the rest
+ * of the screen, so this drops the clamp and lets #discoveryDetail.workspace
+ * .ws-scroll (flex:1, its own overflow-y:auto below) be the one scroller —
+ * mirrors the mockup's own .workspace-mode .body-text.ws-full rule. */
+#discoveryDetail .body-text.ws-full { max-height: none; font-size: 12.5px; line-height: 1.7; }
+#discoveryDetail .ws-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+#discoveryDetail .ws-toolbar .spacer { flex: 1 1 auto; }
+#discoveryDetail .ws-back {
+  all: unset; cursor: pointer; display: flex; align-items: center; gap: 5px;
+  font: 600 11px var(--sans); color: var(--text-faint); padding: 5px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+}
+#discoveryDetail .ws-back:hover { color: var(--text); border-color: var(--accent-strong); }
+#discoveryDetail .open-link { display: inline-block; margin-top: 10px; font-size: 12px; font-weight: 600; }
+
+/* workspace mode: the ledger narrows to a rail, the detail pane takes over
+ * the rest of .main — the mockup's grid-template-columns swap, reproduced
+ * as a class on .main itself so it works with the shared .detail-col
+ * markup instead of a mockup-only .body element. Only .lbl-wrap survives in
+ * the rail; the extra columns (preview/sess/reqs/last seen) hide, same as
+ * the mockup's .table-wrap.rail .col-extra rule. */
+.main.workspace-mode { display: grid; grid-template-columns: 240px 1fr; }
+.main.workspace-mode .lanes-col { min-width: 0; }
+#discoveryTableWrap.rail .col-extra { display: none; }
+#discoveryTableWrap.rail .lbl-top, #discoveryTableWrap.rail .lbl-sub { max-width: 168px; }
+#discoveryDetail.workspace { display: flex; flex-direction: column; min-height: 0; }
+#discoveryDetail.workspace .ws-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* ---- block drill-down page (/admin/ui/content/block): a plain request
+ * list plus an on-demand diff fragment per row, styled like requests.html's
+ * own table (no bespoke table rules needed there — reusing #discoveryTableWrap's
+ * generic table look keeps this page from inventing a fourth table style). */
+.block-body { margin-bottom: 18px; }
+.diff-link { font-size: 11px; font-weight: 600; }
+.diff-fragment { margin-top: 6px; }
+.diff-fragment .body-text { max-height: 260px; }
+.diff-fragment .diff-view { max-height: 260px; overflow-y: auto; font-family: var(--mono); font-size: 12px; border: 1px solid var(--border-soft); border-radius: 6px; padding: 6px 0; background: var(--panel); }
+
+/* ----------------------------------------------------------------------- */
+/* Overview (#54): routing-flow sankey + KPI strip + per-node drawer.
+ * Ported from design/overview-mockups/f3-overview-styled.html — the mockup's
+ * own rules, rewritten against this file's canonical token set (#55) rather
+ * than its inline :root block. Nothing of the old pivot-table Overview
+ * survives; the rebuild is greenfield.
+ *
+ * Unlike sessions.html/discovery.html this page scrolls as one column rather
+ * than splitting into a list + persistent side panel: a sankey needs the full
+ * page width to be traceable by eye, which is why the mockup puts the drawer
+ * *under* the diagram instead of beside it. So .main.overview overrides the
+ * shared .main's `overflow: hidden` row layout with a single scrolling block. */
+.main.overview { display: block; overflow-y: auto; min-height: 0; }
+.overview-body { display: flex; flex-direction: column; min-height: 0; }
+
+/* ---- toolbar: mode switch, window, config-change anchor ---- */
+.overview .toolbar { flex-wrap: wrap; row-gap: 10px; }
+.overview .tb-field { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.overview .tb-field > span {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-faint); white-space: nowrap;
+}
+/* The anchor select carries long labels ("Sep 24 07:05 · 1b7f47df · 4.8k req ·
+ * settled after 3 saves"), so it gets room to breathe and truncates rather
+ * than pushing the range pill off the toolbar. */
+.overview .tb-field.anchor select { max-width: 330px; }
+.overview .tb-apply {
+  all: unset; cursor: pointer; font: 700 11px var(--sans); color: var(--on-primary);
+  background: var(--primary); padding: 6px 14px; border-radius: var(--radius-md);
+}
+.overview .tb-apply:hover { filter: brightness(1.08); }
+.overview .seg {
+  display: flex; background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius-md); overflow: hidden;
+}
+.overview .seg button {
+  all: unset; cursor: pointer; font: 600 12px var(--sans); color: var(--text-faint);
+  padding: 6px 13px;
+}
+.overview .seg button.active { background: var(--accent-dim); color: var(--text); }
+.overview .seg button:disabled { cursor: not-allowed; opacity: 0.45; }
+.overview .vs-text { color: var(--text-faint); font-size: 12px; }
+.overview .vs-pill {
+  font-family: var(--mono); font-size: 11.5px; color: var(--text-dim);
+  background: var(--panel); border: 1px dashed var(--border);
+  padding: 5px 10px; border-radius: var(--radius-md);
+}
+.overview .range-pill {
+  font-size: 12px; color: var(--text-dim); background: var(--panel);
+  border: 1px solid var(--border); padding: 6px 12px;
+  border-radius: var(--radius-md); font-family: var(--mono);
+}
+.overview .range-pill.accent { border-color: var(--accent-strong); color: var(--text); }
+
+.overview .page-body { padding: 1.2rem 1.6rem 3rem; }
+
+/* ---- KPI strip ---- */
+.kpi-strip {
+  display: flex; gap: 0; margin-bottom: 1.1rem; background: var(--panel);
+  border: 1px solid var(--border-soft); border-radius: var(--radius-lg); overflow: hidden;
+}
+.kpi { flex: 1; padding: 12px 18px; border-right: 1px solid var(--border-soft); min-width: 0; }
+.kpi:last-child { border-right: none; }
+.kpi .l {
+  font-size: 10px; color: var(--text-faint); text-transform: uppercase;
+  letter-spacing: 0.05em; margin-bottom: 5px; font-weight: 700; white-space: nowrap;
+}
+.kpi .l .qual { color: var(--text-faint); font-weight: 400; text-transform: none; letter-spacing: 0; }
+.kpi .v { font-size: 16px; font-family: var(--mono); font-weight: 700; color: var(--text); }
+/* The delta's colour comes from store.DirectionOf's verdict, not from the sign:
+ * v1 = better, v-1 = worse, v0 = no verdict (request volume moving is neither
+ * good nor bad news, and must not render as either). */
+.kpi .v .delta { font-size: 11px; font-weight: 400; margin-left: 6px; font-family: var(--sans); }
+.kpi .v .delta.v1 { color: var(--ok); }
+.kpi .v .delta.v-1 { color: var(--err); }
+.kpi .v .delta.v0 { color: var(--text-faint); }
+
+/* ---- the flow card ---- */
+.overview .card {
+  background: var(--panel); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg); padding: 20px 24px; margin-bottom: 1rem;
+}
+.flow-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px; gap: 16px; }
+.flow-head h2 { font-size: 13px; margin: 0; font-weight: 600; color: var(--text); }
+.flow-head .hint { font-size: 11px; color: var(--text-faint); font-family: var(--mono); }
+.col-labels {
+  display: flex; justify-content: space-between; font-size: 9.5px; color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; padding: 0 4px 6px;
+}
+.flow-svg { display: block; width: 100%; height: auto; }
+.flow-svg .nlabel { font-size: 12px; font-weight: 600; fill: var(--text); }
+.flow-svg .nsub { font-size: 9.5px; fill: var(--text-faint); font-family: var(--mono); }
+/* Alias labels sit to the LEFT of their bar, so they end where the bar starts. */
+.flow-svg .nlabel.end, .flow-svg .nsub.end { text-anchor: end; }
+.flow-svg .node-hit { fill: transparent; cursor: pointer; }
+.flow-svg .node-group { cursor: pointer; }
+.flow-svg .node-group:hover rect.nbar { filter: brightness(1.3); }
+.flow-svg .node-group:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.flow-svg .node-group.selected rect.nbar { stroke: var(--text); stroke-width: 1.5; }
+/* A node whose every request failed is misconfiguration debris (an alias whose
+ * target is the alias name itself — present in the real data). It is marked
+ * rather than hidden: that it renders at all is the finding. */
+.flow-svg .node-group.all-errored .nlabel { fill: var(--err); }
+.flow-svg .ribbon { pointer-events: none; }
+
+.overview .legend {
+  display: flex; gap: 16px; font-size: 10.5px; color: var(--text-dim);
+  margin-top: 12px; align-items: center; flex-wrap: wrap; padding: 0;
+}
+.overview .legend .swatch {
+  display: inline-block; width: 8px; height: 8px;
+  border-radius: 2px; margin-right: 5px;
+}
+.overview .legend .hint { color: var(--text-faint); margin-left: auto; font-style: italic; }
+
+/* ---- the per-node drawer (htmx fragment target) ---- */
+.overview .drawer {
+  background: var(--panel-2); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg); padding: 18px 24px; margin-bottom: 1rem;
+}
+.overview .drawer-empty { color: var(--text-faint); font-size: 12.5px; font-style: italic; }
+.overview .drawer-head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.overview .drawer-head .dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.overview .drawer-head .title { font-size: 14px; font-weight: 600; color: var(--text); }
+.overview .drawer-head .sub { font-size: 11.5px; color: var(--text-faint); font-family: var(--mono); }
+.overview .drawer-head .close {
+  all: unset; margin-left: auto; font-size: 11px; color: var(--text-faint); cursor: pointer;
+  padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.overview .drawer-head .close:hover { color: var(--text); border-color: var(--text-faint); }
+.overview .drawer-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.4fr) minmax(0,1fr); gap: 22px; }
+.overview .dcol { min-width: 0; }
+.overview .dcol .l {
+  font-size: 10px; color: var(--text-faint); text-transform: uppercase;
+  letter-spacing: 0.05em; margin-bottom: 8px; font-weight: 700;
+}
+.overview .dcol .l .qual { font-weight: 400; text-transform: none; letter-spacing: 0; }
+.overview .mstat {
+  display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px;
+  padding: 6px 0; border-bottom: 1px solid var(--border-soft);
+}
+.overview .mstat:last-child { border-bottom: none; }
+.overview .mstat .k { color: var(--text-dim); }
+.overview .mstat .v { font-family: var(--mono); font-weight: 600; color: var(--text); }
+.overview .mstat .v.warn { color: var(--warn); }
+.overview .mstat .v.bad { color: var(--err); }
+.overview .mstat .v.good { color: var(--ok); }
+
+.overview .gauge-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+.overview .gauge-row .lbl { font-size: 11.5px; color: var(--text-dim); width: 78px; flex-shrink: 0; }
+.overview .gauge-bg { flex: 1; height: 8px; background: var(--panel-3); border-radius: 4px; overflow: hidden; }
+.overview .gauge-fill { height: 100%; border-radius: 4px; background: var(--text-faint); }
+.overview .gauge-fill.ok { background: var(--ok); }
+.overview .gauge-fill.warn { background: var(--warn); }
+.overview .gauge-fill.err { background: var(--err); }
+.overview .gauge-val { font-size: 11.5px; font-family: var(--mono); width: 44px; text-align: right; flex-shrink: 0; }
+
+.overview table.routes { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.overview table.routes th {
+  text-align: left; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-faint); font-weight: 700; padding: 0 8px 5px 0; white-space: nowrap;
+}
+.overview table.routes td { padding: 4px 8px 4px 0; border-top: 1px solid var(--border-soft); }
+.overview table.routes td.mono { font-family: var(--mono); color: var(--text-dim); word-break: break-all; }
+.overview table.routes td.num { font-family: var(--mono); text-align: right; white-space: nowrap; }
+.overview table.routes tr.bad td { color: var(--err); }
+
+.overview .placeholder { color: var(--text-faint); font-size: 12px; font-style: italic; line-height: 1.6; }
+.overview .footnote {
+  font-size: 10.5px; color: var(--text-faint); line-height: 1.6;
+  font-family: var(--mono); max-width: 110ch;
+}
+.overview .footnote b { color: var(--text-dim); }
+.overview .capped { padding: 8px 0 0; }
+
+/* A control the current mode does not consult is dimmed and annotated rather
+ * than hidden or left looking live: with span="since the change" the window
+ * duration is not applied (both sides run from the anchor to now), and a filter
+ * that silently stops mattering is indistinguishable from a broken one. */
+.overview .tb-field.inert select { opacity: 0.5; cursor: not-allowed; }
+.overview .tb-field .inert-note {
+  font-size: 10px; font-style: normal; color: var(--warn);
+  white-space: nowrap; letter-spacing: 0.02em;
+}
+.overview .tb-field input[type="datetime-local"] {
+  font-family: var(--mono); font-size: 11.5px; color: var(--text);
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 5px 8px;
+}
+.overview .tb-field input[type="datetime-local"]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}

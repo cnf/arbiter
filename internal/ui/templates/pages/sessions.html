@@ -1,19 +1,25 @@
+{{/* sessions.html — the merged Sessions page (#52): a session is the lane,
+its requests (and the classifier/title/subagent calls they triggered) are
+nodes along it. Replaces the old separate requests-list-plus-sessions-index
+split entirely — ported from design/mockups/arbiter-redesign-5-lanes-realdata.html,
+which is this page's spec (DESIGN.md's page-pattern prose is not authoritative
+here, only its token block is).
+
+The page is split into two halves the mockup keeps side by side: .lanes-col
+(toolbar + the lane list itself, the part htmx re-fetches on a filter
+change) and .detail-col (the persistent 380px panel). The lane list's own
+fragment is "session-rows", below — everything from .toolbar's count down
+through .lane-scroll and .legend, so a filter submit swaps exactly the part
+that depends on the query. */}}
 {{define "content"}}
-<h1>Sessions</h1>
-<p class="lede">One row per conversation, most recently active first. Turns and
-cost are counted over the window below, not over each conversation's whole life —
-a session that straddles the window edge reads short here, while its transcript is
-the unbounded view.</p>
+<div class="main">
+  <div class="lanes-col">
+    {{template "session-rows" .}}
+  </div>
 
-<form class="filters" hx-get="/admin/ui/sessions" hx-target="#session-rows"
-      hx-swap="outerHTML" hx-push-url="true" hx-indicator="#busy">
-  <label>window
-    <input type="text" name="since" value="{{.SinceRaw}}" size="6" placeholder="168h">
-  </label>
-  <button type="submit">apply</button>
-  <a class="reset" href="/admin/ui/sessions">reset</a>
-  <span id="busy" class="htmx-indicator">…</span>
-</form>
-
-{{template "session-rows" .}}
+  <div class="detail-col" id="detailCol">
+    {{template "lane-detail-default" .}}
+  </div>
+  <div id="lane-detail-default-src" hidden>{{template "lane-detail-default" .}}</div>
+</div>
 {{end}}

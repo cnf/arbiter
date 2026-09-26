@@ -9,6 +9,7 @@ package ui
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -16,6 +17,8 @@ import (
 	stdhtml "html/template"
 	"io/fs"
 	"net/http"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/cnf/arbiter/internal/logging"
@@ -59,6 +62,27 @@ type Handler struct {
 	// makes Last-Modified and ETag useless; a content-derived query parameter
 	// is the only mechanism available.
 	assetVersion string
+
+	// captureContent mirrors storage.capture_content (see
+	// pipeline.Pipeline.captureContent) — the UI's own copy rather than a
+	// read through the pipeline, since the two packages don't otherwise
+	// depend on each other. atomic.Bool because SetCaptureContent is called
+	// from a config reload, which runs concurrently with request handling.
+	//
+	// It exists so the request list can tell "title-gen's parent session
+	// couldn't be inferred because nothing was captured to join on" apart
+	// from "content was captured and still no parent was found" — the same
+	// distinction content.html already draws for one request's own body,
+	// extended to the cross-request join piece 1 added. Tier 1 of
+	// ParentSessionForTitle (the session_key match) needs no capture at all,
+	// so this only changes how a *miss* is explained, never whether a hit is
+	// shown.
+	captureContent atomic.Bool
+
+	// discoveryCache holds the Discovery ledger's expensive query result
+	// per parameter combination — see discovery.go's discoveryCache doc
+	// comment for why a TTL cache is the right shape here.
+	discoveryCache *discoveryCache
 }
 
 // New builds the UI around an already-open Reader. A nil reader is the
@@ -69,13 +93,25 @@ func New(reader *store.Reader, l logging.Logger) *Handler {
 		panic("ui: embedded static tree: " + err.Error())
 	}
 	return &Handler{
-		reader:       reader,
-		logger:       l,
-		pages:        parseTemplates(),
-		fragments:    parsePartials(),
-		assetsFS:     sub,
-		assetVersion: versionOf(assets),
+		reader:         reader,
+		logger:         l,
+		pages:          parseTemplates(),
+		fragments:      parsePartials(),
+		assetsFS:       sub,
+		assetVersion:   versionOf(assets),
+		discoveryCache: newDiscoveryCache(),
 	}
+}
+
+// SetCaptureContent records whether storage.capture_content is on, so the
+// request list can explain a title-gen line with no resolvable parent
+// correctly. Like Pipeline.SetCaptureContent, it is a setter called once at
+// wiring time and again on every config reload — capture_content can change
+// between wiring and this session's traffic, whereas the request list is
+// rendered per-request, so the two write and read at different times and via
+// different goroutines. The atomic makes that safe without a mutex.
+func (h *Handler) SetCaptureContent(on bool) {
+	h.captureContent.Store(on)
 }
 
 // versionOf hashes the whole embedded tree. Hashing everything rather than per
@@ -103,7 +139,18 @@ func versionOf(fsys fs.FS) string {
 }
 
 // pageFiles are the page templates, each rendered only inside its own set.
-var pageFiles = []string{"requests", "request", "sessions", "session", "overview", "discovery", "block", "error"}
+//
+// Greenfielded incrementally as of #55: every old page template was deleted
+// in the newui rebuild (design/REDESIGN.md, DESIGN.md) — the old admin UI's
+// HTML/CSS/JS was ripped out and is being rebuilt page by page, not ported
+// incrementally. "sessions" landed first (#52); "session" (the transcript,
+// #53) next; "discovery"/"block" (DiscoveryHandler, BlockRequestsHandler)
+// landed in #50; "overview" landed in #54.
+//
+// "requests"/"request" have no template and no longer have handlers either —
+// the merged Sessions page (#52) replaced that split, and #54's rip-out removed
+// the dead handlers rather than leaving them to 500.
+var pageFiles = []string{"sessions", "session", "discovery", "block", "overview"}
 
 // parseTemplates builds one template set per page, each from the layout, every
 // partial, and that one page. Go's html/template cannot redefine a block name
@@ -265,19 +312,50 @@ type viewBase struct {
 }
 
 // navItem is one entry in the header navigation.
+//
+// Stat/Unit is the "live" glanceable value shown beneath the label
+// (`OVERVIEW → $18/24h`, `SESSIONS → 3 active`, `DISCOVERY → 2 gaps`) — the
+// shell's settled design per DESIGN.md's "App chrome" section. It is the same
+// placeholder-but-intentional value the accepted mockups carry, not a live
+// query: see design/REDESIGN.md §8 item 5.
 type navItem struct {
-	Name string
-	Href string
+	Name   string
+	Href   string
+	Stat   string
+	Unit   string
+	ErrVal bool
 }
 
 // base builds the common view state for a page.
-func (h *Handler) base(active string) viewBase {
+//
+// Three nav items — Overview, Sessions, Discovery — matching the accepted
+// shell mockups (transcript-D-merged.html, f3-overview-styled.html). Sessions
+// already covers what used to be a separate Requests page (#52).
+//
+// Both stats are real queries as of #54: Sessions' active count and Overview's
+// 24h spend. The mockup's "$18/24h" and "2 gaps" were placeholders, and the
+// user's rule for them is that a number on screen is either real or absent —
+// each degrades to a dash rather than showing an invented figure. Discovery's
+// stat is still absent for that reason: it has no query yet.
+func (h *Handler) base(ctx context.Context, active string) viewBase {
+	sessionsStat := "—"
+	if h.reader != nil {
+		n, err := h.reader.ActiveSessionCount(ctx)
+		if err != nil {
+			h.logger.LogError(ctx, "warn", err, map[string]interface{}{"phase": "admin_ui_nav_active_sessions"})
+		} else {
+			sessionsStat = strconv.FormatInt(n, 10)
+		}
+	}
+	overviewStat, overviewUnit := "—", ""
+	if cost, ok := h.overviewCostFor24h(ctx); ok {
+		overviewStat, overviewUnit = cost, "/24h"
+	}
 	return viewBase{
 		Nav: []navItem{
-			{Name: "Overview", Href: "/admin/ui/overview"},
-			{Name: "Sessions", Href: "/admin/ui/sessions"},
-			{Name: "Requests", Href: "/admin/ui/requests"},
-			{Name: "Discovery", Href: "/admin/ui/content/repeated"},
+			{Name: "Overview", Href: "/admin/ui/overview", Stat: overviewStat, Unit: overviewUnit},
+			{Name: "Sessions", Href: "/admin/ui/sessions", Stat: sessionsStat, Unit: "active"},
+			{Name: "Discovery", Href: "/admin/ui/content/repeated", Stat: "", Unit: ""},
 		},
 		Active:        active,
 		AssetVersion:  h.assetVersion,

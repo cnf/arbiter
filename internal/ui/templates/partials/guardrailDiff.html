@@ -1,0 +1,21 @@
+{{/* guardrailDiff.html — the "guardrail-diff" fragment (GuardrailDiffHandler):
+one block's before/after line diff, rendered inline where a "view diff"
+button was clicked. Deleted by #55's old-UI purge along with session-turns.html;
+re-created here for Discovery's block drill-down (#50), which is the only
+caller left — session.html's own preamble modal computes its diff eagerly in
+transcript.go and never reaches this handler.
+
+.OK is false when the reader has no touched block at (id, msg, pos) — e.g. the
+request predates capture_content, or this block was never guardrail-rewritten.
+.Ops is nil in that case; render the same "nothing to diff" message
+session.html's preamble panel uses for an untouched preamble, so the two diff
+surfaces read the same way. */}}
+{{define "guardrail-diff"}}
+{{if .OK}}
+<div class="diff-view">
+  {{range .Ops}}<span class="diff-{{.Kind}}">{{.Text}}</span>{{end}}
+</div>
+{{else}}
+<div class="diff-view"><span class="preamble-untouched">no guardrail touched this block — it was sent as the client wrote it.</span></div>
+{{end}}
+{{end}}

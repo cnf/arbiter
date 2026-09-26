@@ -438,6 +438,23 @@ footer.appfoot .spacer {
   background: color-mix(in srgb, var(--accent) 10%, transparent); padding: 2px 8px;
   border-radius: var(--radius-sm); flex: 0 0 auto;
 }
+/* .hot marks a lane whose session still has a live affinity pin — i.e. is
+ * within its prompt-cache TTL (store.ActiveSessionKeys; same definition as
+ * the nav bar's "N active" stat). A small dot rather than a badge/label:
+ * this is a courtesy annotation on top of the lane's own stats, not a
+ * fact worth competing with them for attention. The soft pulse is slow and
+ * low-amplitude on purpose — meant to read as "still alive" at a glance,
+ * not to flicker or demand the eye the way an alert would. */
+.hot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ok); flex: 0 0 auto;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 20%, transparent);
+  animation: lane-hot-pulse 2.4s ease-in-out infinite;
+}
+@keyframes lane-hot-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
 .lane-head-left .meta { font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
 .lane-head-left .meta b { color: var(--text-dim); font-weight: 600; }
 

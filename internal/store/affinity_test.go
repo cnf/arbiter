@@ -193,3 +193,36 @@ func TestActiveSessionCount(t *testing.T) {
 		t.Errorf("ActiveSessionCount = %d, want 2 (one live pin has already expired and must not count)", n)
 	}
 }
+
+// TestActiveSessionKeys proves the Sessions lane list's "hot" dot uses the
+// same "still within cache TTL" definition ActiveSessionCount does, just as
+// a set of keys instead of a count — and that an empty table reports an
+// empty, non-nil map rather than an error.
+func TestActiveSessionKeys(t *testing.T) {
+	r, db := newTestReader(t)
+	ctx := context.Background()
+	w := &SQLiteWriter{db: db}
+
+	keys, err := r.ActiveSessionKeys(ctx)
+	if err != nil {
+		t.Fatalf("ActiveSessionKeys on an empty table: %v", err)
+	}
+	if keys == nil || len(keys) != 0 {
+		t.Fatalf("ActiveSessionKeys on an empty table = %v, want empty non-nil map", keys)
+	}
+
+	if err := w.SavePin(ctx, AffinityPin{SessionKey: "live-1", RequestedModel: "auto", Provider: "p", Model: "m", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatalf("SavePin live-1: %v", err)
+	}
+	if err := w.SavePin(ctx, AffinityPin{SessionKey: "dead", RequestedModel: "auto", Provider: "p", Model: "m", ExpiresAt: time.Now().Add(-time.Minute)}); err != nil {
+		t.Fatalf("SavePin dead: %v", err)
+	}
+
+	keys, err = r.ActiveSessionKeys(ctx)
+	if err != nil {
+		t.Fatalf("ActiveSessionKeys: %v", err)
+	}
+	if len(keys) != 1 || !keys["live-1"] {
+		t.Errorf("ActiveSessionKeys = %v, want {live-1: true} (the expired pin must not appear)", keys)
+	}
+}

@@ -151,3 +151,67 @@ func TestNavSessionsStatReflectsActivePins(t *testing.T) {
 		t.Errorf("nav bar's Sessions stat should read 1 active (one live pin), got:\n%s", body)
 	}
 }
+
+// The lane list's "hot" dot must appear only on a lane whose session has a
+// live affinity pin, and only for the duration that pin is live — the same
+// "still within cache TTL" definition the nav bar's "N active" stat and
+// store.ActiveSessionKeys use. Seeds a client request for two sessions and a
+// pin for only one of them, so the dot's presence/absence is a real
+// discriminator, not just "always on" or "always off".
+func TestSessionsLaneHotDotReflectsActivePin(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	logger := logging.NewStdoutLogger("error")
+
+	w, err := store.NewSQLiteWriter(path, logger)
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	now := time.Now().UTC()
+	w.Record(store.Event{TraceID: "t1", SessionKey: "sess-hot", Kind: "client",
+		Provider: "p", Model: "m", StatusCode: 200, Ts: now, LatencyMs: 1})
+	w.Record(store.Event{TraceID: "t2", SessionKey: "sess-cold", Kind: "client",
+		Provider: "p", Model: "m", StatusCode: 200, Ts: now.Add(time.Second), LatencyMs: 1})
+
+	if err := w.SavePin(context.Background(), store.AffinityPin{
+		SessionKey: "sess-hot", RequestedModel: "auto", Provider: "p", Model: "m",
+		ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SavePin: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	r, err := store.OpenReader(path)
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	h := New(r, logger)
+
+	body := serve(t, h, "GET", "/admin/ui/sessions", false).Body.String()
+
+	hotIdx := strings.Index(body, "sess-hot")
+	coldIdx := strings.Index(body, "sess-cold")
+	if hotIdx == -1 || coldIdx == -1 {
+		t.Fatalf("expected both lanes rendered, got:\n%s", body)
+	}
+	// Each lane's own head line is a bounded window right after its sid
+	// chip — checking for "hot" class within that window (up to the next
+	// lane, or a generous cap) rather than a whole-page substring check,
+	// since the legend itself also contains a "hot" span.
+	laneSlice := func(start int) string {
+		end := start + 400
+		if end > len(body) {
+			end = len(body)
+		}
+		return body[start:end]
+	}
+	if !strings.Contains(laneSlice(hotIdx), `class="hot"`) {
+		t.Errorf("sess-hot's lane should carry the hot dot, got:\n%s", laneSlice(hotIdx))
+	}
+	if strings.Contains(laneSlice(coldIdx), `class="hot"`) {
+		t.Errorf("sess-cold has no live pin and must not carry the hot dot, got:\n%s", laneSlice(coldIdx))
+	}
+}

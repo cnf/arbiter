@@ -60,6 +60,14 @@ type laneRow struct {
 	store.SessionSummary
 	ShortKey string
 
+	// Active is true when this session has a live affinity pin — the same
+	// "still within cache TTL" definition the nav bar's "N active" stat
+	// uses (store.ActiveSessionCount / store.ActiveSessionKeys). Drives the
+	// lane header's subtle "hot" dot: not merely "had a request recently",
+	// but "the next turn, if there is one, still reuses this session's
+	// prompt cache instead of re-routing from scratch."
+	Active bool
+
 	// Lines is this session's requests, folded and nested exactly as the
 	// requests page computes them: a streamed run collapses into one Run
 	// line (the lane's "stack" node), and a classifier call nests under the
@@ -167,6 +175,16 @@ func (h *Handler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		view.Capped = len(sessions) == view.Limit
 
+		activeKeys, err := h.reader.ActiveSessionKeys(ctx)
+		if err != nil {
+			// Degrade rather than fail: the lane list itself loaded fine, and
+			// the "hot" dot is a courtesy annotation on top of it — losing it
+			// for one request is preferable to losing the whole page.
+			h.logger.LogError(ctx, "warn", err,
+				map[string]interface{}{"phase": "admin_ui_sessions_active_keys"})
+			activeKeys = map[string]bool{}
+		}
+
 		needle := strings.ToLower(strings.TrimSpace(view.Query))
 		for _, s := range sessions {
 			if view.ErrorsOnly && s.Errors == 0 {
@@ -190,7 +208,7 @@ func (h *Handler) SessionsHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			lane := laneRow{SessionSummary: s, ShortKey: shortSessionKey(s.Key)}
+			lane := laneRow{SessionSummary: s, ShortKey: shortSessionKey(s.Key), Active: activeKeys[s.Key]}
 			lane.Preview, lane.PreviewNote = h.lanePreview(ctx, rows)
 
 			views := make([]requestRowView, 0, len(rows))

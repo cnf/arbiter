@@ -54,6 +54,7 @@ not just the rows. */}}
     <span><span class="dot classifier"></span>classifier</span>
     <span><span class="dot title"></span>title</span>
     <span><span class="dot subagent"></span>subagent</span>
+    <span><span class="hot" style="animation:none"></span>active — within cache TTL</span>
   </div>
 </div>
 {{end}}
@@ -65,6 +66,7 @@ sessions.laneRow. */}}
   <div class="lane-head">
     <div class="lane-head-left">
       <a class="sid" href="/admin/ui/session?key={{.Key}}" title="{{.Key}} — open transcript">{{.ShortKey}}</a>
+      {{if .Active}}<span class="hot" title="active — still within its cache TTL"></span>{{end}}
       <span class="meta"><b>{{.Turns}}</b> request{{if ne .Turns 1}}s{{end}}{{if gt .SatelliteCount 0}} · <b>{{.SatelliteCount}}</b> satellite{{if ne .SatelliteCount 1}}s{{end}}{{end}} · started {{ago .FirstSeen}}</span>
     </div>
     <div class="lane-head-right">

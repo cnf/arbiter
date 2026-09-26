@@ -772,6 +772,36 @@ func (r *Reader) ActiveSessionCount(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+// ActiveSessionKeys returns the session keys with a live affinity pin — the
+// same "still within cache TTL" definition ActiveSessionCount uses, just as
+// a set instead of a count. It backs the Sessions lane list's "hot" dot: one
+// query per page load (not per lane), so checking whether a given lane is
+// active is a map lookup, not a second query per row.
+//
+// A store with no live pins returns an empty, non-nil map — the caller does
+// not need to special-case "nothing is active" separately from "the query
+// failed", which is the same nil-vs-empty distinction ActiveSessionCount's
+// own doc calls out.
+func (r *Reader) ActiveSessionKeys(ctx context.Context) (map[string]bool, error) {
+	const q = `SELECT session_key FROM affinity_pins WHERE expires_at >= ?`
+
+	rows, err := r.db.QueryContext(ctx, q, time.Now().UTC())
+	if err != nil {
+		return nil, fmt.Errorf("active session keys: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := map[string]bool{}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("scan active session key: %w", err)
+		}
+		out[key] = true
+	}
+	return out, rows.Err()
+}
+
 // MaxSessionListLimit caps the sessions index. Higher than the request list's
 // cap because one row is a whole conversation, so a page of them is still a
 // readable overview. Exported because the caller has to know what it asked for

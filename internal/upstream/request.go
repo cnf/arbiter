@@ -95,11 +95,30 @@ func wireFor(providerType string) (wireFormat, bool) {
 // buildWireRequest translates req into the provider's wire format and builds
 // the outbound HTTP request. This is the part all four send paths share.
 //
-// Header ordering matters and is deliberate: Content-Type, then the
-// credential, then any static provider header, then the client's forwarded
-// beta opt-in, and finally the operator's configured Headers — so a static
-// config value cannot silently win over what the client negotiated, and the
-// config block remains the operator's last word.
+// Header precedence is deliberate and is stated per header, not as one global
+// ordering, because different headers want opposite winners:
+//
+//	Content-Type, credential, provider defaults   lowest — Arbiter's own
+//	                                              minimum for the request
+//	route.Config.Headers                          operator's explicit choice;
+//	                                              overrides all of the above
+//	the client's negotiated opt-in (ClientBeta)   highest — a static config
+//	                                              value must never silently
+//	                                              mask what the client asked
+//	                                              for
+//
+// The last step is the one that matters. Anthropic gates extended thinking on
+// `anthropic-beta`, and the outbound body is rebuilt rather than relayed — so
+// if a provider's `headers:` map writes that header after the client's value,
+// the config quietly wins, interleaved thinking stops working mid-chain, and
+// nothing logs it. Writing the negotiated value last is what makes the client's
+// opt-in unsuppressable.
+//
+// The consequence for the operator is deliberate: `headers:` cannot be used to
+// pin `anthropic-beta` against a client that negotiates a different value. Pin
+// it by not routing those clients here. `anthropic-version` is unaffected and
+// stays overridable, since no client negotiates it and providers genuinely do
+// need to pin it — see anthropicWire.setStatic.
 func buildWireRequest(ctx context.Context, t Translator, route types.Route, req *types.NormalizedRequest, wf wireFormat) (*http.Request, error) {
 	wireReq, err := wf.toWire(t, req)
 	if err != nil {
@@ -120,14 +139,14 @@ func buildWireRequest(ctx context.Context, t Translator, route types.Route, req 
 	if wf.setStatic != nil {
 		wf.setStatic(httpReq)
 	}
-	// The client's beta opt-ins, forwarded. The body is rebuilt, so a beta
-	// the client negotiated is lost unless the header is carried, and
-	// interleaved thinking is gated on one.
-	if req.ClientBeta != "" {
-		httpReq.Header.Set("anthropic-beta", req.ClientBeta)
-	}
 	for k, v := range route.Config.Headers {
 		httpReq.Header.Set(k, v)
+	}
+	// Last, so it wins. See the precedence note above: the client's
+	// negotiated beta opt-ins are the request's own, and a provider's static
+	// `headers:` entry must not be able to mask them.
+	if req.ClientBeta != "" {
+		httpReq.Header.Set("anthropic-beta", req.ClientBeta)
 	}
 	return httpReq, nil
 }

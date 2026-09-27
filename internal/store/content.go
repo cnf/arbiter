@@ -61,6 +61,15 @@ func (c CapturedContent) Empty() bool {
 	return len(c.Request) == 0 && len(c.RequestGuardrailed) == 0 && len(c.Response) == 0
 }
 
+// toolDefsMsgIndex marks the tool-definition blocks, which belong to no
+// message. It is -1 rather than 0 because 0 is a real message index (the
+// system prompt, or the first message when there is none), and a tool block
+// sharing a coordinate with a message block would corrupt
+// GuardrailDiff/reconstruction lookups that key on (msg_index, position).
+// Tool blocks carry it on both directions, so their Position is the tool's
+// own index in the request's tools array.
+const toolDefsMsgIndex = -1
+
 // CaptureRequest reduces a normalized request's messages to hashable blocks.
 // Called twice per request when pre-guardrails are configured: once before
 // they run (-> CapturedContent.Request, "as the client sent it" — the form
@@ -73,6 +82,20 @@ func (c CapturedContent) Empty() bool {
 func CaptureRequest(req *types.NormalizedRequest) []Block {
 	var out []Block
 	msgIndex := 0
+
+	// The tool definitions the client offered, one block per tool, ahead of
+	// the messages. Without these there is no way to ask the store "what
+	// tools was this agent offered at this point in the conversation" — the
+	// model's tool *calls* are recorded, the definitions they were made
+	// against never were (see #60).
+	//
+	// One block per tool rather than one blob for the array, because the
+	// whole point is the dedup query: a single array block hashes the
+	// description text along with the schemas, so the same `read_file`
+	// arriving from two clients with different descriptions would look like
+	// two unrelated tools. Per-tool blocks make "which clients send read_file"
+	// a direct hash lookup.
+	out = append(out, captureTools(req.Tools)...)
 
 	// The system prompt is kept as its own "message" at index 0 so its text
 	// hashes by itself. That is deliberate: a client prepending a constant
@@ -110,6 +133,41 @@ func CaptureRequest(req *types.NormalizedRequest) []Block {
 				Position: position,
 			})
 		}
+	}
+	return out
+}
+
+// captureTools reduces a request's tool definitions to one block per tool. Role
+// is "tool_def" and the kind is "tool_def" rather than reusing "tool_use": a
+// definition is what the client OFFERED, a tool_use is what the model CHOSE to
+// call, and a query that conflates them cannot answer "which clients send this
+// tool". The body is canonical JSON mirroring blockBody's tool_use arm, so the
+// store's structured-block hashing rule (dedup regardless of wire key order)
+// applies here too.
+func captureTools(tools []types.Tool) []Block {
+	var out []Block
+	for i, t := range tools {
+		// A tool must have a name to be addressable at all; an anonymous
+		// schema would dedup against every other anonymous schema, which is
+		// the same uselessness the empty-text-block skip avoids.
+		if t.Name == "" {
+			continue
+		}
+		canonical, err := json.Marshal(struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description,omitempty"`
+			InputSchema map[string]interface{} `json:"input_schema,omitempty"`
+		}{t.Name, t.Description, t.InputSchema})
+		if err != nil {
+			continue
+		}
+		out = append(out, Block{
+			Kind:     "tool_def",
+			Body:     canonical,
+			Role:     "tool_def",
+			MsgIndex: toolDefsMsgIndex,
+			Position: i,
+		})
 	}
 	return out
 }

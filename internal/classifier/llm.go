@@ -118,35 +118,23 @@ func (c *LLMClassifier) gateAxes() []string { return []string{c.axis} }
 
 // Classify tries the LLM call first; on any failure it defers entirely to
 // the wrapped fallback classifier's result, only adding the failed attempt's
-// diagnostics to Signals.ClassifierCalls.
+// diagnostics to Signals.ClassifierCalls — see modelBacked for that policy.
 func (c *LLMClassifier) Classify(ctx context.Context, req *types.NormalizedRequest) (types.Signals, error) {
-	call, label, ok := c.tryClassify(ctx, req)
-
-	if !ok {
-		sig, err := c.runFallback(ctx, req)
-		if err != nil {
-			// The fallback itself failed (a config/programmer error, not a
-			// network one — HeuristicClassifier never errors). Still return
-			// the LLM call's own diagnostics rather than losing them.
-			sig = types.Signals{}
-		}
-		if call != nil {
-			sig.ClassifierCalls = append(sig.ClassifierCalls, call)
-		}
-		return sig, nil
-	}
-
-	sig := types.Signals{
-		Confidence: 1.0,
-		// Reported per axis as well, so the classifier's own stored row carries
-		// a confidence. It is always 1.0 here — a matched label is a certain
-		// verdict by construction, which is exactly the limitation a decision
-		// model removes — but without it the row read back as 0.0%.
-		AxisConfidence:  map[string]float64{c.axis: 1.0},
-		ClassifierCalls: []*types.ClassifierCallInfo{call},
-	}
-	c.fillAxis(&sig, label)
-	return sig, nil
+	return modelBacked(ctx, req, c.fallback,
+		func() (*types.Label, *types.ClassifierCallInfo, bool) {
+			call, label, ok := c.tryClassify(ctx, req)
+			return label, call, ok
+		},
+		func(sig *types.Signals, label *types.Label) {
+			sig.Confidence = 1.0
+			// Reported per axis as well, so the classifier's own stored row
+			// carries a confidence. It is always 1.0 here — a matched label is
+			// a certain verdict by construction, which is exactly the
+			// limitation a decision model removes — but without it the row
+			// read back as 0.0%.
+			sig.AxisConfidence[c.axis] = 1.0
+			c.fillAxis(sig, label)
+		})
 }
 
 // fillAxis writes the chosen label onto whichever Signals field this instance
@@ -186,16 +174,6 @@ func (c *LLMClassifier) fillAxisValue(sig *types.Signals, value string) {
 	default:
 		sig.Domain = value
 	}
-}
-
-// runFallback calls the wrapped classifier, defensively treating a nil
-// fallback (shouldn't happen — config validation requires one) as "no
-// signal" rather than panicking.
-func (c *LLMClassifier) runFallback(ctx context.Context, req *types.NormalizedRequest) (types.Signals, error) {
-	if c.fallback == nil {
-		return types.Signals{}, nil
-	}
-	return c.fallback.Classify(ctx, req)
 }
 
 // tryClassify attempts the upstream call. ok=false means it failed outright

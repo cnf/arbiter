@@ -537,18 +537,18 @@ func summarizeCallPair(p toolCallPairView) (badge, text string) {
 }
 
 // toolBadge names a tool for the list's badge column, grouping the several
-// names different clients use for the same capability (the same problem
-// summarizeToolInput solves, and by the same suffix/substring rule).
+// names different clients use for the same capability. It consults the same
+// classification summarizeToolInput uses (see toolKindMatchers), so the badge
+// and the summary can never disagree about what a given tool name is.
 func toolBadge(name string) string {
-	lower := strings.ToLower(name)
-	switch {
-	case containsAny(lower, "bash", "terminal", "shell", "exec", "run_command", "runcommand"):
+	switch classifyTool(name) {
+	case toolKindTerminal:
 		return "terminal"
-	case containsAny(lower, "grep", "search", "ripgrep", "find"):
+	case toolKindSearch:
 		return "search"
-	case containsAny(lower, "edit", "write", "patch", "str_replace"):
+	case toolKindEdit:
 		return "edit"
-	case containsAny(lower, "read"):
+	case toolKindRead:
 		return "read"
 	default:
 		return name

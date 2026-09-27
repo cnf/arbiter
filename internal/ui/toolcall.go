@@ -77,18 +77,57 @@ func parseToolResult(body string) toolResultView {
 	return toolResultView{ForID: c.ForID, Content: c.Content, IsError: c.IsError, RawJSON: prettyJSON(c)}
 }
 
+// toolKind is the capability a tool name refers to, independent of the name a
+// particular client happened to use. Different clients name the same tool
+// differently ("Bash" vs "terminal" vs "execute_command"), so both the input
+// summariser and the badge column classify by substring and must agree —
+// hence one table, consulted by both, rather than the same substring list
+// written out twice (which is how they drifted before).
+type toolKind int
+
+const (
+	toolKindOther toolKind = iota
+	toolKindTerminal
+	toolKindSearch
+	toolKindEdit
+	toolKindRead
+)
+
+// toolKindMatchers maps each kind to the substrings that indicate it, checked
+// in order — so a name matching several kinds resolves the same way in the
+// summary and the badge.
+var toolKindMatchers = []struct {
+	kind   toolKind
+	substr []string
+}{
+	{toolKindTerminal, []string{"bash", "terminal", "shell", "exec", "run_command", "runcommand"}},
+	{toolKindSearch, []string{"grep", "search", "ripgrep", "find"}},
+	{toolKindEdit, []string{"edit", "write", "patch", "str_replace"}},
+	{toolKindRead, []string{"read"}},
+}
+
+// classifyTool maps a tool name to its kind by substring. Unrecognised names
+// return toolKindOther.
+func classifyTool(name string) toolKind {
+	lower := strings.ToLower(name)
+	for _, m := range toolKindMatchers {
+		if containsAny(lower, m.substr...) {
+			return m.kind
+		}
+	}
+	return toolKindOther
+}
+
 // summarizeToolInput renders the meaningful part of a tool call's input for
 // the small set of tool names coding-agent clients (Claude Code, opencode,
 // Hermes) actually send: a shell/terminal command, a grep/search pattern plus
-// its path, or a file-edit tool's target path. Matching is by suffix/
-// case-insensitive substring on the tool name rather than an exact list,
-// since different clients name the same tool differently (e.g. "Bash" vs
-// "terminal" vs "execute_command"). An unrecognized name falls back to a
+// its path, or a file-edit tool's target path. Matching is by capability
+// rather than an exact list, since different clients name the same tool
+// differently (see classifyTool). An unrecognized name falls back to a
 // generic one-line rendering of its input keys, which is still more readable
 // than the raw JSON envelope even though it isn't the tool's dedicated
 // summary.
 func summarizeToolInput(name string, input map[string]interface{}) (summary string, known bool) {
-	lower := strings.ToLower(name)
 	str := func(keys ...string) string {
 		for _, k := range keys {
 			if v, ok := input[k]; ok {
@@ -100,12 +139,12 @@ func summarizeToolInput(name string, input map[string]interface{}) (summary stri
 		return ""
 	}
 
-	switch {
-	case containsAny(lower, "bash", "terminal", "shell", "exec", "run_command", "runcommand"):
+	switch classifyTool(name) {
+	case toolKindTerminal:
 		if cmd := str("command", "cmd", "script"); cmd != "" {
 			return cmd, true
 		}
-	case containsAny(lower, "grep", "search", "ripgrep", "find"):
+	case toolKindSearch:
 		pattern := str("pattern", "query", "regex")
 		path := str("path", "file", "glob", "file_glob")
 		switch {
@@ -114,11 +153,7 @@ func summarizeToolInput(name string, input map[string]interface{}) (summary stri
 		case pattern != "":
 			return pattern, true
 		}
-	case containsAny(lower, "edit", "write", "patch", "str_replace"):
-		if path := str("path", "file_path", "filepath", "file"); path != "" {
-			return path, true
-		}
-	case containsAny(lower, "read"):
+	case toolKindEdit, toolKindRead:
 		if path := str("path", "file_path", "filepath", "file"); path != "" {
 			return path, true
 		}

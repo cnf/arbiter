@@ -444,16 +444,9 @@ func formatTime(v interface{}) string {
 	case string:
 		// MIN()/MAX() over a TIMESTAMP column lose the driver's usual
 		// time.Time conversion and come back as time.Time.String()'s own
-		// layout instead of the driver's normal "2006-01-02 15:04:05.999999999-07:00".
-		layouts := []string{
-			"2006-01-02 15:04:05.999999999 -0700 MST",
-			"2006-01-02 15:04:05.999999999-07:00",
-			time.RFC3339,
-		}
-		for _, layout := range layouts {
-			if parsed, err := time.Parse(layout, t); err == nil {
-				return parsed.UTC().Format(time.RFC3339)
-			}
+		// layout — ParseStoredTime knows the layouts.
+		if parsed, ok := ParseStoredTime(t); ok {
+			return parsed.Format(time.RFC3339)
 		}
 		return t
 	default:

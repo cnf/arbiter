@@ -152,38 +152,25 @@ func (c *DecisionsClassifier) gateAxes() []string {
 // entirely to the fallback classifier; a per-question failure does not, because
 // MergedClassifier resolves each axis independently and a partially-answered
 // call is still strictly better than the heuristic for the axes it did answer.
+// The failure policy itself is shared — see modelBacked.
 func (c *DecisionsClassifier) Classify(ctx context.Context, req *types.NormalizedRequest) (types.Signals, error) {
-	verdicts, call, ok := c.tryDecide(ctx, req)
-	if !ok {
-		sig, err := c.runFallback(ctx, req)
-		if err != nil {
-			// The fallback itself failed (a config/programmer error, not a
-			// network one — HeuristicClassifier never errors). Still return
-			// the decision call's own diagnostics rather than losing them.
-			sig = types.Signals{}
-		}
-		if call != nil {
-			sig.ClassifierCalls = append(sig.ClassifierCalls, call)
-		}
-		return sig, nil
-	}
-
-	sig := types.Signals{
-		AxisConfidence:  make(map[string]float64, len(verdicts)),
-		ClassifierCalls: []*types.ClassifierCallInfo{call},
-	}
-	for _, v := range verdicts {
-		// The overall Confidence is the highest per-axis value: it answers
-		// "how sure was this classifier", which for a multi-axis call can only
-		// be the most certain thing it concluded. AxisConfidence is what a
-		// merge compares, per axis.
-		sig.AxisConfidence[v.axis] = v.confidence
-		if v.confidence > sig.Confidence {
-			sig.Confidence = v.confidence
-		}
-		fillAxis(&sig, v.axis, v.value, v.capabilities)
-	}
-	return sig, nil
+	return modelBacked(ctx, req, c.fallback,
+		func() ([]axisVerdict, *types.ClassifierCallInfo, bool) {
+			return c.tryDecide(ctx, req)
+		},
+		func(sig *types.Signals, verdicts []axisVerdict) {
+			for _, v := range verdicts {
+				// The overall Confidence is the highest per-axis value: it
+				// answers "how sure was this classifier", which for a
+				// multi-axis call can only be the most certain thing it
+				// concluded. AxisConfidence is what a merge compares, per axis.
+				sig.AxisConfidence[v.axis] = v.confidence
+				if v.confidence > sig.Confidence {
+					sig.Confidence = v.confidence
+				}
+				fillAxis(sig, v.axis, v.value, v.capabilities)
+			}
+		})
 }
 
 // fillAxis writes one answered axis onto Signals. An escape verdict arrives
@@ -220,16 +207,6 @@ type axisVerdict struct {
 	value        string
 	capabilities []string
 	confidence   float64
-}
-
-// runFallback calls the wrapped classifier, defensively treating a nil
-// fallback (shouldn't happen — config validation requires one) as "no signal"
-// rather than panicking.
-func (c *DecisionsClassifier) runFallback(ctx context.Context, req *types.NormalizedRequest) (types.Signals, error) {
-	if c.fallback == nil {
-		return types.Signals{}, nil
-	}
-	return c.fallback.Classify(ctx, req)
 }
 
 // tryDecide attempts the decision call. ok=false means it failed outright

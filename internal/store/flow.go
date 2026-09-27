@@ -366,15 +366,10 @@ ORDER BY MIN(ts) DESC`
 
 // parseStoredTs turns the store's ts text back into a time.Time.
 //
-// The column holds Go's time.Time.String() layout, which is not RFC3339 and
-// which time.Parse cannot guess — writing it was a Stringer call, so reading it
-// needs the matching layout spelled out. A value that will not parse yields the
-// zero time rather than an error: a timestamp is presentation here (an anchor
-// label, a window edge), and one unparseable row should not fail the list.
+// A value that will not parse yields the zero time rather than an error: a
+// timestamp is presentation here (an anchor label, a window edge), and one
+// unparseable row should not fail the list.
 func parseStoredTs(raw string) time.Time {
-	t, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", raw)
-	if err != nil {
-		return time.Time{}
-	}
-	return t.UTC()
+	t, _ := ParseStoredTime(raw)
+	return t
 }

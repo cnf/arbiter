@@ -3,7 +3,6 @@ package router
 import (
 	"context"
 	"fmt"
-	"time"
 
 	arbitererrors "github.com/cnf/arbiter/pkg/errors"
 	"github.com/cnf/arbiter/pkg/types"
@@ -145,19 +144,19 @@ func NewPolicyRouter(name string, rules []PolicyRule, providerConfig map[string]
 // route — a deliberate refusal, not a routing failure — so the caller
 // (ChainedRouter, the pipeline) can tell the two apart. See StopError's own
 // doc for why that distinction matters.
-func (pr *PolicyRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, types.Metadata, error) {
+func (pr *PolicyRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, error) {
 	for i, rule := range pr.rules {
 		if !rule.When.Matches(signals) {
 			continue
 		}
 
 		if rule.Stop != nil {
-			return types.Route{}, types.Metadata{}, arbitererrors.NewStopError(rule.Stop.StatusCode, rule.Stop.Message)
+			return types.Route{}, arbitererrors.NewStopError(rule.Stop.StatusCode, rule.Stop.Message)
 		}
 
 		route, err := pr.routeFor(rule, req, signals)
 		if err != nil {
-			return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: rule %d: %w", pr.name, i, err)
+			return types.Route{}, fmt.Errorf("router %q: rule %d: %w", pr.name, i, err)
 		}
 
 		// A rule whose target cannot accept what the rule demands is skipped,
@@ -168,15 +167,10 @@ func (pr *PolicyRouter) Route(ctx context.Context, req *types.NormalizedRequest,
 			continue
 		}
 
-		meta := types.Metadata{
-			LatencyTarget: "normal",
-			TraceID:       req.TraceID,
-			RoutedAt:      time.Now(),
-		}
-		return route, meta, nil
+		return route, nil
 	}
 
-	return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: no rule matched signals (%s)", pr.name, signalsDescription(signals))
+	return types.Route{}, fmt.Errorf("router %q: no rule matched signals (%s)", pr.name, signalsDescription(signals))
 }
 
 // unmetModalities returns the required modalities the route's target model does

@@ -4,13 +4,12 @@ import "time"
 
 // NormalizedResponse is the canonical internal representation of a response.
 type NormalizedResponse struct {
-	Content         []ContentBlock
-	StopReason      string
-	Model           string // model that actually served the request, for echoing back to the client
-	Usage           Usage
-	TraceID         string
-	RoutingDecision string
-	RateLimit       *RateLimitInfo // populated by upstream client from response headers, if any
+	Content    []ContentBlock
+	StopReason string
+	Model      string // model that actually served the request, for echoing back to the client
+	Usage      Usage
+	TraceID    string
+	RateLimit  *RateLimitInfo // populated by upstream client from response headers, if any
 }
 
 // NormalizedStreamEvent is an event emitted during streaming response. Used
@@ -169,11 +168,4 @@ type Route struct {
 	// provider. For every other route the fallback chain is exactly right, since
 	// Arbiter made the choice and any equivalent model satisfies the request.
 	ExplicitModel bool
-}
-
-// Metadata augments a Route with runtime info captured at decision time.
-type Metadata struct {
-	LatencyTarget string // "fast", "normal", "quality"
-	TraceID       string
-	RoutedAt      time.Time
 }

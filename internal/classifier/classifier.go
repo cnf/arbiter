@@ -12,17 +12,6 @@ type Classifier interface {
 	Classify(ctx context.Context, req *types.NormalizedRequest) (types.Signals, error)
 }
 
-// Factory creates a Classifier from config.
-type Factory func(name string, config map[string]interface{}) (Classifier, error)
-
-// Registry holds all registered classifier factories.
-var Registry = make(map[string]Factory)
-
-// Register registers a classifier factory by type name.
-func Register(typeName string, factory Factory) {
-	Registry[typeName] = factory
-}
-
 // Axis names a Signals field a classifier produces. Each heuristic instance
 // declares which axis it fills, so several instances can run side by side
 // (domain, effort, capabilities) without overwriting each other's axis —

@@ -45,7 +45,7 @@ func TestPolicySkipsRuleWhoseTargetLacksModality(t *testing.T) {
 	}}
 	pr := NewPolicyRouter("test", rules, capProviders(), nil, cat)
 
-	route, _, err := pr.Route(context.Background(), capReq(), types.Signals{})
+	route, err := pr.Route(context.Background(), capReq(), types.Signals{})
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestPolicyUsesRuleWhoseTargetHasModality(t *testing.T) {
 	}}
 	pr := NewPolicyRouter("test", rules, capProviders(), nil, cat)
 
-	route, _, err := pr.Route(context.Background(), capReq(), types.Signals{})
+	route, err := pr.Route(context.Background(), capReq(), types.Signals{})
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestPolicySkipsRuleWhenModalitiesAreUnknown(t *testing.T) {
 	}}
 	pr := NewPolicyRouter("test", rules, capProviders(), nil, cat)
 
-	route, _, err := pr.Route(context.Background(), capReq(), types.Signals{})
+	route, err := pr.Route(context.Background(), capReq(), types.Signals{})
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestPolicySkipsGuardedRuleWithNoCatalog(t *testing.T) {
 	}
 	pr := NewPolicyRouter("test", rules, capProviders(), nil, nil) // no catalog
 
-	route, _, err := pr.Route(context.Background(), capReq(), types.Signals{})
+	route, err := pr.Route(context.Background(), capReq(), types.Signals{})
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestPolicyUnscopedRulesUnaffected(t *testing.T) {
 	}}
 	pr := NewPolicyRouter("test", rules, capProviders(), nil, cat)
 
-	route, _, err := pr.Route(context.Background(), capReq(), types.Signals{Domain: "code_generation"})
+	route, err := pr.Route(context.Background(), capReq(), types.Signals{Domain: "code_generation"})
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestPolicyErrorsWhenEveryGuardedRuleIsSkipped(t *testing.T) {
 	}}
 	pr := NewPolicyRouter("test", rules, capProviders(), nil, cat)
 
-	if _, _, err := pr.Route(context.Background(), capReq(), types.Signals{}); err == nil {
+	if _, err := pr.Route(context.Background(), capReq(), types.Signals{}); err == nil {
 		t.Error("Route returned no error, want a no-match error so a chained router can fall through")
 	}
 }

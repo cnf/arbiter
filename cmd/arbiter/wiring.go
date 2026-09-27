@@ -19,9 +19,7 @@ import (
 // buildPipeline turns config into a fully wired Pipeline: provider table,
 // translator, classifiers, router, guardrails, upstream client. This is the
 // one place that knows how config type-names map to concrete constructors —
-// adding a new classifier/router/guardrail type means adding a case here
-// (or, once there's a reason to, registering it into router.Registry /
-// classifier.Registry / guardrail.Registry instead of switching on it).
+// adding a new classifier/router/guardrail type means adding a case here.
 func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Writer, cooldowns *pipeline.CooldownStore, reader *store.Reader) (*pipeline.Pipeline, error) {
 	providers := make(map[string]types.ProviderConfig, len(cfg.Providers))
 	for name, pc := range cfg.Providers {

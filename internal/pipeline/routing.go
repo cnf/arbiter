@@ -65,7 +65,7 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 	sig = p.applyForceAlias(req, sig)
 
 	routeStart := time.Now()
-	route, _, err := p.router.Route(ctx, req, sig)
+	route, err := p.router.Route(ctx, req, sig)
 	if err != nil {
 		// A StopError is a deliberate refusal from a matched rule, not a
 		// routing failure — wrapping it in RoutingError would erase its

@@ -8,10 +8,9 @@ import (
 
 // ArbiterError is the base error type.
 type ArbiterError struct {
-	Code       string
-	Message    string
-	Cause      error
-	Attributes map[string]interface{}
+	Code    string
+	Message string
+	Cause   error
 }
 
 func (e *ArbiterError) Error() string {
@@ -34,10 +33,9 @@ type RoutingError struct {
 func NewRoutingError(msg string, cause error) *RoutingError {
 	return &RoutingError{
 		ArbiterError: &ArbiterError{
-			Code:       "ROUTING_ERROR",
-			Message:    msg,
-			Cause:      cause,
-			Attributes: make(map[string]interface{}),
+			Code:    "ROUTING_ERROR",
+			Message: msg,
+			Cause:   cause,
 		},
 	}
 }
@@ -56,9 +54,8 @@ type UnknownModelError struct {
 func NewUnknownModelError(msg string) *UnknownModelError {
 	return &UnknownModelError{
 		ArbiterError: &ArbiterError{
-			Code:       "UNKNOWN_MODEL",
-			Message:    msg,
-			Attributes: make(map[string]interface{}),
+			Code:    "UNKNOWN_MODEL",
+			Message: msg,
 		},
 		StatusCode: 400,
 	}
@@ -73,10 +70,9 @@ type ClassificationError struct {
 func NewClassificationError(msg string, cause error) *ClassificationError {
 	return &ClassificationError{
 		ArbiterError: &ArbiterError{
-			Code:       "CLASSIFICATION_ERROR",
-			Message:    msg,
-			Cause:      cause,
-			Attributes: make(map[string]interface{}),
+			Code:    "CLASSIFICATION_ERROR",
+			Message: msg,
+			Cause:   cause,
 		},
 	}
 }
@@ -91,10 +87,9 @@ type GuardrailError struct {
 func NewGuardrailError(msg string, statusCode int, cause error) *GuardrailError {
 	return &GuardrailError{
 		ArbiterError: &ArbiterError{
-			Code:       "GUARDRAIL_ERROR",
-			Message:    msg,
-			Cause:      cause,
-			Attributes: make(map[string]interface{}),
+			Code:    "GUARDRAIL_ERROR",
+			Message: msg,
+			Cause:   cause,
 		},
 		StatusCode: statusCode,
 	}
@@ -115,10 +110,9 @@ func NewTranslationError(phase, msg string, cause error) *TranslationError {
 	}
 	return &TranslationError{
 		ArbiterError: &ArbiterError{
-			Code:       "TRANSLATION_ERROR",
-			Message:    msg,
-			Cause:      cause,
-			Attributes: make(map[string]interface{}),
+			Code:    "TRANSLATION_ERROR",
+			Message: msg,
+			Cause:   cause,
 		},
 		StatusCode: statusCode,
 		Phase:      phase,
@@ -130,7 +124,6 @@ type UpstreamError struct {
 	*ArbiterError
 	Provider   string
 	StatusCode int
-	Retriable  bool
 	// RetryAfter is the cooldown the upstream asked for via its Retry-After
 	// header on a 429 (0 when absent or non-429). The pipeline records a
 	// cooldown of at least this long before trying the provider again.
@@ -139,17 +132,14 @@ type UpstreamError struct {
 
 // NewUpstreamError creates a new upstream error.
 func NewUpstreamError(provider string, statusCode int, msg string, cause error) *UpstreamError {
-	retriable := statusCode >= 500 || statusCode == 429
 	return &UpstreamError{
 		ArbiterError: &ArbiterError{
-			Code:       "UPSTREAM_ERROR",
-			Message:    msg,
-			Cause:      cause,
-			Attributes: make(map[string]interface{}),
+			Code:    "UPSTREAM_ERROR",
+			Message: msg,
+			Cause:   cause,
 		},
 		Provider:   provider,
 		StatusCode: statusCode,
-		Retriable:  retriable,
 	}
 }
 
@@ -170,9 +160,8 @@ type StopError struct {
 func NewStopError(statusCode int, message string) *StopError {
 	return &StopError{
 		ArbiterError: &ArbiterError{
-			Code:       "STOP",
-			Message:    message,
-			Attributes: make(map[string]interface{}),
+			Code:    "STOP",
+			Message: message,
 		},
 		StatusCode: statusCode,
 	}
@@ -187,10 +176,9 @@ type ConfigError struct {
 func NewConfigError(msg string, cause error) *ConfigError {
 	return &ConfigError{
 		ArbiterError: &ArbiterError{
-			Code:       "CONFIG_ERROR",
-			Message:    msg,
-			Cause:      cause,
-			Attributes: make(map[string]interface{}),
+			Code:    "CONFIG_ERROR",
+			Message: msg,
+			Cause:   cause,
 		},
 	}
 }

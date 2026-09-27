@@ -231,9 +231,9 @@ type signalRecorder struct {
 	route   types.Route
 }
 
-func (r *signalRecorder) Route(_ context.Context, _ *types.NormalizedRequest, sig types.Signals) (types.Route, types.Metadata, error) {
+func (r *signalRecorder) Route(_ context.Context, _ *types.NormalizedRequest, sig types.Signals) (types.Route, error) {
 	r.signals = sig
-	return r.route, types.Metadata{}, nil
+	return r.route, nil
 }
 
 // countingClassifier counts how many times it was consulted, and fills nothing.

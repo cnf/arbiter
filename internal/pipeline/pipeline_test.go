@@ -74,8 +74,8 @@ func (f *fakeUpstream) SendStream(ctx context.Context, route types.Route, req *t
 
 type fakeRouter struct{ route types.Route }
 
-func (f *fakeRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, types.Metadata, error) {
-	return f.route, types.Metadata{}, nil
+func (f *fakeRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, error) {
+	return f.route, nil
 }
 
 type fakeLogger struct{}

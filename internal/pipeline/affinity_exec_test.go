@@ -41,9 +41,9 @@ type recordingRouter struct {
 	route types.Route
 }
 
-func (r *recordingRouter) Route(context.Context, *types.NormalizedRequest, types.Signals) (types.Route, types.Metadata, error) {
+func (r *recordingRouter) Route(context.Context, *types.NormalizedRequest, types.Signals) (types.Route, error) {
 	r.calls++
-	return r.route, types.Metadata{}, nil
+	return r.route, nil
 }
 
 // affinityTestResolver configures "auto" and "manual" as force aliases (force

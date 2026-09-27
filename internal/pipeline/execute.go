@@ -152,7 +152,6 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		actualModel = resp.Model
 	}
 	resp.TraceID = traceID
-	resp.RoutingDecision = served.Rationale
 
 	for _, g := range p.postGuardrails {
 		mutated, err := g.ApplyPost(ctx, resp, served)

@@ -145,11 +145,6 @@ type RequestFilter struct {
 	// list handed it (RequestRow.TsRaw) rather than reformatting a timestamp.
 	BeforeTs string
 	BeforeID int64
-
-	// IncludeContent is declared and never read. Content is reached through
-	// ContentForRequest, which is what both callers do; this field is a
-	// leftover from before capture existed and is scheduled for removal.
-	IncludeContent bool // include prompt/response text — see RequestDetail
 }
 
 // RequestRow is one request as it appears in a list: enough to see what

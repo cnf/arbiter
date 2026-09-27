@@ -23,7 +23,7 @@ func TestPolicyRouterFirstMatchWins(t *testing.T) {
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
-	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "code_generation"})
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "code_generation"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestPolicyRouterWildcardFallsThrough(t *testing.T) {
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
-	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "chat"})
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "chat"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestPolicyRouterNoMatchErrors(t *testing.T) {
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
-	_, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "chat"})
+	_, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "chat"})
 	if err == nil {
 		t.Fatal("expected error for no matching rule, got nil")
 	}
@@ -69,7 +69,7 @@ func TestPolicyRouterUnconfiguredProviderErrors(t *testing.T) {
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
-	_, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
+	_, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
 	if err == nil {
 		t.Fatal("expected error for unconfigured provider, got nil")
 	}
@@ -82,13 +82,13 @@ func TestPolicyRouterCapabilitiesRequireAll(t *testing.T) {
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
 	// only one of two required capabilities present -> no match
-	_, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{RequiredCapabilities: []string{"vision"}})
+	_, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{RequiredCapabilities: []string{"vision"}})
 	if err == nil {
 		t.Fatal("expected no match with partial capabilities, got a route")
 	}
 
 	// both present -> match
-	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{RequiredCapabilities: []string{"vision", "tool_use"}})
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{RequiredCapabilities: []string{"vision", "tool_use"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestPolicyRouterModelOverride(t *testing.T) {
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
-	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{Model: "claude-3-opus-20250219"}, types.Signals{})
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{Model: "claude-3-opus-20250219"}, types.Signals{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestPolicyRouterEffortMatches(t *testing.T) {
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
-	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "code_generation", Effort: "hard"})
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "code_generation", Effort: "hard"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestPolicyRouterEffortWildcardFallsThrough(t *testing.T) {
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
 	// same domain, different effort -> falls through to the wildcard
-	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "code_generation", Effort: "easy"})
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "code_generation", Effort: "easy"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestPolicyRouterTargetResolvesPinnedAlias(t *testing.T) {
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), resolver, nil)
 
-	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestPolicyRouterTargetResolvesGroupWithFallbacks(t *testing.T) {
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), resolver, nil)
 
-	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestPolicyRouterTargetWithoutResolverErrors(t *testing.T) {
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
-	_, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
+	_, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
 	if err == nil {
 		t.Fatal("expected an error: a Target rule with no configured resolver")
 	}
@@ -214,7 +214,7 @@ func TestPolicyRouterChainedWithSimpleFallback(t *testing.T) {
 	simple := NewSimpleRouter("fallback", "gpt4", "", testProviders())
 	chained := NewChainedRouter("chained", []Router{policy, simple})
 
-	route, _, err := chained.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "chat"})
+	route, err := chained.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "chat"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestPolicyRouterStopReturnsStopError(t *testing.T) {
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
-	_, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "unmatched"})
+	_, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "unmatched"})
 	var stopErr *arbitererrors.StopError
 	if !errors.As(err, &stopErr) {
 		t.Fatalf("Route error = %v, want an *arbitererrors.StopError", err)
@@ -253,7 +253,7 @@ func TestPolicyRouterStopInCatchAllPosition(t *testing.T) {
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
-	_, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "chat"})
+	_, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "chat"})
 	var stopErr *arbitererrors.StopError
 	if !errors.As(err, &stopErr) {
 		t.Fatalf("Route error = %v, want an *arbitererrors.StopError", err)
@@ -274,7 +274,7 @@ func TestChainedRouterDoesNotSwallowStop(t *testing.T) {
 	simple := NewSimpleRouter("fallback", "gpt4", "", testProviders())
 	chained := NewChainedRouter("chained", []Router{policy, simple})
 
-	_, _, err := chained.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
+	_, err := chained.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
 	var stopErr *arbitererrors.StopError
 	if !errors.As(err, &stopErr) {
 		t.Fatalf("Route error = %v, want an *arbitererrors.StopError (not a fallthrough to SimpleRouter)", err)
@@ -293,7 +293,7 @@ func TestChainedRouterStillFallsThroughOnOrdinaryMiss(t *testing.T) {
 	simple := NewSimpleRouter("fallback", "gpt4", "", testProviders())
 	chained := NewChainedRouter("chained", []Router{policy, simple})
 
-	route, _, err := chained.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "chat"})
+	route, err := chained.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "chat"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestPolicyConditionMatchesRequestKind(t *testing.T) {
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
-	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{RequestKind: "title"})
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{RequestKind: "title"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestPolicyConditionSkipsRuleOnRequestKindMismatch(t *testing.T) {
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
-	route, _, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

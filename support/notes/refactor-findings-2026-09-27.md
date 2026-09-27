@@ -21,8 +21,24 @@ Status of *that* pass, since it changes several findings below:
 | 4 dead/write-only fields | §5 | ✅ done — `30aaaee`; **two of the five claims were wrong**, corrected in §5 |
 | 5 RateLimit | §5 (⚠️ correction) | → filed **#62**; it is a stalled half-shipped feature, not debris |
 
-Left as-is deliberately: `attachTitleChildren` (§1, not greenlit), the
-`RateLimit` code (→ #62), `arrival_ts` backfill (user deferred).
+Also done since this table was written (the numbering above stopped at the
+first five):
+
+- **thinking signature** (§5) — ✅ **#61** closed by `d29accc`; testing found a
+  *second* defect (the `thinking` key, so non-streaming thinking text was
+  dropped both directions).
+- **tool definitions** (§6) — ✅ **#60** closed by `e24f0e2`; the display half
+  → **#63**, which folds into the #59 transcript rework.
+- **test gaps** — ✅ `db64885`; `pkg/errors` and `internal/logging` had zero
+  tests. Every assertion is revert-verified.
+- **repo hygiene** (§8) — ✅ `90a9c0c`.
+- **store migration debt** (§9) — 🟡 mechanism real, instance resolved; not
+  urgent.
+- **#38** (header ordering) — ✅ closed by `46114c5`.
+
+Left as-is deliberately: `attachTitleChildren` (§1, not greenlit — user is
+deferring the whole UI pass until the base is clean), the `RateLimit` code
+(→ #62), `arrival_ts` backfill (user deferred).
 
 The oversized-file work (§3) is the part that changes *this* document most: the
 "Files over 500 lines" list below was computed at `e432404` and is now stale —

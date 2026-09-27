@@ -36,6 +36,85 @@ first five):
   urgent.
 - **#38** (header ordering) — ✅ closed by `46114c5`.
 
+### Sessions-page live updates (2026-09-28) — fixes 1, 2, and lane insertion
+
+Three user-reported symptoms on the Sessions page, all in the same 5-second
+poller (`internal/ui/static/laneLive.js`). Not on the numbered list — the user
+pivoted to hands-on UI work while items 1 and 2 stay deferred.
+
+The unifying mechanism: `applyLanes` ran `existing.replaceWith(replacement)`
+unconditionally on every poll. The lane markup arrives at its natural spacing,
+and `.lane-timeline { overflow: hidden }`, so a replaced lane is *clipped* —
+every poll threw away the fit `laneTimeline.js` had applied to the node it
+destroyed, and any node selection with it.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| good scaling visible for a fraction of a second, then gone | the poll replaced every lane, discarding the fit | `9fa3078` — skip the swap when `stableHTML` is unchanged |
+| clicking an event selects it, reload resets it | same replacement destroyed the selected node | `9fa3078` (same fix) |
+| a new session never appears as a new lane | `applyLanes` skipped any lane with no `data-session` match, by design | `fe7aa33` — insert it |
+
+Two traps worth recording, both of which would have silently defeated fix 1:
+
+- **`{{ago .FirstSeen}}` is a function of the wall clock.** Any session under
+  an hour old re-renders differently every minute with nothing having happened,
+  so every young lane read as "changed" on every poll — precisely the lanes
+  live-updating exists for. The relative text is now isolated in
+  `<span class="ago">` and excluded from the comparison.
+- **The comparison must also exclude the inline `margin-right` (the fit) and
+  the `is-selected`/`selected` classes**, which are the page's own in-place
+  mutations, not data. Both sides go through the same serializer first, or
+  Go's `&#34;` and the browser's `&quot;` make identical lanes read as
+  different.
+
+Fix 2 (`5476af7`) re-runs the fit after a poll that genuinely swapped something
+— the poll fires no htmx event, so nothing else would. `laneTimeline.js` now
+exposes `window.ArbiterLaneTimeline.fitAll`, mirroring the pre-existing
+`window.ArbiterLaneDetail` pattern.
+
+**Lane insertion (`fe7aa33`)** — the deliberate design, since it is the easiest
+thing here to get subtly wrong:
+
+- Placement uses each lane's own `data-last-seen` (the `MAX(ts)` the server's
+  `ORDER BY MAX(ts) DESC` uses) via `insertInOrder`, not a blind prepend — so
+  only the *new* node ever moves and no existing lane is disturbed (its fit and
+  selection survive). The compare is a plain string compare, which is
+  chronological only because `store/reader.go`'s `formatTime` normalises to
+  RFC3339 UTC.
+- The toolbar caption is re-derived from the DOM (`applyCaption`) rather than
+  patched by a guessed delta, so it cannot contradict the list. This needs
+  `data-turns` on each row — the same integer the server sums into
+  `InViewRequests`, not the formatted text in the header.
+- An inactive lane is deliberately **not** removed: whether it still belongs
+  depends on the page's filters and cap, which only the server knows.
+- `laneContainer()` handles the empty state — the server renders
+  `<p class="empty">` *instead of* `#laneScroll`, so a session going live while
+  that message shows requires creating the container. That is the case the poll
+  most needs to work.
+
+The nav badge was investigated and found **already honest** — `ActiveSessionCount`
+is `SELECT COUNT(*) FROM affinity_pins WHERE expires_at >= ?`, so the badge
+counts sessions within TTL and the page's filters legitimately hide some of
+them. The only gap is that nothing on screen says *what* it counts (the legend
+has "active — within cache TTL" but the badge itself has no title).
+
+**Verification method for this UI work** (the codebase has no JS test
+framework, and none was added): three throwaway jsdom harnesses, run outside
+the repo in `.cache/jsdomtest`, loading the *real* shipped `laneLive.js` +
+`laneTimeline.js` and real captured page bytes, then feeding a poll payload
+with a lane the page has never seen. They cover a newest lane landing first, a
+lane with activity between two existing lanes landing between them, and the
+empty state filling in. All three were revert-verified against the unfixed
+script (3–5 assertions fail there). The template↔JS contract is now pinned in
+Go by `TestSessionsLaneRowCarriesItsOwnCountsAndSortKey`, on both render paths,
+also revert-verified.
+
+Two harness artifacts caught by mutation testing, worth remembering: **captured
+page bytes go stale when a template changes** (templates are embedded at build
+time — restart the server), and **jsdom keeps `readyState === "loading"`** so
+`laneLive.js` defers `init()` to `DOMContentLoaded` while `laneTimeline.js`
+fits immediately — a harness that does not settle first can pass vacuously.
+
 Left as-is deliberately: `attachTitleChildren` (§1, not greenlit — user is
 deferring the whole UI pass until the base is clean), the `RateLimit` code
 (→ #62), `arrival_ts` backfill (user deferred).

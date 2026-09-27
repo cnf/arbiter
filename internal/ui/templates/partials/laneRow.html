@@ -77,7 +77,7 @@ sessions.laneRow. */}}
     <div class="lane-head-left">
       <a class="sid" href="/admin/ui/session?key={{.Key}}" title="{{.Key}} — open transcript">{{.ShortKey}}</a>
       {{if .Active}}<span class="hot" title="active — still within its cache TTL"></span>{{end}}
-      <span class="meta"><b>{{.Turns}}</b> request{{if ne .Turns 1}}s{{end}}{{if gt .SatelliteCount 0}} · <b>{{.SatelliteCount}}</b> satellite{{if ne .SatelliteCount 1}}s{{end}}{{end}} · started {{ago .FirstSeen}}</span>
+      <span class="meta"><b>{{.Turns}}</b> request{{if ne .Turns 1}}s{{end}}{{if gt .SatelliteCount 0}} · <b>{{.SatelliteCount}}</b> satellite{{if ne .SatelliteCount 1}}s{{end}}{{end}} · started <span class="ago">{{ago .FirstSeen}}</span></span>
     </div>
     <div class="lane-head-right">
       {{if .Preview}}<span class="preview" title="{{.Preview}}">&quot;{{.Preview}}&quot;</span>

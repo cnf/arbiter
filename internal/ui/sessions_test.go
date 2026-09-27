@@ -2,7 +2,9 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -264,6 +266,101 @@ func TestSessionsLaneHotDotReflectsActivePin(t *testing.T) {
 	if strings.Contains(laneSlice(coldIdx), `class="hot"`) {
 		t.Errorf("sess-cold has no live pin and must not carry the hot dot, got:\n%s", laneSlice(coldIdx))
 	}
+}
+
+// The lane header's relative "started 12m ago" text must stay inside its own
+// .ago element, in BOTH response shapes the lane is rendered through.
+//
+// This is a coupling between the template and laneLive.js, and it fails
+// silently in the dangerous direction: stableHTML() blanks any .ago node's
+// text before comparing a polled lane against the one on screen, so that a
+// relative clock ticking ("0s ago" → "1m ago") cannot make an unchanged lane
+// look changed. If the span is dropped or renamed, the clock's text is
+// compared instead — every session younger than an hour then reads as changed
+// on every poll, its lane gets replaced, and the spacing fit laneTimeline.js
+// applied is discarded with it. Nothing errors; the dense-lane fit and any
+// node selection just stop surviving a live update.
+//
+// Both the page set and the partials set are asserted: the page renders the
+// lane on load, renderLaneRow renders it for the live tail, and the tail is
+// where the comparison actually happens.
+func TestSessionsLaneAgoTextIsIsolatedForTheLiveComparison(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	logger := logging.NewStdoutLogger("error")
+
+	w, err := store.NewSQLiteWriter(path, logger)
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	now := time.Now().UTC()
+	// Deliberately a session started minutes ago, not hours: at this age the
+	// relative text changes every minute, which is exactly when the
+	// comparison would break if the span were missing.
+	started := now.Add(-12 * time.Minute)
+	for i, ts := range []time.Time{started, started.Add(time.Minute)} {
+		w.Record(store.Event{TraceID: "t" + strconv.Itoa(i), SessionKey: "sess-fresh",
+			Kind: "client", Provider: "p", Model: "m", StatusCode: 200, Ts: ts, LatencyMs: 1})
+	}
+	// The tail deliberately refreshes only sessions holding a live affinity
+	// pin (see SessionsTailHandler), so the fixture needs one or the tail
+	// would return an empty lane list and prove nothing.
+	if err := w.SavePin(context.Background(), store.AffinityPin{
+		SessionKey: "sess-fresh", RequestedModel: "auto", Provider: "p", Model: "m",
+		ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SavePin: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	r, err := store.OpenReader(path)
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	h := New(r, logger)
+
+	page := serve(t, h, "GET", "/admin/ui/sessions?live_only=0", false).Body.String()
+	if !strings.Contains(page, `started <span class="ago">`) {
+		t.Errorf("the page's lane header no longer isolates the relative time in a .ago span; "+
+			"laneLive.js's stableHTML relies on that class to ignore the ticking clock:\n%s", page)
+	}
+
+	// The tail path is where the comparison runs, so assert the same shape
+	// through the JSON the poller actually receives. serveJSON registers only
+	// the tail route — which is exactly this endpoint.
+	code, tail := serveJSON(t, h, "/admin/ui/sessions/tail?live_only=0")
+	if code != 200 {
+		t.Fatalf("tail returned %d, want 200: %s", code, tail)
+	}
+	laneHTML := extractLaneHTML(t, tail, "sess-fresh")
+	if !strings.Contains(laneHTML, `started <span class="ago">`) {
+		t.Errorf("the tail's lane markup no longer isolates the relative time in a .ago span:\n%s", laneHTML)
+	}
+}
+
+// extractLaneHTML pulls one lane's rendered markup out of a tail response's
+// JSON, so a test can assert on the exact bytes a poll would splice into the
+// page rather than on the page's own render.
+func extractLaneHTML(t *testing.T, body, key string) string {
+	t.Helper()
+	var resp struct {
+		Lanes []struct {
+			Key  string `json:"key"`
+			HTML string `json:"html"`
+		} `json:"lanes"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("tail response is not the expected JSON: %v\n%s", err, body)
+	}
+	for _, l := range resp.Lanes {
+		if l.Key == key {
+			return l.HTML
+		}
+	}
+	t.Fatalf("tail response carried no lane for %q:\n%s", key, body)
+	return ""
 }
 
 // "live only" (default on, per its own doc comment on sessionsView.LiveOnly)

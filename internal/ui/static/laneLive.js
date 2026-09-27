@@ -81,6 +81,43 @@
         });
     }
 
+    // stableHTML is a lane's markup with the state that is NOT
+    // server-rendered stripped out — exactly what the page mutates in place
+    // on a lane it has already rendered, plus the one render that is not a
+    // data change:
+    //
+    //   * laneTimeline.js's per-node `margin-right` (the fit that compresses
+    //     a dense lane's spacing so its whole history fits without scrolling)
+    //   * laneDetail.js's `is-selected` / `selected` selection classes
+    //   * the header's relative "started 12m ago" text (.ago), which is a
+    //     function of the wall clock, not of the session: it re-renders
+    //     differently on every poll for any session younger than an hour
+    //     ("0s ago", "1m ago", …) with nothing having happened. Left in, it
+    //     would make every young lane read as changed on every single poll —
+    //     defeating this comparison exactly for the sessions live-updating
+    //     exists for, and one hour is precisely the window in which a dense
+    //     lane is most likely to be growing.
+    //
+    // Both sides are compared through the SAME serializer: the incoming
+    // payload is parsed into an element first, so Go's `&#34;` escaping and
+    // the browser's `&quot;` re-serialization of the same attribute value
+    // cannot make two identical lanes read as different.
+    function stableHTML(el) {
+      var clone = el.cloneNode(true);
+      var all = clone.querySelectorAll("*");
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].getAttribute("style") !== null) {
+          all[i].removeAttribute("style");
+        }
+        all[i].classList.remove("is-selected");
+        if (all[i].classList.contains("ago")) {
+          all[i].textContent = "";
+        }
+      }
+      clone.classList.remove("selected");
+      return clone.outerHTML;
+    }
+
     // applyLanes swaps each returned lane's markup in place, keyed by its
     // session id (the .lane-row's data-session attribute — see laneRow.html).
     // A lane not currently on screen (filtered out client-side is not a
@@ -91,6 +128,17 @@
     // first time appears on the next full load or filter change, same as
     // the "live only" toggle already implies for anything outside its
     // grace window.
+    //
+    // A lane whose fresh render is IDENTICAL to what is already on screen is
+    // left completely alone rather than replaced with a copy. That is not an
+    // optimization: `.lane-timeline { overflow: hidden }`, so a replaced
+    // lane arrives at its natural, uncompressed width and gets clipped —
+    // the fit laneTimeline.js had already applied to the copy on screen is
+    // discarded with the node it was applied to. Re-rendering a lane that
+    // did not change therefore *loses* information (the spacing fit and any
+    // node selection) while gaining nothing. Most polled lanes are in
+    // exactly this state: the poll refreshes every *pinned* session, and a
+    // pinned session is very often idle.
     function applyLanes(lanes) {
       for (var i = 0; i < lanes.length; i++) {
         var lane = lanes[i];
@@ -105,6 +153,9 @@
         }
         var replacement = fromHTML(lane.html);
         if (!replacement) {
+          continue;
+        }
+        if (stableHTML(replacement) === stableHTML(existing)) {
           continue;
         }
         if (window.ArbiterLaneDetail) {

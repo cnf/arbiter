@@ -32,19 +32,13 @@ var funcs = stdhtml.FuncMap{
 	"sessionsNav": func(raw string) string { return sessionsNavHref(raw) },
 	"sinceLabel":  sinceLabel,
 	"chars":       fmtChars,
-	// requestsForSession builds a link to the flat request list filtered to one
-	// session — the request-level view of the same conversation. It is a func
-	// rather than a precomputed field because it is used with a key that is
-	// already in the view model, in two different templates.
-	"requestsForSession": requestsForSession,
-	"trace8":             fmtTrace,
+	"trace8":      fmtTrace,
 	// Overview (#54). cacheClass/pctWidth exist so the drawer's gauge can be
 	// coloured and sized without the template doing arithmetic or holding the
-	// thresholds; overviewURL/nodeURL keep query-string assembly out of the
-	// template, same reason requestsForBlock does.
+	// thresholds; nodeURL keeps query-string assembly out of the template,
+	// same reason requestsForBlock does.
 	"cacheClass":    cacheGaugeClass,
 	"pctWidth":      pctWidth,
-	"overviewURL":   overviewURL,
 	"nodeURL":       nodeURL,
 	"sinceChoices":  sinceChoices,
 	"activeSince":   activeSince,

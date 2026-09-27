@@ -764,28 +764,6 @@ func latencyClass(ms int64) string {
 	}
 }
 
-// overviewURL builds a link back to the page with one parameter changed, used by
-// the toolbar's own controls so no template assembles a query string by hand.
-func overviewURL(mode, since, anchor, span string) string {
-	v := url.Values{}
-	if mode != "" {
-		v.Set("mode", mode)
-	}
-	if since != "" {
-		v.Set("since", since)
-	}
-	if anchor != "" {
-		v.Set("anchor", anchor)
-	}
-	if span != "" {
-		v.Set("span", span)
-	}
-	if len(v) == 0 {
-		return "/admin/ui/overview"
-	}
-	return "/admin/ui/overview?" + v.Encode()
-}
-
 // nodeURL builds the drawer's fetch URL for one node, carrying the window so the
 // drawer and the diagram always describe the same traffic.
 func nodeURL(id, since, anchor, span string) string {

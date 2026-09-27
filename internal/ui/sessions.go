@@ -379,10 +379,3 @@ func (h *Handler) lanePreview(ctx context.Context, rows []store.RequestRow) (pre
 	}
 	return "", noClientBodyPreview
 }
-
-// requestsForSession links to the flat request list filtered to one session —
-// the request-level view of the same conversation, for when the transcript is
-// not what you want.
-func requestsForSession(key string) string {
-	return "/admin/ui/requests?session=" + url.QueryEscape(key)
-}

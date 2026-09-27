@@ -7,16 +7,13 @@
 // once the Sessions page grew its own tail (#52/laneLive.js) — see #56/#57.
 // What survives here is the view-model machinery Sessions and Discovery still
 // consume: foldRequestLines/attachTraceChildren (Sessions' lane timelines),
-// requestRowView/RoutingChain (Sessions, Discovery's drill-down), the keyset
-// cursor codec, and the guardrail-diff fragment (the session transcript).
-// Deleting the file wholesale to "finish the rip-out" would break all four.
+// requestRowView/RoutingChain (Sessions, Discovery's drill-down), and the
+// guardrail-diff fragment (the session transcript).
 package ui
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -513,41 +510,6 @@ func allStreamed(rows []requestRowView) bool {
 type blockView struct {
 	store.ContentBlock
 	OwnerID int64
-}
-
-// cursorSeparator splits the two halves of a cursor payload. It cannot occur in
-// either half: a timestamp is digits and punctuation, an id is digits.
-const cursorSeparator = "\x00"
-
-// encodeCursor packs the keyset position into one opaque, URL-safe token.
-//
-// It is opaque deliberately. The honest cursor is the row's stored timestamp
-// text, which is `2026-09-16 11:59:39.812343302 +0000 UTC` — a value whose `+`
-// characters a query string is entitled to read as spaces, and a client or
-// proxy that does so produces a bound matching no row at all. That failure is
-// silent: the page renders "no results" rather than an error, which is exactly
-// the shape this codebase refuses elsewhere. Base64 keeps the payload exact and
-// URL-safe, and hides the store's internal time format from the address bar.
-func encodeCursor(ts string, id int64) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(ts + cursorSeparator + strconv.FormatInt(id, 10)))
-}
-
-// decodeCursor reverses encodeCursor. A malformed cursor is an error the caller
-// reports as a 400, never a silently ignored page position.
-func decodeCursor(raw string) (string, int64, error) {
-	b, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
-		return "", 0, fmt.Errorf("not base64")
-	}
-	parts := strings.SplitN(string(b), cursorSeparator, 2)
-	if len(parts) != 2 || parts[0] == "" {
-		return "", 0, fmt.Errorf("malformed payload")
-	}
-	id, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil || id < 1 {
-		return "", 0, fmt.Errorf("malformed id")
-	}
-	return parts[0], id, nil
 }
 
 // guardrailDiffView is the diff fragment: one block's before/after text,

@@ -168,8 +168,7 @@ func (h *Handler) SessionsTailHandler(w http.ResponseWriter, r *http.Request) {
 // renderLaneRow renders one lane through the same "lane-row" partial the page
 // itself uses, so a polled lane and a page-loaded lane cannot drift apart in
 // markup. A render failure yields an empty string, which the client already
-// treats as "nothing to swap" — see live.go's renderTailRow for the same
-// convention on the request list's tail.
+// treats as "nothing to swap".
 func renderLaneRow(ctx context.Context, h *Handler, lane laneRow) string {
 	set, ok := h.fragments["fragments"]
 	if !ok {

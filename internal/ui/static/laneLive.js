@@ -140,6 +140,7 @@
     // exactly this state: the poll refreshes every *pinned* session, and a
     // pinned session is very often idle.
     function applyLanes(lanes) {
+      var swapped = false;
       for (var i = 0; i < lanes.length; i++) {
         var lane = lanes[i];
         if (!lane.html) {
@@ -162,6 +163,16 @@
           window.ArbiterLaneDetail.clearSelectionIfWithin(existing);
         }
         existing.replaceWith(replacement);
+        swapped = true;
+      }
+      // A lane that really changed has just been replaced with markup that
+      // carries no fit, and this poll fires no htmx event, so re-run the fit
+      // once at the end rather than per lane (scheduleFit coalesces anyway, but
+      // one call is the honest shape). Safe if laneTimeline.js has not run
+      // yet: it is loaded after this file, and this is only reached on a poll,
+      // long after both have executed.
+      if (swapped && window.ArbiterLaneTimeline) {
+        window.ArbiterLaneTimeline.fitAll();
       }
     }
 

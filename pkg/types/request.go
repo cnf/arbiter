@@ -70,6 +70,21 @@ type ContentBlock struct {
 	// type == "text" or "thinking"
 	Text string
 
+	// Signature is Anthropic's opaque per-thinking-block token, and is empty
+	// for every other block type and every other provider.
+	//
+	// It is not content: it is a handle Anthropic issues with a thinking block
+	// and requires back verbatim on the next turn, or the conversation is
+	// rejected or silently degraded. The streaming path has carried it since
+	// the beginning (NormalizedStreamEvent.Signature); this field exists so the
+	// non-streaming path can do the same. Same text, same reason, different
+	// carrier — a non-streaming Anthropic thinking conversation is otherwise
+	// corrupted on every turn after the first.
+	//
+	// OpenAI has no equivalent, so the OpenAI translators drop it. That is
+	// deliberate and matches what the streaming path already does.
+	Signature string
+
 	// type == "tool_use"
 	ToolUseID string
 	ToolName  string
@@ -365,7 +380,21 @@ func NewAnthropicCacheControl() *AnthropicCacheControl {
 type AnthropicContent struct {
 	Type string `json:"type"`
 
-	Text string `json:"text,omitempty"` // text, thinking
+	Text string `json:"text,omitempty"` // text
+
+	// Thinking is a thinking block's text. Anthropic spells this key
+	// differently from a text block's, so Text cannot serve both: a thinking
+	// block carries {"thinking": "..."} and a text block carries
+	// {"text": "..."}, and reading the wrong one yields an empty string with
+	// no error. Both directions of the non-streaming path were doing exactly
+	// that, so thinking text was silently lost.
+	Thinking string `json:"thinking,omitempty"` // thinking
+
+	// Signature is Anthropic's opaque thinking-block token: it is issued with
+	// a thinking block and must be replayed verbatim alongside it on the next
+	// turn. omitempty keeps it off text and tool blocks, where it never
+	// applies. See types.ContentBlock.Signature for why it is carried.
+	Signature string `json:"signature,omitempty"`
 
 	// CacheControl marks this block as the end of a cacheable prefix.
 	// Pointer so an unmarked block omits the key entirely, and a marked one

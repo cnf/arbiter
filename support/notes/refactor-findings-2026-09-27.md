@@ -252,6 +252,23 @@ Worth its own ticket; this is a correctness bug, not tech debt.
 - **5 hand-maintained `ALTER TABLE` guards** in `writer.go` (no schema-version
   table) — manageable today, tested, but no ceiling; a 6th/7th column follows
   the same manual, unchecked path.
+
+  **Confirmed live (2026-09-27)**, with the exact failure this debt predicts:
+  `realpreview` serving `build/livecheck.db` returns `500` with
+  `list requests: SQL logic error: no such column: arrival_ts (1)`. That
+  database is a snapshot taken before `arrival_ts` shipped, and
+  `store.OpenReader` (`reader.go:38`) does NOT run the migration pass — only
+  `NewSQLiteWriter` does, via `addColumnIfMissing`. So a reader against a
+  pre-migration database fails on every query touching a newer column, and the
+  failure is a hard 500 rather than a degraded view.
+
+  This is not a new bug and not caused by any recent change: it is the
+  documented shape of the debt, observed. Two things worth knowing from it —
+  the migration is writer-only by construction (a read-only consumer cannot
+  repair a schema it does not own), and the arrival_ts backfill decision
+  (user: "hold off until i know everything else works") has a visible
+  consequence beyond the column being null: any *stale* database is unreadable
+  by the UI until something opens it with a writer.
 - **`content_refs` grows ~O(n²) per long conversation** (a client that resends
   full history each turn re-references every prior block every turn) — real,
   measured against production (4M rows before an index fixed multi-second

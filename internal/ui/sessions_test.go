@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -361,6 +362,101 @@ func extractLaneHTML(t *testing.T, body, key string) string {
 	}
 	t.Fatalf("tail response carried no lane for %q:\n%s", key, body)
 	return ""
+}
+
+// TestSessionsLaneRowCarriesItsOwnCountsAndSortKey pins the contract between
+// laneRow.html and laneLive.js that makes live lane INSERTION work.
+//
+// The poller reconciles the lane list against a payload of freshly rendered
+// lanes, and nothing else travels with them: it has to place a lane the page
+// is not showing yet (so it needs the same MAX(ts) the server orders by), and
+// it has to keep the toolbar caption honest when the set of lanes changes (so
+// it needs the same per-lane turn count the server sums into InViewRequests).
+// Both facts therefore have to be ON the element, and both are easy to drop
+// silently: the obvious "the header already shows 'N requests'" is
+// human-formatted text that cannot be summed, and the obvious "the header
+// shows '12m ago'" is not a comparable timestamp.
+//
+// This asserts the attributes on BOTH render paths, because they must not
+// drift: a page-loaded lane and a polled lane are spliced together in the same
+// list, and the caption sums whichever of them is on screen.
+func TestSessionsLaneRowCarriesItsOwnCountsAndSortKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	logger := logging.NewStdoutLogger("error")
+
+	w, err := store.NewSQLiteWriter(path, logger)
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	now := time.Now().UTC()
+	for i, ts := range []time.Time{now.Add(-30 * time.Minute), now.Add(-29 * time.Minute), now.Add(-28 * time.Minute)} {
+		w.Record(store.Event{TraceID: "t" + strconv.Itoa(i), SessionKey: "sess-attrs",
+			Kind: "client", Provider: "p", Model: "m", StatusCode: 200, Ts: ts, LatencyMs: 1})
+	}
+	if err := w.SavePin(context.Background(), store.AffinityPin{
+		SessionKey: "sess-attrs", RequestedModel: "auto", Provider: "p", Model: "m",
+		ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SavePin: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	r, err := store.OpenReader(path)
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	h := New(r, logger)
+
+	// The page's own render.
+	page := serve(t, h, "GET", "/admin/ui/sessions?live_only=0", false).Body.String()
+	laneOpen := laneRowOpenTag(t, page, "sess-attrs")
+	for _, want := range []struct{ attr, why string }{
+		{`data-turns="3"`, "the caption sums data-turns to reproduce InViewRequests"},
+		{`data-last-seen="`, "insertInOrder places a new lane by data-last-seen"},
+	} {
+		if !strings.Contains(laneOpen, want.attr) {
+			t.Errorf("the page's lane row is missing %s — %s:\n%s", want.attr, want.why, laneOpen)
+		}
+	}
+
+	// The tail's render — the bytes the poller actually splices in.
+	code, tail := serveJSON(t, h, "/admin/ui/sessions/tail?live_only=0")
+	if code != 200 {
+		t.Fatalf("tail returned %d, want 200: %s", code, tail)
+	}
+	tailLane := laneRowOpenTag(t, extractLaneHTML(t, tail, "sess-attrs"), "sess-attrs")
+	if tailLane != laneOpen {
+		t.Errorf("the polled lane's opening tag differs from the page's, so the two render\npaths have drifted:\n  page: %s\n  tail: %s", laneOpen, tailLane)
+	}
+
+	// data-last-seen has to be a fixed-format RFC3339 UTC timestamp: the
+	// client's placement is a plain string compare, which is only
+	// chronological for exactly that shape (see store/reader.go's formatTime).
+	if !regexp.MustCompile(`data-last-seen="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"`).MatchString(laneOpen) {
+		t.Errorf("data-last-seen is not an RFC3339 UTC timestamp, so laneLive.js's "+
+			"lexicographic ordering would not match the server's ORDER BY MAX(ts) DESC:\n%s", laneOpen)
+	}
+}
+
+// laneRowOpenTag returns the .lane-row opening tag for one session — the whole
+// element is unnecessary here and enormous (a dense lane embeds every node's
+// facts), so the attributes are read from the tag alone.
+func laneRowOpenTag(t *testing.T, html, key string) string {
+	t.Helper()
+	marker := `class="lane-row" data-session="` + key + `"`
+	i := strings.Index(html, marker)
+	if i < 0 {
+		t.Fatalf("no .lane-row for %q in:\n%.2000s", key, html)
+	}
+	start := strings.LastIndex(html[:i], "<div")
+	end := strings.Index(html[i:], ">")
+	if start < 0 || end < 0 {
+		t.Fatalf("could not delimit the lane row's opening tag near %q", marker)
+	}
+	return html[start : i+end+1]
 }
 
 // "live only" (default on, per its own doc comment on sessionsView.LiveOnly)

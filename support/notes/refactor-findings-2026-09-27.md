@@ -253,22 +253,30 @@ Worth its own ticket; this is a correctness bug, not tech debt.
   table) — manageable today, tested, but no ceiling; a 6th/7th column follows
   the same manual, unchecked path.
 
-  **Confirmed live (2026-09-27)**, with the exact failure this debt predicts:
-  `realpreview` serving `build/livecheck.db` returns `500` with
+  **Observed live (2026-09-27)**, with the exact failure this debt predicts:
+  `realpreview` serving `build/livecheck.db` returned `500` with
   `list requests: SQL logic error: no such column: arrival_ts (1)`. That
-  database is a snapshot taken before `arrival_ts` shipped, and
+  database was a snapshot taken before `arrival_ts` shipped, and
   `store.OpenReader` (`reader.go:38`) does NOT run the migration pass — only
   `NewSQLiteWriter` does, via `addColumnIfMissing`. So a reader against a
   pre-migration database fails on every query touching a newer column, and the
   failure is a hard 500 rather than a degraded view.
 
-  This is not a new bug and not caused by any recent change: it is the
-  documented shape of the debt, observed. Two things worth knowing from it —
-  the migration is writer-only by construction (a read-only consumer cannot
-  repair a schema it does not own), and the arrival_ts backfill decision
-  (user: "hold off until i know everything else works") has a visible
-  consequence beyond the column being null: any *stale* database is unreadable
-  by the UI until something opens it with a writer.
+  **Status: the instance is resolved** — the user refreshed `build/livecheck.db`
+  from current production, and `realpreview` now serves that database
+  successfully (verified: 152KB page, no error, current session keys). The
+  *mechanism* is unchanged, though, and that is the part worth keeping: the
+  migration is writer-only by construction (a read-only consumer cannot repair
+  a schema it does not own), so **any** stale database is still unreadable by
+  the UI until something opens it with a writer. Refreshing the file worked
+  because the fresh copy already carries the column — it did not exercise the
+  migration path, it sidestepped it.
+
+  This also sharpens the arrival_ts backfill question (user: "hold off until i
+  know everything else works"): the backfill is about old *rows* in a live
+  database, which is a different thing from a stale *file* like this one.
+  Neither is urgent, but they are not the same problem and the resolution of
+  this one says nothing about the other.
 - **`content_refs` grows ~O(n²) per long conversation** (a client that resends
   full history each turn re-references every prior block every turn) — real,
   measured against production (4M rows before an index fixed multi-second

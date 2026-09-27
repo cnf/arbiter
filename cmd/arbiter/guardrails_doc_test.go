@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -67,14 +68,28 @@ func TestGuardrailDocTypesCoverTheSwitch(t *testing.T) {
 	table := guardrailTypeTable(t)
 
 	// The type list is the switch's own case labels. Parsing the source keeps
-	// this honest without a second hand-maintained list.
-	src, err := os.ReadFile("main.go")
+	// this honest without a second hand-maintained list. Scan the whole
+	// package rather than one file, so moving buildGuardrail between files
+	// does not break this test on a rename that changed no behaviour.
+	var src strings.Builder
+	files, err := filepath.Glob("*.go")
 	if err != nil {
-		t.Fatalf("read main.go: %v", err)
+		t.Fatalf("glob package sources: %v", err)
 	}
-	body := regexp.MustCompile(`(?s)func buildGuardrail\(.*?\n\}\n`).FindString(string(src))
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		src.Write(b)
+		src.WriteString("\n")
+	}
+	body := regexp.MustCompile(`(?s)func buildGuardrail\(.*?\n\}\n`).FindString(src.String())
 	if body == "" {
-		t.Fatal("could not find buildGuardrail in main.go")
+		t.Fatal("could not find buildGuardrail in the package sources")
 	}
 	cases := regexp.MustCompile(`(?m)^\tcase "([a-z_]+)":`).FindAllStringSubmatch(body, -1)
 	if len(cases) == 0 {

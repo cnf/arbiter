@@ -15,12 +15,22 @@
 -- config_epoch is the hash of the resolved config that served this request
 -- (Config.Epoch): the join key for "did this config change save or cost
 -- money?". NULL for rows written before the column existed.
+--
+-- arrival_ts is when the request reached Arbiter (Execute's own entry),
+-- distinct from ts (when the request finished and this row was written).
+-- The two differ whenever a request takes any real time upstream — a
+-- classifier call started by a parent request routinely WRITES its row
+-- before the parent does, because it finishes first (see SessionChildren's
+-- doc comment, and issue #8). arrival_ts exists so causal order (what
+-- triggered what) can be recovered directly instead of inferred from
+-- trace_id nesting. NULL for rows written before the column existed.
 CREATE TABLE IF NOT EXISTS requests (
     id                    INTEGER PRIMARY KEY,
     trace_id              TEXT NOT NULL,
     session_key           TEXT,
     client_id             TEXT,
     ts                    TIMESTAMP NOT NULL,
+    arrival_ts            TIMESTAMP,
     format                TEXT NOT NULL,       -- "anthropic" | "openai"
     provider              TEXT NOT NULL,
     model                 TEXT NOT NULL,

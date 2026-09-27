@@ -85,8 +85,14 @@ func TestClassifierCallRecordedOnceThenSkippedByAffinityPin(t *testing.T) {
 			if ev.Provider != "cls-provider" || ev.Model != "cls-model" {
 				t.Errorf("classifier event provider/model = %s/%s, want cls-provider/cls-model", ev.Provider, ev.Model)
 			}
+			if !ev.ArrivalTs.IsZero() {
+				t.Errorf("classifier event ArrivalTs = %v, want zero (only the parent client event carries arrival)", ev.ArrivalTs)
+			}
 		case "client", "":
 			clientEvents++
+			if ev.ArrivalTs.IsZero() {
+				t.Error("client event ArrivalTs is zero, want Execute's start time")
+			}
 		}
 	}
 	if classifierEvents != 1 {

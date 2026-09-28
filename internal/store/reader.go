@@ -135,14 +135,16 @@ type RequestFilter struct {
 	SessionKeyless bool
 
 	// BeforeTs/BeforeID are the keyset cursor: return only rows strictly older
-	// than this (ts, id) pair under the list's own `ts DESC, id DESC` ordering.
-	// Both must be set together; either alone is ignored.
+	// than this (arrival_ts, id) pair under the list's own
+	// `arrival_ts DESC, id DESC` ordering. Both must be set together; either
+	// alone is ignored.
 	//
-	// Ts is compared as the *stored text*, not as a bound built from a Go
-	// time, because the store's ts column is TEXT in a layout SQLite's date
-	// functions cannot parse and a fraction-free bound sorts below every row
-	// in its own second. The caller therefore echoes back the exact value the
-	// list handed it (RequestRow.TsRaw) rather than reformatting a timestamp.
+	// BeforeTs is compared as the *stored text*, not as a bound built from a Go
+	// time, because the store's arrival_ts column is TEXT in a layout SQLite's
+	// date functions cannot parse and a fraction-free bound sorts below every
+	// row in its own second. The caller therefore echoes back the exact value
+	// the list handed it (RequestRow.ArrivalTsRaw) rather than reformatting a
+	// timestamp.
 	BeforeTs string
 	BeforeID int64
 }
@@ -161,8 +163,14 @@ type RequestRow struct {
 	// See schema.sql's comment on requests.arrival_ts and issue #8.
 	ArrivalTs string `json:"arrival_ts,omitempty"`
 
-	// TsRaw is the timestamp exactly as stored, which is what the keyset
-	// cursor must carry to compare correctly (see RequestFilter.BeforeTs).
+	// ArrivalTsRaw is arrival_ts exactly as stored, the keyset cursor's
+	// carry-forward value now that the list orders by arrival — see
+	// RequestFilter.BeforeTs. Unmarshalled off the wire: a handle for the
+	// next page, not a second rendering of the same instant.
+	ArrivalTsRaw string `json:"-"`
+
+	// TsRaw is the timestamp exactly as stored, kept for callers still
+	// reasoning about finish time (e.g. #14's cost/epoch aggregates).
 	// Unmarshalled off the wire: it is a handle for the next page, not a
 	// second rendering of the same instant.
 	TsRaw      string `json:"-"`
@@ -238,7 +246,8 @@ type RequestDetail struct {
 const requestRowColumns = `
     id, trace_id, ts, CAST(ts AS TEXT), session_key, format, provider, model, actual_model, alias_used,
     routing_rationale, domain, effort, cost_class, input_tokens, output_tokens,
-    cost_usd, latency_ms, status_code, error, stream, config_epoch, kind, request_kind, arrival_ts`
+    cost_usd, latency_ms, status_code, error, stream, config_epoch, kind, request_kind, arrival_ts,
+    CAST(arrival_ts AS TEXT)`
 
 // ListRequests returns requests newest first, narrowed by f.
 //
@@ -250,7 +259,7 @@ func (r *Reader) ListRequests(ctx context.Context, f RequestFilter) ([]RequestRo
 	args := []interface{}{}
 
 	if !f.Since.IsZero() {
-		where = append(where, "ts >= ?")
+		where = append(where, "arrival_ts >= ?")
 		args = append(args, f.Since)
 	}
 	if f.Provider != "" {
@@ -285,11 +294,11 @@ func (r *Reader) ListRequests(ctx context.Context, f RequestFilter) ([]RequestRo
 	}
 	// Keyset continuation. The row-value comparison matches the ordering below
 	// exactly, which is what makes paging stable: an id-only cursor would skip
-	// or repeat rows whenever ts is not monotonic in id (a backfill, an
-	// import, a clock step). Both halves of the cursor are required; a
+	// or repeat rows whenever arrival_ts is not monotonic in id (a backfill,
+	// an import, a clock step). Both halves of the cursor are required; a
 	// half-set cursor is ignored rather than silently mis-paging.
 	if f.BeforeTs != "" && f.BeforeID > 0 {
-		where = append(where, "(ts, id) < (?, ?)")
+		where = append(where, "(arrival_ts, id) < (?, ?)")
 		args = append(args, f.BeforeTs, f.BeforeID)
 	}
 
@@ -301,11 +310,12 @@ func (r *Reader) ListRequests(ctx context.Context, f RequestFilter) ([]RequestRo
 		limit = maxRequestListLimit
 	}
 
-	// id as the tiebreaker matters: ts has sub-second precision, and rows
-	// written within the same tick would otherwise come back in an arbitrary
-	// order, making paging and "what just happened" both unreliable.
+	// id as the tiebreaker matters: arrival_ts has sub-second precision, and
+	// rows written within the same tick would otherwise come back in an
+	// arbitrary order, making paging and "what just happened" both
+	// unreliable.
 	q := "SELECT" + requestRowColumns + " FROM requests WHERE " +
-		strings.Join(where, " AND ") + " ORDER BY ts DESC, id DESC LIMIT ?"
+		strings.Join(where, " AND ") + " ORDER BY arrival_ts DESC, id DESC LIMIT ?"
 	args = append(args, limit)
 
 	rows, err := r.db.QueryContext(ctx, q, args...)
@@ -333,28 +343,29 @@ func (r *Reader) GetRequest(ctx context.Context, id int64) (RequestDetail, bool,
 FROM requests WHERE id = ?`
 
 	var (
-		d         RequestDetail
-		tsRaw     interface{}
-		session   sql.NullString
-		actual    sql.NullString
-		alias     sql.NullString
-		domain    sql.NullString
-		effort    sql.NullString
-		costCl    sql.NullString
-		errText   sql.NullString
-		epoch     sql.NullString
-		reqKind   sql.NullString
-		arrivalTs interface{}
-		conf      sql.NullFloat64
-		tools     sql.NullString
-		client    sql.NullString
-		headers   sql.NullString
+		d            RequestDetail
+		tsRaw        interface{}
+		session      sql.NullString
+		actual       sql.NullString
+		alias        sql.NullString
+		domain       sql.NullString
+		effort       sql.NullString
+		costCl       sql.NullString
+		errText      sql.NullString
+		epoch        sql.NullString
+		reqKind      sql.NullString
+		arrivalTs    interface{}
+		arrivalTsRaw sql.NullString
+		conf         sql.NullFloat64
+		tools        sql.NullString
+		client       sql.NullString
+		headers      sql.NullString
 	)
 	err := r.db.QueryRowContext(ctx, q, id).Scan(
 		&d.ID, &d.TraceID, &tsRaw, &d.TsRaw, &session, &d.Format, &d.Provider, &d.Model, &actual, &alias,
 		&d.RoutingRationale, &domain, &effort, &costCl, &d.InputTokens, &d.OutputTokens,
 		&d.CostUSD, &d.LatencyMs, &d.StatusCode, &errText, &d.Stream, &epoch, &d.Kind, &reqKind,
-		&arrivalTs,
+		&arrivalTs, &arrivalTsRaw,
 		&conf, &d.CacheReadTokens, &d.CacheWriteTokens, &tools, &client, &headers)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RequestDetail{}, false, nil
@@ -365,6 +376,7 @@ FROM requests WHERE id = ?`
 
 	d.Ts = formatTime(tsRaw)
 	d.ArrivalTs = formatTime(arrivalTs)
+	d.ArrivalTsRaw = arrivalTsRaw.String
 	d.SessionKey = session.String
 	d.ActualModel = actual.String
 	d.AliasUsed = alias.String
@@ -394,27 +406,29 @@ FROM requests WHERE id = ?`
 // aggregate queries already behave.
 func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 	var (
-		s         RequestRow
-		tsRaw     interface{}
-		session   sql.NullString
-		actual    sql.NullString
-		alias     sql.NullString
-		domain    sql.NullString
-		effort    sql.NullString
-		costCl    sql.NullString
-		errText   sql.NullString
-		epoch     sql.NullString
-		reqKind   sql.NullString
-		arrivalTs interface{}
+		s            RequestRow
+		tsRaw        interface{}
+		session      sql.NullString
+		actual       sql.NullString
+		alias        sql.NullString
+		domain       sql.NullString
+		effort       sql.NullString
+		costCl       sql.NullString
+		errText      sql.NullString
+		epoch        sql.NullString
+		reqKind      sql.NullString
+		arrivalTs    interface{}
+		arrivalTsRaw sql.NullString
 	)
 	if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &s.TsRaw, &session, &s.Format, &s.Provider,
 		&s.Model, &actual, &alias, &s.RoutingRationale, &domain, &effort, &costCl,
 		&s.InputTokens, &s.OutputTokens, &s.CostUSD, &s.LatencyMs, &s.StatusCode,
-		&errText, &s.Stream, &epoch, &s.Kind, &reqKind, &arrivalTs); err != nil {
+		&errText, &s.Stream, &epoch, &s.Kind, &reqKind, &arrivalTs, &arrivalTsRaw); err != nil {
 		return RequestRow{}, fmt.Errorf("scan request row: %w", err)
 	}
 	s.Ts = formatTime(tsRaw)
 	s.ArrivalTs = formatTime(arrivalTs)
+	s.ArrivalTsRaw = arrivalTsRaw.String
 	s.SessionKey = session.String
 	s.ActualModel = actual.String
 	s.AliasUsed = alias.String

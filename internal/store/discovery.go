@@ -52,11 +52,11 @@ func (r *Reader) SessionsForContent(ctx context.Context, hash string, limit int)
 WITH ranked (id, trace_id, ts, ts_text, session_key, format, provider, model, actual_model,
              alias_used, routing_rationale, domain, effort, cost_class, input_tokens,
              output_tokens, cost_usd, latency_ms, status_code, error, stream, config_epoch,
-             kind, request_kind, arrival_ts, rn) AS (
+             kind, request_kind, arrival_ts, arrival_ts_text, rn) AS (
     SELECT` + requestRowColumns + `,
            ROW_NUMBER() OVER (
              PARTITION BY COALESCE(NULLIF(session_key, ''), 'sessionless:' || id)
-             ORDER BY ts ASC, id ASC
+             ORDER BY arrival_ts ASC, id ASC
            )
     FROM requests
     WHERE kind = 'client' AND id IN (
@@ -67,9 +67,9 @@ WITH ranked (id, trace_id, ts, ts_text, session_key, format, provider, model, ac
 SELECT id, trace_id, ts, ts_text, session_key, format, provider, model, actual_model,
        alias_used, routing_rationale, domain, effort, cost_class, input_tokens,
        output_tokens, cost_usd, latency_ms, status_code, error, stream, config_epoch,
-       kind, request_kind, arrival_ts
+       kind, request_kind, arrival_ts, arrival_ts_text
 FROM ranked WHERE rn = 1
-ORDER BY ts DESC, id DESC LIMIT ?`
+ORDER BY arrival_ts DESC, id DESC LIMIT ?`
 
 	rows, err := r.db.QueryContext(ctx, q, raw, limit)
 	if err != nil {

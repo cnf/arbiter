@@ -12,9 +12,9 @@ import (
 	"github.com/cnf/arbiter/pkg/types"
 )
 
-func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedRequest, hasKey bool) (types.Route, types.Signals, error) {
+func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedRequest, hasKey bool, arrivalTs time.Time) (types.Route, types.Signals, error) {
 	if route, ok := p.literalModelRoute(req.Model); ok {
-		sig := p.classifyLiteral(ctx, req, hasKey)
+		sig := p.classifyLiteral(ctx, req, hasKey, arrivalTs)
 		p.logger.LogRouting(ctx, route, sig, 0)
 		return route, sig, nil
 	}
@@ -69,7 +69,7 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 	if err != nil {
 		return types.Route{}, types.Signals{}, arbitererrors.NewClassificationError("classify request", err)
 	}
-	p.recordClassifierCalls(req, sig)
+	p.recordClassifierCalls(req, sig, arrivalTs)
 	sig = p.applyForceAlias(req, sig)
 
 	routeStart := time.Now()
@@ -121,7 +121,7 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 // fail the request; here the route is already known and only the row's
 // annotations are lost, and failing a request the client would otherwise have
 // been served is the worse outcome.
-func (p *Pipeline) classifyLiteral(ctx context.Context, req *types.NormalizedRequest, hasKey bool) types.Signals {
+func (p *Pipeline) classifyLiteral(ctx context.Context, req *types.NormalizedRequest, hasKey bool, arrivalTs time.Time) types.Signals {
 	if hasKey {
 		// A pin is the proof that this session already exists, whatever model
 		// it was recorded under. Deliberately not affinity.get: that returns a
@@ -139,7 +139,7 @@ func (p *Pipeline) classifyLiteral(ctx context.Context, req *types.NormalizedReq
 			map[string]interface{}{"stage": "classify_literal_model", "model": req.Model})
 		return types.Signals{}
 	}
-	p.recordClassifierCalls(req, sig)
+	p.recordClassifierCalls(req, sig, arrivalTs)
 	// applyForceAlias is deliberately NOT called: a force alias exists to
 	// shape what the router matches on, and nothing is matched here.
 	return sig

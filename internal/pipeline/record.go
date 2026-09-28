@@ -47,7 +47,7 @@ func (p *Pipeline) record(ev store.Event) {
 // single verdict is the merged value anyway. Reading only the merged sig meant
 // a multi-axis decisions call recorded its domain and nothing else, so
 // cost_class was in the rationale text but empty as a field.
-func (p *Pipeline) recordClassifierCalls(req *types.NormalizedRequest, sig types.Signals) {
+func (p *Pipeline) recordClassifierCalls(req *types.NormalizedRequest, sig types.Signals, arrivalTs time.Time) {
 	for _, call := range sig.ClassifierCalls {
 		rationale := classifierRationale(call)
 		// The verdict alone doesn't say what was judged, and the rationale is
@@ -77,6 +77,7 @@ func (p *Pipeline) recordClassifierCalls(req *types.NormalizedRequest, sig types
 			TraceID:          req.TraceID,
 			SessionKey:       req.SessionKey,
 			Kind:             "classifier",
+			ArrivalTs:        arrivalTs,
 			Format:           req.OriginalFormat,
 			Provider:         call.Provider,
 			Model:            call.Model,

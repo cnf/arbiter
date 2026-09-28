@@ -122,10 +122,10 @@ fetch — the data is already server-rendered, just not visible until clicked. *
 {{if .Run}}
 <div class="node stack" tabindex="0" role="button"
      data-route="{{index .Head.RoutingChain 0}}" data-provider="{{.Head.Provider}}" data-kind="{{.Head.Kind}}"
-     data-status="{{.Head.StatusCode}}" data-count="{{.Count}}" data-cost="{{usd .Head.CostUSD}}"
+     data-status="{{.Head.StatusCode}}" data-count="{{.Count}}" data-cost="{{usd .TotalCostUSD}}"
      data-latency="{{dur .Head.LatencyMs}}" data-trace="{{.Head.TraceID}}" data-open-href="{{.OpenHref}}"
      data-rationale="{{.Count}}× streamed turns, same route, collapsed into one node — click to open its transcript.">
-  <span class="tip">{{.Count}}× streamed turns · {{usd .Head.CostUSD}} total</span>
+  <span class="tip">{{.Count}}× streamed turns · {{usd .TotalCostUSD}} total</span>
   <span class="stackn">{{.Count}}×</span>
 </div>
 {{else}}

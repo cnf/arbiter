@@ -43,6 +43,9 @@ func insertRow(t *testing.T, db *sql.DB, ev Event) {
 	if ev.Ts.IsZero() {
 		ev.Ts = time.Now().UTC()
 	}
+	if ev.ArrivalTs.IsZero() {
+		ev.ArrivalTs = ev.Ts
+	}
 	if err := insertRequest(context.Background(), db, ev); err != nil {
 		t.Fatalf("insert row: %v", err)
 	}
@@ -327,6 +330,37 @@ func TestListRequestsFiltersAndOrders(t *testing.T) {
 	}
 	if len(clamped) != 3 {
 		t.Errorf("clamped limit returned %d rows, want all 3", len(clamped))
+	}
+}
+
+// TestListRequestsOrdersByArrivalNotFinish is #8's actual fix: two requests
+// can finish (Ts) in one order while having reached Arbiter (ArrivalTs) in
+// the other — a fast classifier detour inside a slower still-running request
+// is exactly this shape. The list must reflect what happened, i.e. the order
+// things arrived, not the order the replies went out.
+func TestListRequestsOrdersByArrivalNotFinish(t *testing.T) {
+	r, q := newTestReader(t)
+	base := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+
+	// "slow" arrived first but finished last; "fast" arrived second but
+	// finished first. Ts-ordering would show fast, slow — arrival-ordering
+	// must show slow, fast.
+	insertRow(t, q, Event{
+		Model: "slow", ArrivalTs: base, Ts: base.Add(2 * time.Minute),
+	})
+	insertRow(t, q, Event{
+		Model: "fast", ArrivalTs: base.Add(time.Minute), Ts: base.Add(90 * time.Second),
+	})
+
+	rows, err := r.ListRequests(context.Background(), RequestFilter{})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len = %d, want 2", len(rows))
+	}
+	if rows[0].Model != "fast" || rows[1].Model != "slow" {
+		t.Errorf("order = %s, %s (newest arrival first), want fast, slow", rows[0].Model, rows[1].Model)
 	}
 }
 

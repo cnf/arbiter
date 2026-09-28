@@ -11,9 +11,13 @@ import (
 
 // SessionRequest is one turn of a session's trajectory.
 type SessionRequest struct {
-	ID               int64   `json:"id"`
-	TraceID          string  `json:"trace_id"`
-	Ts               string  `json:"ts"`
+	ID      int64  `json:"id"`
+	TraceID string `json:"trace_id"`
+	Ts      string `json:"ts"`
+
+	// ArrivalTs is when the request reached Arbiter — see RequestRow.ArrivalTs
+	// and issue #8. This is what the trajectory is ordered by.
+	ArrivalTs        string  `json:"arrival_ts,omitempty"`
 	Provider         string  `json:"provider"`
 	Model            string  `json:"model"`
 	AliasUsed        string  `json:"alias_used,omitempty"`
@@ -38,12 +42,12 @@ type SessionRequest struct {
 func (r *Reader) Session(ctx context.Context, key string, limit int) ([]SessionRequest, error) {
 	const q = `
 SELECT
-    id, trace_id, ts, provider, model, alias_used, routing_rationale,
+    id, trace_id, ts, arrival_ts, provider, model, alias_used, routing_rationale,
     input_tokens, output_tokens, cost_usd, latency_ms, status_code, error, stream,
     tool_calls_json, config_epoch, kind
 FROM requests
 WHERE session_key = ?
-ORDER BY ts ASC
+ORDER BY arrival_ts ASC
 LIMIT ?`
 
 	rows, err := r.db.QueryContext(ctx, q, key, limit)
@@ -55,19 +59,21 @@ LIMIT ?`
 	out := []SessionRequest{}
 	for rows.Next() {
 		var (
-			s     SessionRequest
-			tsRaw interface{}
-			alias sql.NullString
-			tools sql.NullString
-			epoch sql.NullString
-			errTx sql.NullString
+			s         SessionRequest
+			tsRaw     interface{}
+			arrivalTs interface{}
+			alias     sql.NullString
+			tools     sql.NullString
+			epoch     sql.NullString
+			errTx     sql.NullString
 		)
-		if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &s.Provider, &s.Model, &alias,
+		if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &arrivalTs, &s.Provider, &s.Model, &alias,
 			&s.RoutingRationale, &s.InputTokens, &s.OutputTokens, &s.CostUSD,
 			&s.LatencyMs, &s.StatusCode, &errTx, &s.Stream, &tools, &epoch, &s.Kind); err != nil {
 			return nil, fmt.Errorf("scan session row: %w", err)
 		}
 		s.Ts = formatTime(tsRaw)
+		s.ArrivalTs = formatTime(arrivalTs)
 		s.AliasUsed = alias.String
 		s.Error = errTx.String
 		s.ToolCalls = tools.String
@@ -112,11 +118,11 @@ func (r *Reader) SessionClientPage(ctx context.Context, key string, limit, offse
 	if offset < 0 {
 		offset = 0
 	}
-	// id is the tiebreaker for the same reason ListRequests uses it: ts has
-	// sub-second precision and several turns can share a tick.
+	// id is the tiebreaker for the same reason ListRequests uses it:
+	// arrival_ts has sub-second precision and several turns can share a tick.
 	const q = `SELECT` + requestRowColumns + `
 FROM requests WHERE session_key = ? AND kind = 'client'
-ORDER BY ts ASC, id ASC
+ORDER BY arrival_ts ASC, id ASC
 LIMIT ? OFFSET ?`
 
 	rows, err := r.db.QueryContext(ctx, q, key, limit, offset)
@@ -158,7 +164,7 @@ func (r *Reader) SessionChildren(ctx context.Context, traceIDs []string) ([]Requ
 	}
 	q := `SELECT` + requestRowColumns + `
 FROM requests WHERE kind <> 'client' AND trace_id IN (` + strings.Join(placeholders, ", ") + `)
-ORDER BY ts ASC, id ASC`
+ORDER BY arrival_ts ASC, id ASC`
 
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -192,7 +198,7 @@ func (r *Reader) SessionTurnAt(ctx context.Context, key string, turn int) (int64
 	}
 	const q = `SELECT id FROM requests
 WHERE session_key = ? AND kind = 'client'
-ORDER BY ts ASC, id ASC
+ORDER BY arrival_ts ASC, id ASC
 LIMIT 1 OFFSET ?`
 
 	var id int64
@@ -289,7 +295,7 @@ WHERE r2.session_key = ? AND r2.kind = 'client'
 func (r *Reader) SessionFirstClient(ctx context.Context, key string) (RequestRow, bool, error) {
 	const q = `SELECT` + requestRowColumns + `
 FROM requests WHERE session_key = ? AND kind = 'client'
-ORDER BY ts ASC, id ASC
+ORDER BY arrival_ts ASC, id ASC
 LIMIT 1`
 
 	rows, err := r.db.QueryContext(ctx, q, key)
@@ -383,7 +389,7 @@ func (r *Reader) Sessions(ctx context.Context, w Window, limit int) ([]SessionSu
 	const q = `
 SELECT session_key,
     COUNT(*),
-    MIN(ts), MAX(ts),
+    MIN(arrival_ts), MAX(arrival_ts),
     CAST(COALESCE(SUM(input_tokens), 0)  AS INTEGER),
     CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER),
     COALESCE(SUM(cost_usd), 0),
@@ -391,9 +397,9 @@ SELECT session_key,
     COALESCE(group_concat(DISTINCT provider), ''),
     COUNT(DISTINCT provider || '/' || model)
 FROM requests
-WHERE ts >= ? AND session_key IS NOT NULL AND session_key <> '' AND kind = 'client'
+WHERE arrival_ts >= ? AND session_key IS NOT NULL AND session_key <> '' AND kind = 'client'
 GROUP BY session_key
-ORDER BY MAX(ts) DESC
+ORDER BY MAX(arrival_ts) DESC
 LIMIT ?`
 
 	rows, err := r.db.QueryContext(ctx, q, w.Since, limit)
@@ -436,7 +442,7 @@ func (r *Reader) SessionSummaryFor(ctx context.Context, key string, since time.T
 	const q = `
 SELECT session_key,
     COUNT(*),
-    MIN(ts), MAX(ts),
+    MIN(arrival_ts), MAX(arrival_ts),
     CAST(COALESCE(SUM(input_tokens), 0)  AS INTEGER),
     CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER),
     COALESCE(SUM(cost_usd), 0),
@@ -444,7 +450,7 @@ SELECT session_key,
     COALESCE(group_concat(DISTINCT provider), ''),
     COUNT(DISTINCT provider || '/' || model)
 FROM requests
-WHERE ts >= ? AND session_key = ? AND kind = 'client'
+WHERE arrival_ts >= ? AND session_key = ? AND kind = 'client'
 GROUP BY session_key`
 
 	var (
@@ -469,7 +475,7 @@ GROUP BY session_key`
 // rather than silently absent from it.
 func (r *Reader) SessionlessRequestCount(ctx context.Context, w Window) (int64, error) {
 	const q = `SELECT COUNT(*) FROM requests
-WHERE ts >= ? AND (session_key IS NULL OR session_key = '') AND kind = 'client'`
+WHERE arrival_ts >= ? AND (session_key IS NULL OR session_key = '') AND kind = 'client'`
 
 	var n int64
 	if err := r.db.QueryRowContext(ctx, q, w.Since).Scan(&n); err != nil {

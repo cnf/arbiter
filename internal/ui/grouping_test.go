@@ -28,12 +28,16 @@ func lineRow(id int64, mutate func(*store.RequestRow)) requestRowView {
 	return requestRowView{RequestRow: r, ShortSession: r.SessionKey}
 }
 
-// TestFoldRequestsGroupsStreamedRuns is the feature: a run of streamed turns of
-// one conversation becomes one line with a count, and everything that makes a
-// request a *different event* starts a line of its own.
+// TestFoldRequestsGroupsStreamedRuns is the feature: a run of *contiguous*
+// streamed turns of one conversation becomes one line with a count, and
+// everything that makes a request a *different event* — including one
+// intervening row of a different event — starts a line of its own.
 //
-// Each case below is a field the user named as a distinct event, so the assertion
-// per case is "these two do NOT fold together".
+// Each case below is a field the user named as a distinct event, so the
+// assertion per case is "these two do NOT fold together, even indirectly":
+// the differing row in the middle breaks the run into three lines, not two,
+// because folding is no longer allowed to gather across whatever sits
+// between two matching rows (see foldRequestLines' contiguous-run doc).
 func TestFoldRequestsGroupsStreamedRuns(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -60,8 +64,8 @@ func TestFoldRequestsGroupsStreamedRuns(t *testing.T) {
 				lineRow(2, func(r *store.RequestRow) { r.SessionKey = "s2" }),
 				lineRow(1, nil),
 			},
-			lines: 2,
-			count: 2,
+			lines: 3,
+			count: 1,
 		},
 		{
 			name: "a non-200 is a different event",
@@ -70,8 +74,8 @@ func TestFoldRequestsGroupsStreamedRuns(t *testing.T) {
 				lineRow(2, func(r *store.RequestRow) { r.StatusCode = 502 }),
 				lineRow(1, nil),
 			},
-			lines: 2,
-			count: 2,
+			lines: 3,
+			count: 1,
 		},
 		{
 			name: "a destination change is a different event",
@@ -80,8 +84,8 @@ func TestFoldRequestsGroupsStreamedRuns(t *testing.T) {
 				lineRow(2, func(r *store.RequestRow) { r.Model = "other" }),
 				lineRow(1, nil),
 			},
-			lines: 2,
-			count: 2,
+			lines: 3,
+			count: 1,
 		},
 		{
 			name: "a provider change is a different event",
@@ -90,8 +94,8 @@ func TestFoldRequestsGroupsStreamedRuns(t *testing.T) {
 				lineRow(2, func(r *store.RequestRow) { r.Provider = "anthropic" }),
 				lineRow(1, nil),
 			},
-			lines: 2,
-			count: 2,
+			lines: 3,
+			count: 1,
 		},
 		{
 			name: "an alias change is a different event",
@@ -109,8 +113,8 @@ func TestFoldRequestsGroupsStreamedRuns(t *testing.T) {
 				lineRow(2, func(r *store.RequestRow) { r.RequestKind = "title" }),
 				lineRow(1, nil),
 			},
-			lines: 2,
-			count: 2,
+			lines: 3,
+			count: 1,
 		},
 		{
 			name: "a non-streamed request never folds",
@@ -123,15 +127,17 @@ func TestFoldRequestsGroupsStreamedRuns(t *testing.T) {
 			count: 1,
 		},
 		{
-			name: "a mixed run folds the streamed rows only",
+			name: "a mixed run folds only the contiguous streamed rows",
 			rows: []requestRowView{
 				lineRow(4, nil),
 				lineRow(3, func(r *store.RequestRow) { r.Stream = false }),
 				lineRow(2, nil),
 				lineRow(1, nil),
 			},
-			lines: 2, // the streamed run, plus the non-streamed row on its own
-			count: 3, // the three streamed rows
+			// row 4 stands alone (the non-streamed row 3 breaks it off from
+			// the {2,1} run that follows), row 3 stands alone, {2,1} folds.
+			lines: 3,
+			count: 1, // the lone row-4 line
 		},
 		{
 			name: "unpinned requests never fold together",
@@ -168,10 +174,15 @@ func TestFoldRequestsGroupsStreamedRuns(t *testing.T) {
 	}
 }
 
-// TestFoldRequestsGathersARunsRowsToOneLine pins the shape the user asked for:
-// `A A B A A` is *not* `A(2) B A(2)`. The line gathers every member of the group
-// wherever it sits on the page, so the run reads as one line with one count.
-func TestFoldRequestsGathersARunsRowsToOneLine(t *testing.T) {
+// TestFoldRequestsDoesNotGatherAcrossAGap is the fix itself: `A A B A A` is
+// `A(2) B A(2)`, not `A(4) B`. A run only extends to the *next* row in page
+// order; a different event in between starts the second A run over from
+// scratch, because gathering across it would erase that the B event ever
+// happened in between — see foldRequestLines' doc comment. (This replaces
+// the identity-map "gather anywhere on the page" behavior #25 shipped for
+// the old flat /admin/ui/requests page, which was never decided for lanes
+// and read as dishonest once lanes went single-session.)
+func TestFoldRequestsDoesNotGatherAcrossAGap(t *testing.T) {
 	rows := []requestRowView{
 		lineRow(5, nil), // A
 		lineRow(4, nil), // A
@@ -180,14 +191,41 @@ func TestFoldRequestsGathersARunsRowsToOneLine(t *testing.T) {
 		lineRow(1, nil), // A
 	}
 	lines := foldRequestLines(rows)
-	if len(lines) != 2 {
-		t.Fatalf("got %d lines, want 2 (one for each session)", len(lines))
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3 (A(2), B, A(2) — not gathered across the gap)", len(lines))
 	}
-	if lines[0].Count != 4 {
-		t.Errorf("the A run has count %d, want 4 (gathered across the B row)", lines[0].Count)
+	if lines[0].Count != 2 || !lines[0].Run {
+		t.Errorf("first A run: count=%d run=%v, want count=2 run=true", lines[0].Count, lines[0].Run)
 	}
 	if lines[1].Count != 1 || lines[1].Run {
 		t.Errorf("the B line should be a single non-run line; got count=%d run=%v", lines[1].Count, lines[1].Run)
+	}
+	if lines[2].Count != 2 || !lines[2].Run {
+		t.Errorf("second A run: count=%d run=%v, want count=2 run=true (a separate run from the first)", lines[2].Count, lines[2].Run)
+	}
+}
+
+// TestFoldRequestsTotalCostUSDIsTheSumNotHeadsOwnCost is the fix for the
+// mislabeled stack total: a folded run's TotalCostUSD must be every row's
+// cost added up, not the newest row's cost alone. The template renders this
+// as "N× streamed turns · $X total" (laneRow.html) — before this field
+// existed it rendered Head.CostUSD there, which is one turn's spend wearing
+// a "total" label; on a 110-turn stack observed live this understated the
+// true cost by roughly 99x.
+func TestFoldRequestsTotalCostUSDIsTheSumNotHeadsOwnCost(t *testing.T) {
+	rows := []requestRowView{
+		lineRow(3, func(r *store.RequestRow) { r.CostUSD = 0.01 }),
+		lineRow(2, func(r *store.RequestRow) { r.CostUSD = 0.02 }),
+		lineRow(1, func(r *store.RequestRow) { r.CostUSD = 0.03 }),
+	}
+	lines := foldRequestLines(rows)
+	if len(lines) != 1 || !lines[0].Run {
+		t.Fatalf("got %d lines, run=%v; want one folded run", len(lines), lines[0].Run)
+	}
+	const want = 0.06
+	if got := lines[0].TotalCostUSD; got != want {
+		t.Errorf("TotalCostUSD = %v, want %v (sum of every folded row, not just Head's %v)",
+			got, want, lines[0].Head.CostUSD)
 	}
 }
 

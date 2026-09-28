@@ -16,7 +16,7 @@ import (
 // provider/model actually serves it — see resolveRoute.
 func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, traceID string, sessionHint string) (interface{}, error) {
 	ctx = p.logger.WithTraceID(ctx, traceID)
-	start := time.Now()
+	start := time.Now().UTC()
 	headers := headersFromContext(ctx)
 
 	req, err := p.normalizer.ToNormalized(payload, format)
@@ -96,7 +96,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		content.RequestGuardrailed = store.CaptureRequest(req)
 	}
 
-	route, sig, err := p.resolveRoute(ctx, req, hasKey)
+	route, sig, err := p.resolveRoute(ctx, req, hasKey, start)
 	if err != nil {
 		// Routing failed (no rule matched and no fallback router, a config
 		// the request can't be routed under, or a deliberate `stop` rule).

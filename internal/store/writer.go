@@ -196,6 +196,16 @@ func (w *SQLiteWriter) Record(ev Event) {
 	if ev.Ts.IsZero() {
 		ev.Ts = time.Now().UTC()
 	}
+	// ArrivalTs is always set explicitly on every real write path (see
+	// pipeline/record.go, execute.go, streaming.go) — this fallback exists
+	// so the many test fixtures that only ever set Ts don't silently write a
+	// NULL arrival_ts that sorts before every real row and breaks every
+	// arrival-ordered read. A NULL here in production would mean a caller
+	// forgot to stamp arrival, which is worth treating as "arrived when it
+	// finished" rather than "arrived at the beginning of time".
+	if ev.ArrivalTs.IsZero() {
+		ev.ArrivalTs = ev.Ts
+	}
 
 	w.mu.RLock()
 	defer w.mu.RUnlock()

@@ -47,6 +47,16 @@ func newSeededHandler(t *testing.T, events ...store.Event) (*Handler, *store.SQL
 		t.Fatalf("open reader: %v", err)
 	}
 	t.Cleanup(func() { _ = r.Close() })
+	// The Discovery ledger reads from content_hash_stats, a rollup fed by a
+	// background sweep in production (see cmd/arbiter/store.go's
+	// startSweeper) rather than computed live. Running it once here after
+	// seeding keeps every other newSeededHandler caller's existing
+	// "seed, then it's visible" assumption true without every test needing
+	// to know the rollup exists. A no-op (nothing captured, or no content
+	// capture in the seed) costs one cheap query.
+	if _, _, err := r.RollupContentHashStats(context.Background()); err != nil {
+		t.Fatalf("rollup content hash stats: %v", err)
+	}
 	return New(r, logger), nil
 }
 

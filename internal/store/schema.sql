@@ -130,6 +130,62 @@ CREATE INDEX IF NOT EXISTS idx_content_refs_hash ON content_refs(hash);
 CREATE INDEX IF NOT EXISTS idx_content_refs_repeated ON content_refs(owner_kind, direction, hash, owner_id, block_type, role);
 
 -- ---------------------------------------------------------------------------
+-- Content hash rollup (Discovery's counts, kept incrementally)
+-- ---------------------------------------------------------------------------
+-- RepeatedContent/ContentHashCounts used to aggregate content_refs JOIN
+-- requests from scratch on every Discovery page load — two full scans of a
+-- table that only ever grows (content is immutable once written), at ~6-7s
+-- each on a real deployment. content_hash_stats is that same aggregate kept
+-- as a running total instead: an hourly background sweep folds in whatever
+-- is new since it last ran (see Reader.RollupContentHashStats), and the page
+-- becomes a lookup over at most a few tens of thousands of rows.
+--
+-- This is deliberately all-time, not windowed: a per-day bucketed rollup
+-- would let the page keep an accurate sliding window, but the operator
+-- explicitly accepted approximate counts here ("this was sent in 55
+-- sessions" is a spot-check, not a number anyone audits) and the drill-down
+-- (SessionsForContent) always re-queries exactly. See PICKUP.md.
+--
+-- requests is a running COUNT(DISTINCT owner_id): safe to add to directly
+-- because each content_refs row is written exactly once, ever, and the
+-- rollup only ever looks at owner_ids it hasn't processed before.
+--
+-- sessions cannot be summed the same way — the same session sends the same
+-- block on every turn, so a naive +1 per batch would double-count a session
+-- that reappears in a later batch. content_hash_sessions below is the
+-- dedup memory that makes an incremental session count correct.
+CREATE TABLE IF NOT EXISTS content_hash_stats (
+    hash        BLOB PRIMARY KEY,
+    block_type  TEXT NOT NULL,
+    role        TEXT NOT NULL DEFAULT '',
+    requests    INTEGER NOT NULL DEFAULT 0,
+    sessions    INTEGER NOT NULL DEFAULT 0,
+    first_ts    TIMESTAMP,
+    last_ts     TIMESTAMP
+) WITHOUT ROWID;
+
+-- Which (hash, session_key) pairs have already been counted into
+-- content_hash_stats.sessions, so a session resending the same block in a
+-- later rollup batch is recognised as already-counted rather than bumping
+-- the total again. Pure bookkeeping: nothing reads this table except the
+-- rollup itself.
+CREATE TABLE IF NOT EXISTS content_hash_sessions (
+    hash        BLOB NOT NULL,
+    session_key TEXT NOT NULL,
+    PRIMARY KEY (hash, session_key)
+) WITHOUT ROWID;
+
+-- rollup_state is the high-water mark: the highest requests.id already
+-- folded into content_hash_stats. One row (name='content_hash'). Request ids
+-- are a safe watermark because a request row and its content_refs commit in
+-- the same transaction (see writer.go's writeEvent) — once a request is
+-- visible to a reader, its content is already there to aggregate.
+CREATE TABLE IF NOT EXISTS rollup_state (
+    name          TEXT PRIMARY KEY,
+    last_owner_id INTEGER NOT NULL DEFAULT 0
+);
+
+-- ---------------------------------------------------------------------------
 -- Discovery state
 -- ---------------------------------------------------------------------------
 -- Operator-set seen/ignored marks on a repeated content block, keyed by the

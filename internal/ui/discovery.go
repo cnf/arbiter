@@ -78,6 +78,11 @@ type discoveryView struct {
 	// DiscoveryHandler's filtering pass below, applied after state marks are
 	// attached so it can key off the same .State the dim-in-place styling
 	// uses.
+	//
+	// Defaults to true (see DiscoveryHandler): an ignored block is, by
+	// definition, boilerplate the operator already dismissed, so it should
+	// not keep occupying a row on every future visit. The checkbox is then
+	// an opt-IN to seeing them again, not an opt-out of hiding them.
 	HideIgnored bool
 
 	// Total/Matching report how many distinct blocks exist in the window
@@ -129,7 +134,12 @@ func (h *Handler) DiscoveryHandler(w http.ResponseWriter, r *http.Request) {
 		MinSessions: discoveryDefaultMinSessions,
 		Limit:       discoveryDefaultLimit,
 		Bounds:      store.RepeatedBoundsNote(),
-		HideIgnored: q.Has("hide_ignored"),
+		// Defaults to true — see discoveryView.HideIgnored's doc comment.
+		// The checkbox is inverted from the field name: it reads
+		// "show ignored" and is checked to opt IN to seeing them, so an
+		// unchecked box (which, like any HTML checkbox, submits nothing)
+		// correctly falls through to the hide-by-default here.
+		HideIgnored: !q.Has("show_ignored"),
 	}
 	view.Title = "discovery"
 
@@ -176,7 +186,15 @@ func (h *Handler) DiscoveryHandler(w http.ResponseWriter, r *http.Request) {
 		cacheKey := discoveryCacheKey(view.Since, view.MinRequests, view.MinSessions, view.Limit)
 		result, hit := h.discoveryCache.get(cacheKey)
 		if !hit {
-			blocks, err := h.reader.RepeatedContent(r.Context(), w0, view.MinRequests, view.MinSessions, view.Limit)
+			// Reads from content_hash_stats, an incrementally-maintained
+			// rollup (see store.Reader.RollupContentHashStats), not a
+			// from-scratch aggregation of content_refs — this used to be
+			// two ~6s full scans on every cache-cold load. The rollup is
+			// deliberately all-time rather than windowed (see
+			// schema.sql's comment on content_hash_stats), so `since`
+			// stops shaping these two numbers; it still bounds Sessionless
+			// below, which is cheap enough to query live.
+			blocks, err := h.reader.ContentHashStats(r.Context(), view.MinRequests, view.MinSessions, view.Limit)
 			if err != nil {
 				h.logger.LogError(r.Context(), "error", err,
 					map[string]interface{}{"phase": "admin_ui_discovery"})
@@ -188,7 +206,7 @@ func (h *Handler) DiscoveryHandler(w http.ResponseWriter, r *http.Request) {
 			// the page, so a failure here degrades the explanation rather than the
 			// result. Each is logged, and its absence is visible as a missing line
 			// rather than as a wrong number.
-			total, matching, err := h.reader.ContentHashCounts(r.Context(), w0, view.MinRequests, view.MinSessions)
+			total, matching, err := h.reader.ContentHashStatsCounts(r.Context(), view.MinRequests, view.MinSessions)
 			if err != nil {
 				h.logger.LogError(r.Context(), "warn", err,
 					map[string]interface{}{"phase": "admin_ui_discovery_counts"})

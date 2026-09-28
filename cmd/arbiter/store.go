@@ -74,8 +74,9 @@ func openStore(cfg *config.Config, logger logging.Logger) (storeHandle, error) {
 const sweepInterval = time.Hour
 
 // startSweeper runs the background reclamation sweep in the background until ctx
-// is done: expired content (only when a content TTL is configured) and expired
-// affinity pins, which have their own deadlines and so are swept regardless.
+// is done: expired content (only when a content TTL is configured), the
+// content-hash rollup Discovery reads from, and expired affinity pins, which
+// have their own deadlines and so are swept regardless.
 // It runs once immediately so a long-idle store is reclaimed at startup rather
 // than after the first interval.
 //
@@ -87,10 +88,12 @@ const sweepInterval = time.Hour
 // carries an absolute deadline, so a row that outlives it is dead weight whether
 // or not content retention is configured. Correctness does not depend on this
 // running (LoadPin rejects an expired pin on its own), but without it the table
-// grows forever.
+// grows forever. The content-hash rollup is unconditional for the same reason
+// as pins: it does not gate on contentTTL, because it isn't about retention.
 //
-// One goroutine, not two: both are indexed deletes on the same database, and a
-// second ticker would add contention for no benefit.
+// One goroutine, not several: all of these are cheap, indexed operations on
+// the same database, and a separate ticker per concern would only add
+// contention for no benefit.
 func startSweeper(ctx context.Context, path, ttlSpec string, logger logging.Logger) {
 	if path == "" {
 		return
@@ -136,6 +139,20 @@ func startSweeper(ctx context.Context, path, ttlSpec string, logger logging.Logg
 				} else if refs > 0 || bodies > 0 {
 					slog.Info("expired captured content", "refs", refs, "bodies", bodies)
 				}
+			}
+
+			// Folds newly-arrived content_refs into content_hash_stats (see
+			// schema.sql), so the Discovery page reads a running total
+			// instead of aggregating content_refs from scratch on every
+			// load. Runs unconditionally, like the pin sweep below: the
+			// rollup is a read-side speed-up, not part of content
+			// retention, so it doesn't depend on contentTTL being set.
+			if folded, _, err := reader.RollupContentHashStats(ctx); err != nil {
+				if ctx.Err() == nil {
+					logger.LogError(ctx, "error", err, map[string]interface{}{"phase": "content_hash_rollup"})
+				}
+			} else if folded > 0 {
+				slog.Info("rolled up content hash stats", "requests_folded", folded)
 			}
 
 			pins, err := reader.SweepPins(ctx)

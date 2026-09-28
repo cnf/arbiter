@@ -165,7 +165,7 @@ func buildHeuristicClassifier(cc config.ClassifierConfig, axis string) (classifi
 			return nil, fmt.Errorf("match: %w", err)
 		}
 		value, _ := cc.Config["value"].(string)
-		kind, _ := cc.Config["kind"].(string)
+		kind, _ := cc.Config["request_kind"].(string)
 		where, err := stringList(cc.Config, "where")
 		if err != nil {
 			return nil, err
@@ -359,12 +359,13 @@ func buildAliasResolver(aliasesCfg map[string]config.AliasConfig, providers map[
 	aliases := make(map[string]router.Alias, len(aliasesCfg))
 	for name, a := range aliasesCfg {
 		alias := router.Alias{
-			Name:     name,
-			Force:    a.Force,
-			Type:     a.Type,
-			Provider: a.Provider,
-			Model:    a.Model,
-			Select:   a.Select,
+			Name:        name,
+			Force:       a.Force,
+			RequestKind: a.RequestKind,
+			Type:        a.Type,
+			Provider:    a.Provider,
+			Model:       a.Model,
+			Select:      a.Select,
 		}
 		for _, m := range a.Members {
 			alias.Members = append(alias.Members, router.AliasMember{Provider: m.Provider, Model: m.Model})

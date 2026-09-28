@@ -32,6 +32,11 @@ precedence order:
    policy router errors when nothing matches, so chain a `simple` router after
    it (or write a catch-all rule) to degrade instead of failing.
 
+Any alias — pinned, group or force — may also declare `request_kind:` (see
+[Aliases](#aliases) below), which stamps what a request naming it IS onto its
+stored row at every path the alias decides the route, including the
+session-affinity pin that serves turn 2+ of the same conversation.
+
 A rule's `when` clause can also match `request_kind` — a request's **kind**
 (`"title"`, later `"subagent"`) rather than what it's about. It is not a
 classification axis (no confidence, no force-alias target — see
@@ -65,6 +70,47 @@ Aliases are client-facing and appear in `/models` alongside provider models
 (listed with provider `"alias"`). Any rule `target` may name an alias, and a
 group member may itself be another alias; resolution is depth-limited and a
 cycle is rejected at config load.
+
+### Declaring what an alias's traffic IS (`request_kind`)
+
+An alias can say what a request naming it IS — and every request routed
+through it is then labelled on its row. The canonical shape is a **force**
+alias: the alias declares identity, and the *rules* decide where the traffic
+goes. The alias does not route.
+
+```yaml
+aliases:
+  subagent:
+    force: {}                    # force nothing; axes classify as usual
+    request_kind: "subagent"     # what a request naming this alias IS
+```
+
+A request naming `subagent` falls through to classify + rules exactly like a
+force alias always does — its axes classify normally, and a rule like
+`when: { request_kind: "subagent" }` sends it wherever subagent traffic
+belongs. Keeping the destination in the rules is the point: identity is the
+alias's job, routing is the router's.
+
+`request_kind` is declared on a force alias, and it is stamped at every path
+that force-alias traffic travels:
+
+- the force-alias path (turn 1), where the alias-declared kind **overrides**
+  whatever a kind-only matcher classified: the operator pointed this alias at
+  this traffic, and the two sources must not disagree on the row;
+- the session-affinity pin, which serves **turn 2 onward** of the same
+  conversation — the pin is recorded under the client's model string, which
+  for alias traffic IS the alias name, so the stamp survives every turn even
+  though classification never runs on the pin path.
+
+The three alias shapes are **exclusive**: a pinned/group alias is a
+*destination* — it says where the request goes — and a `request_kind` is
+*metadata*, so declaring both is rejected at config load (see
+`internal/config/aliases.go`). If an alias must both be a destination and
+label its traffic, that is two aliases: a pinned one for the routing, a force
+one declaring the kind for the label. The exclusivity is why #44 needed the
+force-alias mechanism at all: a kind-only matcher cannot label traffic that
+short-circuits before classification runs, so identity has to ride the alias
+that declares it.
 
 ## Group selection strategies
 
@@ -642,7 +688,7 @@ classifiers:
         # Claude Code CLI — buried in the system prompt, so not anchored at the start
         - mode: "regex"
           pattern: "(?i)Generate a concise, sentence-case title"
-      kind: "title"                     # the request kind a hit records
+      request_kind: "title"             # the request kind a hit records
       decisive: true                    # optional — see below
 ```
 

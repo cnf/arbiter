@@ -12,6 +12,18 @@ import (
 // members reference a configured provider and one of its declared models
 // (unless the member instead names another alias, resolved recursively),
 // force keys are known axis names, and the alias graph has no cycles.
+// request_kind is validated as non-empty only: kinds are an open vocabulary
+// (see types.Signals.RequestKind — freeform string by design), and "title"
+// vs "subagent" is deployment policy, not schema.
+//
+// The three shapes are EXCLUSIVE — an alias is either a destination (pinned/
+// group) or a metadata declaration (force + optional request_kind), never
+// both. A request_kind on a destination alias is rejected: the alias's job
+// is to say WHERE the request goes, and stamping what the request IS is the
+// force alias's job. (Technically stamping on the pinned/group path would
+// work — the plumbing is shared — but it mixes the two concerns in one
+// block, and the operator's config should not do in two lines what the shape
+// split exists to keep apart.)
 func (c *Config) validateAliases() error {
 	if len(c.Aliases) == 0 {
 		return nil
@@ -36,6 +48,9 @@ func (c *Config) validateAliases() error {
 		if provider, ok := declaredModels[name]; ok {
 			return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: name collides with a model declared by provider %q (an explicit model name takes precedence, so this alias would be unreachable)", name, provider), nil)
 		}
+		if strings.TrimSpace(a.RequestKind) == "" && a.RequestKind != "" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: request_kind must not be empty or whitespace — omit the field if the alias says nothing about the request's kind", name), nil)
+		}
 
 		switch {
 		case a.Force != nil:
@@ -52,11 +67,17 @@ func (c *Config) validateAliases() error {
 			}
 
 		case a.Type == "pinned":
+			if a.RequestKind != "" {
+				return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: request_kind is a metadata declaration and belongs on a force alias (see docs/routing.md §\"Declaring what an alias's traffic IS\"); a pinned alias only says where the request goes, so it must not also say what the request is", name), nil)
+			}
 			if err := c.validateAliasMember(name, AliasMemberConfig{Provider: a.Provider, Model: a.Model}); err != nil {
 				return err
 			}
 
 		case a.Type == "group":
+			if a.RequestKind != "" {
+				return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: request_kind is a metadata declaration and belongs on a force alias (see docs/routing.md §\"Declaring what an alias's traffic IS\"); a group alias only says where the request goes, so it must not also say what the request is", name), nil)
+			}
 			if len(a.Members) == 0 {
 				return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: group has no members", name), nil)
 			}

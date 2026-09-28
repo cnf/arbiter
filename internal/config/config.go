@@ -208,6 +208,17 @@ type AliasConfig struct {
 	// { domain: ["code_generation"] }. Mutually exclusive with Type.
 	Force map[string][]string `yaml:"force,omitempty"`
 
+	// RequestKind is what a request naming this alias IS — e.g. "subagent"
+	// for an alias dedicated to subagent traffic. It is stamped onto every
+	// request that routes through the alias, at every path the alias decides
+	// the route (the pinned/group short-circuit, the affinity pin serving a
+	// later turn, and the force-alias override), so the row says what the
+	// request is even where classification never runs. Not an axis: like a
+	// kind-only matcher hit it carries no confidence and no `force:` key can
+	// express it — see types.Signals.RequestKind. Empty means the alias
+	// says nothing about the request's kind.
+	RequestKind string `yaml:"request_kind,omitempty"`
+
 	Type     string `yaml:"type,omitempty"` // "pinned" | "group"
 	Provider string `yaml:"provider,omitempty"`
 	Model    string `yaml:"model,omitempty"`

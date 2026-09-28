@@ -35,6 +35,15 @@ func (w *capturingWriter) last() (store.Event, bool) {
 	return w.events[len(w.events)-1], true
 }
 
+// snapshot returns a copy of every recorded event, in order.
+func (w *capturingWriter) snapshot() []store.Event {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]store.Event, len(w.events))
+	copy(out, w.events)
+	return out
+}
+
 // streamingNormalizer is fakeNormalizer with Stream=true, so Execute takes the
 // streaming path. The shared fake leaves Stream false.
 type streamingNormalizer struct{ model string }

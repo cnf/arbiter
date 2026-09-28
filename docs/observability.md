@@ -180,9 +180,10 @@ useful to see *in the context of the turn it informed*.
 **what the request is** — `"title"` for a client's title-generation call, later
 `"subagent"`. The two are independent: a title request is client traffic
 (`kind="client"`) that is *identifiable* as a title request. It is filled by a
-classifier's `match:` block via `kind:`, not by an axis, because "what is this
-request about" has no meaningful answer for a title generator — the conversation
-being titled is its payload, not its subject. That is also why it does not go
+classifier's `match:` block via `request_kind:`, not by an axis, because "what is
+this request about" has no meaningful answer for a title generator — the
+conversation being titled is its payload, not its subject. That is also why it
+does not go
 in `domain`: an axis is a *routing* input, contested by confidence and
 overridable by a force-alias, and a request's kind is a fact no rule should
 match on.
@@ -195,7 +196,10 @@ row — same `model` value, empty axes, and the generic `explicit model "…" ->
 provider "…"` rationale — so a Hermes title-generation request could be sitting
 in the list and still unreadable. Requests that name a concrete model are now
 classified **when they are not yet part of a session** (see below), which is
-what fills this column.
+what fills this column. An alias can fill it too, by declaring `request_kind:`
+itself (see "Declaring what an alias's traffic IS" in Routing) — that is how
+subagent traffic is labelled, including turns served by the affinity pin that
+classification never sees.
 
 A concrete model still routes exactly where the client asked: classification on
 that path is for the record, never for the route, and `ExplicitModel` semantics
@@ -205,9 +209,9 @@ title-gen request is the exception that keeps classifying — its session key is
 derived from the conversation text, which changes on every call, so it is never
 part of a session and every one of its requests is a first request. That is
 correct rather than unfortunate: it is the only way to know it is a title
-request. Declared first and `decisive: true`, a `kind:` signature also skips
-every model-backed classifier behind it, so an identified request pays for no
-classification call at all.
+request. Declared first and `decisive: true`, a `request_kind:` signature also
+skips every model-backed classifier behind it, so an identified request pays for
+no classification call at all.
 
 **A title request is nested into the lanes view under the session it named.**
 The two-tier resolution (`ParentSessionForTitle`) is described in "Admin web UI"

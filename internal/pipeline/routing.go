@@ -29,8 +29,12 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 						Config:    cfg,
 						Rationale: "session affinity pin",
 					}
-					p.logger.LogRouting(ctx, route, types.Signals{}, 0)
-					return route, types.Signals{}, nil
+					var sig types.Signals
+					if kind, stamped := p.stampAliasKind(req.Model); stamped {
+						sig.RequestKind = kind
+					}
+					p.logger.LogRouting(ctx, route, sig, 0)
+					return route, sig, nil
 				}
 			}
 		}
@@ -40,8 +44,12 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 	// way a rule target would. Force aliases resolve to nothing by design —
 	// they only shape axes — so they fall through to classify+rules below.
 	if route, ok := p.aliasRoute(req.Model); ok {
-		p.logger.LogRouting(ctx, route, types.Signals{}, 0)
-		return route, types.Signals{}, nil
+		var sig types.Signals
+		if kind, stamped := p.stampAliasKind(req.Model); stamped {
+			sig.RequestKind = kind
+		}
+		p.logger.LogRouting(ctx, route, sig, 0)
+		return route, sig, nil
 	}
 
 	// REQUIREMENTS.md §1: the model field is either a real model name or a
@@ -147,10 +155,14 @@ func (p *Pipeline) literalModelRoute(model string) (types.Route, bool) {
 	if !ok {
 		return types.Route{}, false
 	}
+	cfg, ok := p.providers[name]
+	if !ok {
+		return types.Route{}, false
+	}
 	return types.Route{
 		Provider:  name,
 		Model:     model,
-		Config:    p.providers[name],
+		Config:    cfg,
 		Rationale: fmt.Sprintf("explicit model %q -> provider %q", model, name),
 		// The one place this is set: the client named a concrete model, so a
 		// rate-limited provider must surface rather than be substituted.
@@ -220,7 +232,43 @@ func (p *Pipeline) applyForceAlias(req *types.NormalizedRequest, sig types.Signa
 			sig.RequiredCapabilities = values
 		}
 	}
+	// An alias-declared request kind OVERRIDES what classification produced:
+	// the operator named this alias for this traffic, so the alias's word
+	// about what the request IS is the final one (unlike the axes, which the
+	// alias merely nudges). Override rather than fill-if-empty keeps the two
+	// sources from disagreeing on the row.
+	if kind, stamped := p.stampAliasKind(req.Model); stamped {
+		sig.RequestKind = kind
+	}
 	return sig
+}
+
+// stampAliasKind returns the request kind req.Model's alias declares, for the
+// record. ok is false when the model is not an alias or the alias declares no
+// kind — callers then keep whatever signals they already have (usually none:
+// the paths that call this are exactly the ones where classification never
+// ran).
+//
+// This is the recorded kind, never a routing decision: the route is already
+// decided at the two no-classification call sites (the pinned/group
+// short-circuit and the affinity pin), and on the force path the router
+// matches on whatever the merged signals now carry.
+//
+// The affinity pin is the subtle call site: turn 2+ of an alias-routed
+// conversation resolves through the pin, which records the client's model
+// string — for alias traffic that IS the alias name — so looking up the alias
+// by req.Model here keeps the kind on every row of the session, not just the
+// first request. Missing this site is how a stamp "works" once and silently
+// vanishes from every row after.
+func (p *Pipeline) stampAliasKind(model string) (string, bool) {
+	if p.aliasResolver == nil || model == "" {
+		return "", false
+	}
+	kind, ok := p.aliasResolver.RequestKind(model)
+	if kind == "" {
+		return "", false
+	}
+	return kind, ok
 }
 
 // cacheTTLFor returns the session affinity idle TTL to use for a pin served

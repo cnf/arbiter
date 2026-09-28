@@ -70,6 +70,65 @@ aliases:
 	}
 }
 
+// request_kind is a metadata declaration and belongs on a FORCE alias — an
+// alias that declares what a request naming it IS ("subagent" for an alias
+// dedicated to subagent traffic) without pinning a destination. It is
+// rejected on the destination shapes (pinned/group): the alias's job there
+// is to say where the request goes, and stamping what it is mixes the two
+// concerns in one block.
+func TestAliasRequestKindLoads(t *testing.T) {
+	cfg := loadConfigOK(t, baseConfig+`
+aliases:
+  subagent-worker:
+    force: {}
+    request_kind: "subagent"
+`)
+	if got := cfg.Aliases["subagent-worker"].RequestKind; got != "subagent" {
+		t.Fatalf("subagent-worker request_kind = %q, want subagent", got)
+	}
+}
+
+func TestAliasRequestKindRejectedOnPinnedAndGroup(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		alias string
+	}{
+		{"pinned", "type: \"pinned\"\n    provider: \"claude\"\n    model: \"claude-3-haiku\""},
+		{"group", "type: \"group\"\n    members:\n      - { provider: \"claude\", model: \"claude-3-haiku\" }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := loadConfig(t, baseConfig+`
+aliases:
+  worker:
+    `+tc.alias+`
+    request_kind: "subagent"
+`)
+			if err == nil {
+				t.Fatalf("Load: want request_kind-on-%s rejected, got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), "belongs on a force alias") {
+				t.Fatalf("Load: want \"belongs on a force alias\" error, got %v", err)
+			}
+		})
+	}
+}
+
+// A declared-but-empty request_kind is a mistake the operator believes is
+// doing something, so it is an error rather than an unreadable no-op. (A
+// yaml "" alongside omitempty would decode identically to absent, but an
+// explicit empty value in the file is still worth catching at load.)
+func TestAliasRequestKindRejectsWhitespace(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+aliases:
+  worker:
+    force: {}
+    request_kind: "  "
+`)
+	if err == nil || !strings.Contains(err.Error(), "request_kind must not be empty") {
+		t.Fatalf("want empty-request_kind error, got %v", err)
+	}
+}
+
 func TestAliasRejectsNameCollidingWithProvider(t *testing.T) {
 	err := loadConfig(t, baseConfig+`
 aliases:

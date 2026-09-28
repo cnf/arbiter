@@ -136,6 +136,23 @@ type SessionAffinityConfig struct {
 	// timeout, refreshed on every hit), parsed as a Go duration. Defaults to
 	// 5m if unset.
 	DefaultTTL string `yaml:"default_ttl,omitempty"`
+	// NoPin lists request_kind values that must never be pinned — the
+	// request still classifies and routes normally, it just never writes or
+	// reads an affinity_pins row. Since #70, pins are already keyed on
+	// (session_key, hash(system prompt)), so a title call and the main
+	// thread can no longer collide; this is a cost knob, not a correctness
+	// fix. A title call's own key is never reused (its conversation is
+	// different every time), so pinning it is a write that is never read —
+	// harmless, but pure churn. NoPin lets an operator who knows their own
+	// traffic shape skip that write for kinds they know will never benefit.
+	//
+	// Empty (the shipped default) pins every classified kind, same as
+	// before this field existed — Arbiter has no way to know which kinds a
+	// given deployment even produces, so it ships no opinion. "title" is a
+	// reasonable value to add for a deployment that sees title calls; it is
+	// documented as an example, not defaulted, because that is the
+	// operator's call about their own traffic, not Arbiter's to assume.
+	NoPin []string `yaml:"no_pin,omitempty"`
 }
 
 // AdminConfig governs Arbiter's /admin/* surface. Arbiter deliberately
@@ -294,6 +311,17 @@ func (c *Config) Validate() error {
 			return arbitererrors.NewConfigError(fmt.Sprintf("session_affinity: invalid default_ttl %q", c.SessionAffinity.DefaultTTL), err)
 		}
 	}
+	if len(c.SessionAffinity.NoPin) > 0 {
+		known := knownRequestKinds(c)
+		for _, kind := range c.SessionAffinity.NoPin {
+			if kind == "" {
+				return arbitererrors.NewConfigError("session_affinity: no_pin entries must not be empty — an empty entry would match ordinary client traffic, which has no request_kind at all", nil)
+			}
+			if !containsString(known, kind) {
+				return arbitererrors.NewConfigError(fmt.Sprintf("session_affinity: no_pin: unknown request_kind %q (declared kinds: %v) — a typo here silently pins as if the entry were absent", kind, known), nil)
+			}
+		}
+	}
 
 	if c.Storage.ContentTTL != "" {
 		if _, err := time.ParseDuration(c.Storage.ContentTTL); err != nil {
@@ -441,6 +469,32 @@ func classifierNames(cs []ClassifierConfig) []string {
 		names[i] = c.Name
 	}
 	return names
+}
+
+// knownRequestKinds collects every request_kind value that can actually
+// appear on a request's Signals: the ones aliases declare (a force alias's
+// own metadata, e.g. "subagent") and the ones classifiers declare (a
+// heuristic's match.request_kind, e.g. "title"). This is the vocabulary
+// session_affinity.no_pin is validated against — a value that can never
+// appear on a real request is almost always a typo for one that can.
+func knownRequestKinds(c *Config) []string {
+	seen := map[string]bool{}
+	var kinds []string
+	add := func(k string) {
+		if k != "" && !seen[k] {
+			seen[k] = true
+			kinds = append(kinds, k)
+		}
+	}
+	for _, a := range c.Aliases {
+		add(a.RequestKind)
+	}
+	for _, cc := range c.Classifiers {
+		if kind, ok := cc.Config["request_kind"].(string); ok {
+			add(kind)
+		}
+	}
+	return kinds
 }
 
 func routerNames(rs []RouterConfig) []string {

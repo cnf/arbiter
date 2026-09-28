@@ -126,6 +126,10 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 	// Body capture is wiring-time policy, so it rides the same path as the
 	// epoch rather than joining the constructor's positional arguments.
 	p.SetCaptureContent(cfg.Storage.CaptureContent)
+	// Same reasoning: no_pin is config policy decided at wiring time, not a
+	// per-request computation, so it is set once here rather than threaded
+	// through the constructor.
+	p.SetNoPin(cfg.SessionAffinity.NoPin)
 	return p, nil
 }
 

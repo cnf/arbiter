@@ -200,7 +200,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 		})
 		return nil, err
 	}
-	if hasKey {
+	if hasKey && p.pins(sig.RequestKind) {
 		p.affinity.pin(ctx, sessionKey, promptHash, req.Model, served.Provider, served.Model, p.cacheTTLFor(served.Provider))
 	}
 

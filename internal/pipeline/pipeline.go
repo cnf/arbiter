@@ -129,6 +129,10 @@ type Pipeline struct {
 	// capture_content). Off unless the operator asks for it: this is the only
 	// path that writes conversation text to disk.
 	captureContent bool
+
+	// noPin is session_affinity.no_pin as a set: request_kind values that
+	// must never be pinned. See SetNoPin.
+	noPin map[string]bool
 }
 
 // defaultAffinityTTL applies when config sets no session_affinity.default_ttl.
@@ -230,6 +234,34 @@ func (p *Pipeline) SetConfigEpoch(epoch string) {
 // Called once by the wiring code before the pipeline is published.
 func (p *Pipeline) SetCaptureContent(on bool) {
 	p.captureContent = on
+}
+
+// SetNoPin sets session_affinity.no_pin: request_kind values that must never
+// be pinned. Config decides, the classifier only ever labels (see #69) — this
+// is where that policy actually lives. A request whose sig.RequestKind is in
+// this set still classifies and routes normally; it simply never writes or
+// reads an affinity_pins row. Nil/empty (the default) pins every kind,
+// unchanged from before this existed. Like SetConfigEpoch/SetCaptureContent,
+// a setter rather than a constructor parameter, called once by the wiring
+// code before the pipeline is published.
+func (p *Pipeline) SetNoPin(kinds []string) {
+	if len(kinds) == 0 {
+		p.noPin = nil
+		return
+	}
+	set := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		set[k] = true
+	}
+	p.noPin = set
+}
+
+// pins reports whether a request with this RequestKind is eligible for
+// affinity pinning under session_affinity.no_pin. Ordinary client traffic
+// (an empty RequestKind) is always eligible — no_pin excludes a *kind*, and
+// "no kind at all" is not a kind an operator could have named.
+func (p *Pipeline) pins(requestKind string) bool {
+	return requestKind == "" || !p.noPin[requestKind]
 }
 
 // headersContextKey is the context key WithHeaders/headersFromContext share.

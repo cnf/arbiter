@@ -150,7 +150,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		})
 		return nil, err
 	}
-	if hasKey {
+	if hasKey && p.pins(sig.RequestKind) {
 		p.affinity.pin(ctx, sessionKey, promptHash, req.Model, served.Provider, served.Model, p.cacheTTLFor(served.Provider))
 	}
 	// Captured before any post-guardrail can touch resp: this is what the

@@ -507,6 +507,14 @@ guardrails:
 # session_affinity:
 #   header: "X-Session-Id"
 #   default_ttl: "25h"
+#   # no_pin excludes request_kind values (as declared by an alias's
+#   # request_kind, or by the classifier) from ever being pinned. The prompt
+#   # hash already keeps every kind's pin separate (see above), so this is
+#   # pure hygiene, not a correctness fix — nothing collides even with no_pin
+#   # left empty. Use it for traffic that never benefits from a pin, e.g. a
+#   # one-shot title call that always misses cache anyway. Ships empty:
+#   # Arbiter cannot know what kinds a given client's traffic uses.
+#   no_pin: []
 
 logging:
   level: "info"

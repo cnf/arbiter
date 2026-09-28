@@ -12,15 +12,15 @@ import (
 	"github.com/cnf/arbiter/pkg/types"
 )
 
-func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedRequest, hasKey bool, arrivalTs time.Time) (types.Route, types.Signals, error) {
+func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedRequest, hasKey bool, promptHash string, arrivalTs time.Time) (types.Route, types.Signals, error) {
 	if route, ok := p.literalModelRoute(req.Model); ok {
-		sig := p.classifyLiteral(ctx, req, hasKey, arrivalTs)
+		sig := p.classifyLiteral(ctx, req, hasKey, promptHash, arrivalTs)
 		p.logger.LogRouting(ctx, route, sig, 0)
 		return route, sig, nil
 	}
 
 	if hasKey {
-		if provider, model, ok := p.affinity.get(ctx, req.SessionKey, req.Model); ok {
+		if provider, model, ok := p.affinity.get(ctx, req.SessionKey, promptHash, req.Model); ok {
 			if _, cooling := p.onCooldown(provider); !cooling {
 				if cfg, ok := p.providers[provider]; ok {
 					route := types.Route{
@@ -121,14 +121,15 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 // fail the request; here the route is already known and only the row's
 // annotations are lost, and failing a request the client would otherwise have
 // been served is the worse outcome.
-func (p *Pipeline) classifyLiteral(ctx context.Context, req *types.NormalizedRequest, hasKey bool, arrivalTs time.Time) types.Signals {
+func (p *Pipeline) classifyLiteral(ctx context.Context, req *types.NormalizedRequest, hasKey bool, promptHash string, arrivalTs time.Time) types.Signals {
 	if hasKey {
-		// A pin is the proof that this session already exists, whatever model
-		// it was recorded under. Deliberately not affinity.get: that returns a
-		// hit only when the client is still requesting the model the pin was
-		// recorded under, so a client that switched models would look like a
-		// brand-new session and be re-classified on every turn.
-		if _, ok := p.affinity.pinned(ctx, req.SessionKey); ok {
+		// A pin is the proof that this session/family already exists,
+		// whatever model it was recorded under. Deliberately not
+		// affinity.get: that returns a hit only when the client is still
+		// requesting the model the pin was recorded under, so a client that
+		// switched models would look like a brand-new session and be
+		// re-classified on every turn.
+		if _, ok := p.affinity.pinned(ctx, req.SessionKey, promptHash); ok {
 			return types.Signals{}
 		}
 	}

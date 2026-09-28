@@ -496,11 +496,16 @@ WHERE arrival_ts >= ? AND (session_key IS NULL OR session_key = '') AND kind = '
 // (design/REDESIGN.md §8 item 5), per an explicit user callout that the
 // sessions count specifically should stop being a placeholder.
 //
+// COUNT(DISTINCT session_key), not COUNT(*): affinity_pins can hold several
+// rows per session_key since prompt_hash separates prompt families (the main
+// thread, a title call, a subagent run) sharing one session — a plain
+// COUNT(*) would count one session multiple times.
+//
 // A store with no affinity_pins rows (session affinity never pinned anything,
 // or nothing is currently live) reports 0, not an error — an empty table is
 // a legitimate steady state, not a broken query.
 func (r *Reader) ActiveSessionCount(ctx context.Context) (int64, error) {
-	const q = `SELECT COUNT(*) FROM affinity_pins WHERE expires_at >= ?`
+	const q = `SELECT COUNT(DISTINCT session_key) FROM affinity_pins WHERE expires_at >= ?`
 
 	var n int64
 	if err := r.db.QueryRowContext(ctx, q, time.Now().UTC()).Scan(&n); err != nil {
@@ -509,12 +514,13 @@ func (r *Reader) ActiveSessionCount(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
-// SessionPinExpiry returns every session's pin expiry, for pins that expired
-// no earlier than since — i.e. still live, or expired but recently enough to
-// be within a caller-chosen grace window. It is the one query that answers
-// both "is this session still active" (expires_at in the result is >= now)
-// and "is this session still within its post-expiry grace window" (present
-// in the result at all), without a second round trip for each question.
+// SessionPinExpiry returns every session's LATEST pin expiry, for sessions
+// with at least one pin that expired no earlier than since — i.e. still live,
+// or expired but recently enough to be within a caller-chosen grace window.
+// It is the one query that answers both "is this session still active"
+// (expires_at in the result is >= now) and "is this session still within its
+// post-expiry grace window" (present in the result at all), without a second
+// round trip for each question.
 //
 // This is the Sessions lane list's data source for both the "hot" dot and
 // the "live only" filter: a lane whose key is absent from the result (its
@@ -523,11 +529,20 @@ func (r *Reader) ActiveSessionCount(ctx context.Context) (int64, error) {
 // lingers — see sessions.go's liveGraceWindow for why a session does not
 // vanish from the list the instant its pin expires.
 //
+// MAX(expires_at) grouped by session_key, not a per-row map: a session can
+// hold several pins (one per prompt family — main thread, title calls,
+// subagent runs), and the lane must read as live while ANY of them still is,
+// not whichever row happened to be scanned last.
+//
 // A store with no matching affinity_pins rows returns an empty, non-nil map
 // — the caller does not need to special-case "nothing is live" separately
 // from "the query failed".
 func (r *Reader) SessionPinExpiry(ctx context.Context, since time.Time) (map[string]time.Time, error) {
-	const q = `SELECT session_key, expires_at FROM affinity_pins WHERE expires_at >= ?`
+	const q = `
+SELECT session_key, MAX(expires_at)
+FROM affinity_pins
+WHERE expires_at >= ?
+GROUP BY session_key`
 
 	rows, err := r.db.QueryContext(ctx, q, since.UTC())
 	if err != nil {
@@ -537,10 +552,13 @@ func (r *Reader) SessionPinExpiry(ctx context.Context, since time.Time) (map[str
 
 	out := map[string]time.Time{}
 	for rows.Next() {
-		var key string
-		var expiresAt time.Time
-		if err := rows.Scan(&key, &expiresAt); err != nil {
+		var key, rawExpiresAt string
+		if err := rows.Scan(&key, &rawExpiresAt); err != nil {
 			return nil, fmt.Errorf("scan session pin expiry: %w", err)
+		}
+		expiresAt, ok := ParseStoredTime(rawExpiresAt)
+		if !ok {
+			continue
 		}
 		out[key] = expiresAt
 	}

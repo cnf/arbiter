@@ -222,20 +222,34 @@ CREATE TABLE IF NOT EXISTS discovery_state (
 --
 -- requested_model is the client's `model` value at pin time: a pin only applies
 -- while the client keeps asking for that same model, because a client that
--- explicitly switches models means it. At most one pin per session key — a pin
--- recorded under a new requested model replaces the old one rather than
--- accumulating.
+-- explicitly switches models means it.
+--
+-- prompt_hash separates prompt FAMILIES sharing one session_key: a client's
+-- session header (when sent) groups a whole chat session, but a chat session
+-- routinely contains several distinct system prompts (the main thread, a
+-- title-generation call, a subagent run) that must not share a pin slot — a
+-- title call would otherwise silently overwrite the main thread's target and
+-- vice versa. Derived from the client's own pre-guardrail system prompt
+-- (pipeline.PromptHash), so it needs no classification and no config: two
+-- calls with the same prompt are the same family regardless of what either
+-- prompt actually says. Empty string is a valid family (no session header
+-- present, or the caller has no prompt to hash) and behaves like any other
+-- value. At most one pin per (session_key, prompt_hash) — a pin recorded
+-- under a new requested model REPLACES the old one for that family rather
+-- than accumulating.
 --
 -- expires_at is an absolute deadline computed at write time (idle-timeout
 -- semantics: a hit refreshes it, an abandoned conversation expires). The
 -- deadline is stored rather than a TTL because the reader must be able to
 -- reject a stale row without knowing the TTL it was pinned with.
 CREATE TABLE IF NOT EXISTS affinity_pins (
-    session_key     TEXT PRIMARY KEY,
+    session_key     TEXT NOT NULL,
+    prompt_hash     TEXT NOT NULL DEFAULT '',
     requested_model TEXT NOT NULL,
     provider        TEXT NOT NULL,
     model           TEXT NOT NULL,
-    expires_at      TIMESTAMP NOT NULL
+    expires_at      TIMESTAMP NOT NULL,
+    PRIMARY KEY (session_key, prompt_hash)
 );
 -- Feeds the expiry sweep, which deletes pins whose deadline has passed.
 CREATE INDEX IF NOT EXISTS idx_affinity_expires ON affinity_pins(expires_at);

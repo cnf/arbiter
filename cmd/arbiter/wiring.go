@@ -142,6 +142,7 @@ type affinityPinner struct{ s store.Pinner }
 func (a affinityPinner) SavePin(ctx context.Context, p pipeline.AffinityPinRecord) error {
 	return a.s.SavePin(ctx, store.AffinityPin{
 		SessionKey:     p.SessionKey,
+		PromptHash:     p.PromptHash,
 		RequestedModel: p.RequestedModel,
 		Provider:       p.Provider,
 		Model:          p.Model,
@@ -149,13 +150,14 @@ func (a affinityPinner) SavePin(ctx context.Context, p pipeline.AffinityPinRecor
 	})
 }
 
-func (a affinityPinner) LoadPin(ctx context.Context, sessionKey string) (pipeline.AffinityPinRecord, bool, error) {
-	rec, ok, err := a.s.LoadPin(ctx, sessionKey)
+func (a affinityPinner) LoadPin(ctx context.Context, sessionKey, promptHash string) (pipeline.AffinityPinRecord, bool, error) {
+	rec, ok, err := a.s.LoadPin(ctx, sessionKey, promptHash)
 	if err != nil || !ok {
 		return pipeline.AffinityPinRecord{}, ok, err
 	}
 	return pipeline.AffinityPinRecord{
 		SessionKey:     rec.SessionKey,
+		PromptHash:     rec.PromptHash,
 		RequestedModel: rec.RequestedModel,
 		Provider:       rec.Provider,
 		Model:          rec.Model,
@@ -163,8 +165,8 @@ func (a affinityPinner) LoadPin(ctx context.Context, sessionKey string) (pipelin
 	}, true, nil
 }
 
-func (a affinityPinner) DeletePin(ctx context.Context, sessionKey string) error {
-	return a.s.DeletePin(ctx, sessionKey)
+func (a affinityPinner) DeletePin(ctx context.Context, sessionKey, promptHash string) error {
+	return a.s.DeletePin(ctx, sessionKey, promptHash)
 }
 
 func combineRouters(routers []router.Router) router.Router {

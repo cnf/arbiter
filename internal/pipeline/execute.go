@@ -46,6 +46,17 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 	sessionKey, hasKey := SessionKey(sessionHint, req)
 	req.SessionKey = sessionKey
 
+	// promptHash separates prompt FAMILIES sharing one sessionKey (the main
+	// thread, a title-generation call, a subagent run each have a different
+	// system prompt) so the affinity pin cannot let one family silently
+	// overwrite another's target. Computed from req.SystemPrompt here,
+	// BEFORE pre-guardrails run, for the same reason sessionKey is: hashing
+	// afterward would mix in Arbiter's own injected text and rotate every
+	// pin at once whenever that guardrail's prompt is edited. This is the
+	// same value ClientSystemPrompt is about to be set to, just captured
+	// slightly earlier because affinityKey needs it before that assignment.
+	promptHash := PromptHash(req.SystemPrompt)
+
 	// The client's own system prompt, kept before any pre-guardrail can mutate
 	// it. A `system_prompt` guardrail with override:false PREPENDS its text, and
 	// a structural classifier matching req.SystemPrompt with mode prefix would
@@ -96,7 +107,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		content.RequestGuardrailed = store.CaptureRequest(req)
 	}
 
-	route, sig, err := p.resolveRoute(ctx, req, hasKey, start)
+	route, sig, err := p.resolveRoute(ctx, req, hasKey, promptHash, start)
 	if err != nil {
 		// Routing failed (no rule matched and no fallback router, a config
 		// the request can't be routed under, or a deliberate `stop` rule).
@@ -107,7 +118,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 
 	// Streaming vs. non-streaming: different code paths
 	if req.Stream {
-		return p.executeStream(ctx, traceID, route, req, sessionKey, hasKey, sig, start, content)
+		return p.executeStream(ctx, traceID, route, req, sessionKey, promptHash, hasKey, sig, start, content)
 	}
 
 	resp, _, _, served, err := p.tryUpstream(ctx, route, req)
@@ -140,7 +151,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		return nil, err
 	}
 	if hasKey {
-		p.affinity.pin(ctx, sessionKey, req.Model, served.Provider, served.Model, p.cacheTTLFor(served.Provider))
+		p.affinity.pin(ctx, sessionKey, promptHash, req.Model, served.Provider, served.Model, p.cacheTTLFor(served.Provider))
 	}
 	// Captured before any post-guardrail can touch resp: this is what the
 	// upstream itself reported, which is what a meta-router alias (e.g.

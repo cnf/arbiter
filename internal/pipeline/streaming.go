@@ -164,7 +164,7 @@ func (p *Pipeline) computeCost(provider, model string, usage types.Usage) float6
 
 // executeStream handles streaming requests. It returns a channel of normalized
 // stream events that the HTTP handler will translate and send to the client.
-func (p *Pipeline) executeStream(ctx context.Context, traceID string, route types.Route, req *types.NormalizedRequest, sessionKey string, hasKey bool, sig types.Signals, start time.Time, content store.CapturedContent) (interface{}, error) {
+func (p *Pipeline) executeStream(ctx context.Context, traceID string, route types.Route, req *types.NormalizedRequest, sessionKey, promptHash string, hasKey bool, sig types.Signals, start time.Time, content store.CapturedContent) (interface{}, error) {
 	headers := headersFromContext(ctx)
 	// Send the request upstream (with fallback/retry handling) and get the
 	// event channel. A 429/5xx fails SendStream synchronously — the HTTP
@@ -201,7 +201,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 		return nil, err
 	}
 	if hasKey {
-		p.affinity.pin(ctx, sessionKey, req.Model, served.Provider, served.Model, p.cacheTTLFor(served.Provider))
+		p.affinity.pin(ctx, sessionKey, promptHash, req.Model, served.Provider, served.Model, p.cacheTTLFor(served.Provider))
 	}
 
 	// Forward upstream events, stamping each with the trace ID — the

@@ -63,3 +63,25 @@ func SessionKey(hint string, req *types.NormalizedRequest) (key string, ok bool)
 	sum := sha256.Sum256([]byte(req.SystemPrompt + "\x00" + userText))
 	return hex.EncodeToString(sum[:]), true
 }
+
+// PromptHash identifies the prompt FAMILY a request belongs to, separately
+// from SessionKey. It exists because a client's session header (when sent)
+// groups a whole chat session, but one chat session routinely contains
+// several distinct system prompts: the main thread, a title-generation call,
+// a subagent run. Those must not share one pin slot, or whichever one runs
+// last silently overwrites the others' target — see affinityKey.
+//
+// Hashes the client's own pre-guardrail system prompt for the same reason
+// SessionKey's derived form does: hashing after a pre-guardrail (a
+// system_prompt guardrail that prepends a constant, say) would mix Arbiter's
+// own text into the hash and rotate every pin at once whenever that
+// guardrail's prompt is edited. The caller passes systemPrompt as the client
+// sent it — req.ClientSystemPrompt, taken before any pre-guardrail runs.
+//
+// An empty system prompt hashes to a fixed, non-empty digest like any other
+// value — it is a legitimate family (a client that sends no system prompt at
+// all), not a sentinel for "no session".
+func PromptHash(systemPrompt string) string {
+	sum := sha256.Sum256([]byte(systemPrompt))
+	return hex.EncodeToString(sum[:])
+}

@@ -176,6 +176,15 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 			return nil, fmt.Errorf("migrate event store schema: %w", err)
 		}
 	}
+	// affinity_pins predates prompt_hash and its composite primary key (see
+	// schema.sql): a database created before that change has session_key as
+	// its sole PRIMARY KEY, and CREATE TABLE IF NOT EXISTS above is a no-op
+	// against it — an ADD COLUMN alone cannot widen a primary key, so this
+	// needs a real rebuild.
+	if err := migrateAffinityPinsPromptHash(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate event store schema: %w", err)
+	}
 
 	w := &SQLiteWriter{
 		db:     db,
@@ -273,6 +282,73 @@ func addColumnIfMissing(db *sql.DB, table, decl string) error {
 	if _, err := db.ExecContext(context.Background(),
 		"ALTER TABLE "+table+" ADD COLUMN "+decl); err != nil {
 		return fmt.Errorf("add %s.%s: %w", table, name, err)
+	}
+	return nil
+}
+
+// migrateAffinityPinsPromptHash rebuilds affinity_pins onto the composite
+// (session_key, prompt_hash) primary key when an older database still has
+// session_key alone as its PRIMARY KEY. A no-op on a fresh database (the
+// embedded schema.sql already created the new shape) and on one already
+// migrated.
+//
+// This cannot be addColumnIfMissing: SQLite has no ALTER TABLE to widen a
+// PRIMARY KEY, so an existing table must be rebuilt — create the new shape,
+// copy every row across with prompt_hash defaulted to ” (every pin recorded
+// before this migration existed for the whole session, which is exactly what
+// an empty prompt_hash means going forward), drop the old table, rename the
+// new one into place. Losing a live pin here is not a correctness risk: the
+// next request for that session just re-routes once and re-pins, the same
+// outcome as an idle-timeout expiry.
+func migrateAffinityPinsPromptHash(db *sql.DB) error {
+	rows, err := db.QueryContext(context.Background(), "PRAGMA table_info(affinity_pins)")
+	if err != nil {
+		return fmt.Errorf("read affinity_pins columns: %w", err)
+	}
+	hasPromptHash := false
+	for rows.Next() {
+		var (
+			cid       int
+			colName   string
+			colType   string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &colName, &colType, &notNull, &dfltValue, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan affinity_pins columns: %w", err)
+		}
+		if colName == "prompt_hash" {
+			hasPromptHash = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("read affinity_pins columns: %w", err)
+	}
+	_ = rows.Close()
+	if hasPromptHash {
+		return nil
+	}
+
+	const rebuild = `
+CREATE TABLE affinity_pins_new (
+    session_key     TEXT NOT NULL,
+    prompt_hash     TEXT NOT NULL DEFAULT '',
+    requested_model TEXT NOT NULL,
+    provider        TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    expires_at      TIMESTAMP NOT NULL,
+    PRIMARY KEY (session_key, prompt_hash)
+);
+INSERT INTO affinity_pins_new (session_key, prompt_hash, requested_model, provider, model, expires_at)
+    SELECT session_key, '', requested_model, provider, model, expires_at FROM affinity_pins;
+DROP TABLE affinity_pins;
+ALTER TABLE affinity_pins_new RENAME TO affinity_pins;
+CREATE INDEX IF NOT EXISTS idx_affinity_expires ON affinity_pins(expires_at);`
+	if _, err := db.ExecContext(context.Background(), rebuild); err != nil {
+		return fmt.Errorf("rebuild affinity_pins with prompt_hash: %w", err)
 	}
 	return nil
 }

@@ -51,13 +51,16 @@ const defaultCooldown = 5 * time.Second
 // internal struct changes.
 type Pinner interface {
 	SavePin(ctx context.Context, p AffinityPinRecord) error
-	LoadPin(ctx context.Context, sessionKey string) (AffinityPinRecord, bool, error)
-	DeletePin(ctx context.Context, sessionKey string) error
+	LoadPin(ctx context.Context, sessionKey, promptHash string) (AffinityPinRecord, bool, error)
+	DeletePin(ctx context.Context, sessionKey, promptHash string) error
 }
 
-// AffinityPinRecord is one session's pin as persisted.
+// AffinityPinRecord is one prompt family's pin, as persisted. PromptHash
+// separates families sharing one SessionKey (main thread vs. a title call vs.
+// a subagent run) — see affinityKey and schema.sql's affinity_pins comment.
 type AffinityPinRecord struct {
 	SessionKey     string
+	PromptHash     string
 	RequestedModel string
 	Provider       string
 	Model          string

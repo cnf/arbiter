@@ -149,6 +149,89 @@ func TestContentIsReassembledInOrder(t *testing.T) {
 	}
 }
 
+// TestAttachmentFilenameRoundTrips is the regression test for #22: a
+// document attachment's filename must survive capture -> storage -> readback
+// unchanged, since Arbiter rebuilds the outbound body from NormalizedRequest
+// and a lost name makes the attachment unemittable on the OpenAI wire shape
+// (file.filename is mandatory there).
+func TestAttachmentFilenameRoundTrips(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	req := &types.NormalizedRequest{
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{
+				types.AttachmentBlock("application/pdf", "ZmFrZS1wZGYtYnl0ZXM=", "report.pdf", false),
+			}},
+		},
+	}
+	blocks := CaptureRequest(req)
+
+	w.Record(Event{
+		TraceID: "t-attachment", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: blocks},
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	rows, err := r.ListRequests(ctx, RequestFilter{})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListRequests = %v, %v", rows, err)
+	}
+
+	got, _, err := r.ContentForRequest(ctx, rows[0].ID, false)
+	if err != nil {
+		t.Fatalf("ContentForRequest: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d blocks, want 1: %+v", len(got), got)
+	}
+	if got[0].BlockType != "attachment" {
+		t.Fatalf("block_type = %q, want attachment", got[0].BlockType)
+	}
+	if got[0].Name != "report.pdf" {
+		t.Errorf("name = %q, want report.pdf — the attachment cannot be re-emitted without it (#22)", got[0].Name)
+	}
+}
+
+// TestImageAttachmentHasNoFilename proves images don't spuriously get a name:
+// per #22's note, name is empty for images on both wire formats.
+func TestImageAttachmentHasNoFilename(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	req := &types.NormalizedRequest{
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{
+				types.AttachmentImageBlock("image/png", "ZmFrZS1wbmc=", "", false),
+			}},
+		},
+	}
+	w.Record(Event{
+		TraceID: "t-image", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: CaptureRequest(req)},
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	rows, err := r.ListRequests(ctx, RequestFilter{})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListRequests = %v, %v", rows, err)
+	}
+	got, _, err := r.ContentForRequest(ctx, rows[0].ID, false)
+	if err != nil {
+		t.Fatalf("ContentForRequest: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d blocks, want 1: %+v", len(got), got)
+	}
+	if got[0].Name != "" {
+		t.Errorf("name = %q, want empty for an image", got[0].Name)
+	}
+}
+
 // TestRefusedRequestContentIsVisibleInAggregates proves #5's store-layer
 // invariant: a refused request (pipeline.recordFailed's Event — a real row,
 // status_code + error set, content under owner_kind="request" like any other

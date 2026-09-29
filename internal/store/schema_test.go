@@ -291,6 +291,83 @@ func TestMigrationAddsRequestKindToAnExistingTable(t *testing.T) {
 	}
 }
 
+// TestMigrationAddsNameToContentRefs is the upgrade path for #22: a database
+// created before content_refs.name existed has content_refs without that
+// column, and CREATE TABLE IF NOT EXISTS is a no-op against it — so, exactly
+// like request_kind above, the column only ever appears via the explicit
+// addColumnIfMissing pass. Without it, writeContent's insert references a
+// missing column and every captured block is lost.
+func TestMigrationAddsNameToContentRefs(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-content-refs.db")
+
+	// The pre-change content_refs shape, minus name. content/requests are
+	// also needed: writeContent's FK-less design still requires the content
+	// table to exist for the INSERT OR IGNORE, and the schema's own indexes
+	// reference content_refs' pre-existing columns.
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `CREATE TABLE content (
+		hash BLOB PRIMARY KEY,
+		kind TEXT NOT NULL,
+		body BLOB
+	)`); err != nil {
+		t.Fatalf("create legacy content table: %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `CREATE TABLE content_refs (
+		owner_kind TEXT NOT NULL,
+		owner_id INTEGER NOT NULL,
+		direction TEXT NOT NULL,
+		msg_index INTEGER NOT NULL,
+		position INTEGER NOT NULL,
+		role TEXT,
+		block_type TEXT NOT NULL,
+		hash BLOB NOT NULL
+	)`); err != nil {
+		t.Fatalf("create legacy content_refs table: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	// Startup: applies the schema (a no-op on the existing tables) and then
+	// the explicit column pass.
+	w, err := NewSQLiteWriter(path, &recordingLogger{})
+	if err != nil {
+		t.Fatalf("NewSQLiteWriter on a pre-change database: %v", err)
+	}
+
+	req := &types.NormalizedRequest{
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{
+				types.AttachmentBlock("application/pdf", "ZmFrZS1wZGYtYnl0ZXM=", "report.pdf", false),
+			}},
+		},
+	}
+	w.Record(Event{
+		TraceID: "trace-migrated-attachment", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: CaptureRequest(req)},
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	r := &Reader{db: reopenReads(t, path)}
+	rows, err := r.ListRequests(ctx, RequestFilter{})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListRequests after migration = %v, %v", rows, err)
+	}
+	blocks, _, err := r.ContentForRequest(ctx, rows[0].ID, false)
+	if err != nil {
+		t.Fatalf("ContentForRequest after migration: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Name != "report.pdf" {
+		t.Fatalf("after migration blocks = %+v, want one block named report.pdf", blocks)
+	}
+}
+
 // TestEmptyStringsBecomeNull proves an Event's unset nullable fields are
 // written as NULL rather than "", so "absent" and "empty" are not two states
 // in the database.

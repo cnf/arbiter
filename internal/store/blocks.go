@@ -21,6 +21,10 @@ type ContentBlock struct {
 	Body      string `json:"body,omitempty"`
 	Captured  bool   `json:"captured"`
 
+	// Name is the attachment's filename (#22), empty for every other block
+	// type and empty for images. See content_refs.name in schema.sql.
+	Name string `json:"name,omitempty"`
+
 	// GuardrailTouched is true when a pre-guardrail ran on this request and
 	// left a distinct byte-for-byte-different capture at this block's
 	// (MsgIndex, Position) — the block the client sent differs from the block
@@ -161,7 +165,7 @@ func (r *Reader) GuardrailDiff(ctx context.Context, id int64, msgIndex, position
 func (r *Reader) contentFor(ctx context.Context, ownerKind string, ownerID int64) ([]ContentBlock, error) {
 	const q = `
 SELECT cr.hash, cr.direction, cr.msg_index, cr.position, COALESCE(cr.role, ''),
-       cr.block_type, c.body
+       cr.block_type, c.body, COALESCE(cr.name, '')
 FROM content_refs cr
 LEFT JOIN content c ON c.hash = cr.hash
 WHERE cr.owner_kind = ? AND cr.owner_id = ?
@@ -182,7 +186,7 @@ ORDER BY cr.direction ASC, cr.msg_index ASC, cr.position ASC`
 			bodyNull sql.NullString
 		)
 		if err := rows.Scan(&hash, &b.Direction, &b.MsgIndex, &b.Position, &b.Role,
-			&b.BlockType, &bodyNull); err != nil {
+			&b.BlockType, &bodyNull, &b.Name); err != nil {
 			return nil, fmt.Errorf("scan content block: %w", err)
 		}
 		// hash is a BLOB; render it as hex so it is usable as a URL segment and
@@ -238,13 +242,13 @@ WITH bounds AS (
   GROUP BY owner_id, direction
 ),
 filtered AS (
-  SELECT cr.owner_id, cr.hash, cr.direction, cr.msg_index, cr.position, cr.role, cr.block_type
+  SELECT cr.owner_id, cr.hash, cr.direction, cr.msg_index, cr.position, cr.role, cr.block_type, cr.name
   FROM content_refs cr
   LEFT JOIN bounds b ON b.owner_id = cr.owner_id AND b.direction = cr.direction
   WHERE cr.owner_kind = 'request' AND cr.owner_id IN (` + idList + `)
     AND (cr.direction = 'response' OR cr.role = 'system' OR cr.block_type = 'tool_def' OR cr.msg_index = b.max_idx)
 )
-SELECT f.owner_id, f.hash, f.direction, f.msg_index, f.position, COALESCE(f.role, ''), f.block_type, c.body
+SELECT f.owner_id, f.hash, f.direction, f.msg_index, f.position, COALESCE(f.role, ''), f.block_type, c.body, COALESCE(f.name, '')
 FROM filtered f
 LEFT JOIN content c ON c.hash = f.hash
 ORDER BY f.owner_id ASC, f.direction ASC, f.msg_index ASC, f.position ASC`
@@ -268,7 +272,7 @@ ORDER BY f.owner_id ASC, f.direction ASC, f.msg_index ASC, f.position ASC`
 			bodyNull sql.NullString
 		)
 		if err := rows.Scan(&ownerID, &hash, &b.Direction, &b.MsgIndex, &b.Position, &b.Role,
-			&b.BlockType, &bodyNull); err != nil {
+			&b.BlockType, &bodyNull, &b.Name); err != nil {
 			return nil, nil, fmt.Errorf("scan content block: %w", err)
 		}
 		b.Hash = hex.EncodeToString(hash)

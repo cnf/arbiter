@@ -23,21 +23,6 @@ type Logger interface {
 	WithTraceID(ctx context.Context, traceID string) context.Context
 }
 
-// LogEntry is a single structured log entry. It exists mainly as a shared
-// shape for tests/documentation — StdoutLogger builds slog attributes
-// directly rather than constructing one of these on every call.
-type LogEntry struct {
-	Timestamp  time.Time
-	TraceID    string
-	RequestID  string
-	Severity   string
-	Component  string
-	Message    string
-	Details    map[string]interface{}
-	Duration   time.Duration
-	Attributes map[string]interface{}
-}
-
 // traceIDKey is the context key trace IDs are stored under. An unexported
 // type prevents collisions with keys set by other packages.
 type traceIDKey struct{}

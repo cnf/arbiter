@@ -44,7 +44,7 @@ not just the rows. */}}
     </select>
     <div class="spacer"></div>
     <span id="lanesBusy" class="htmx-indicator">…</span>
-    <span class="count">{{.InViewSessions}} session{{if ne .InViewSessions 1}}s{{end}} · {{.InViewRequests}} request{{if ne .InViewRequests 1}}s{{end}}{{if gt .SessionlessCount 0}} · {{.SessionlessCount}} sessionless{{end}}</span>
+    <span id="laneCount" class="count"><span id="laneCountMain">{{.InViewSessions}} session{{if ne .InViewSessions 1}}s{{end}} · {{.InViewRequests}} request{{if ne .InViewRequests 1}}s{{end}}</span>{{if gt .SessionlessCount 0}} · {{.SessionlessCount}} sessionless{{end}}</span>
   </form>
 
   {{if .Rows}}
@@ -70,14 +70,31 @@ not just the rows. */}}
 {{end}}
 
 {{/* lane-row is one session's lane: header line + timeline. $lane is a
-sessions.laneRow. */}}
+sessions.laneRow.
+
+data-turns is load-bearing, not decoration: it is the very number
+sessionsView.InViewRequests sums over the lanes in view (sessions.go's
+`view.InViewRequests += s.Turns`), and laneLive.js re-sums it from here so the
+toolbar caption stays honest when a poll changes which lanes are on screen.
+It has to be the count itself rather than something re-derived from the
+markup: the header's "N requests" text is human-formatted, and a new lane
+carries its whole history, so the caption needs the exact integer.
+
+data-last-seen is load-bearing for the same reason: it is the MAX(ts) the
+server orders this list by (`ORDER BY MAX(ts) DESC` — store.Sessions), and
+laneLive.js compares it to decide where a lane that arrives mid-view belongs,
+instead of re-sorting (and thus re-fitting) every lane on the page. It is
+REQUIRED to be a full RFC3339 UTC timestamp rather than the "12m ago" the
+header shows: that comparison is a plain string compare, which is only
+chronological for a fixed-format timestamp. store/reader.go's formatTime
+normalises it to exactly time.RFC3339 in UTC, so it is. */}}
 {{define "lane-row"}}
-<div class="lane-row" data-session="{{.Key}}">
+<div class="lane-row" data-session="{{.Key}}" data-turns="{{.Turns}}" data-last-seen="{{.LastSeen}}">
   <div class="lane-head">
     <div class="lane-head-left">
       <a class="sid" href="/admin/ui/session?key={{.Key}}" title="{{.Key}} — open transcript">{{.ShortKey}}</a>
       {{if .Active}}<span class="hot" title="active — still within its cache TTL"></span>{{end}}
-      <span class="meta"><b>{{.Turns}}</b> request{{if ne .Turns 1}}s{{end}}{{if gt .SatelliteCount 0}} · <b>{{.SatelliteCount}}</b> satellite{{if ne .SatelliteCount 1}}s{{end}}{{end}} · started {{ago .FirstSeen}}</span>
+      <span class="meta"><b>{{.Turns}}</b> request{{if ne .Turns 1}}s{{end}}{{if gt .SatelliteCount 0}} · <b>{{.SatelliteCount}}</b> satellite{{if ne .SatelliteCount 1}}s{{end}}{{end}} · started <span class="ago">{{ago .FirstSeen}}</span></span>
     </div>
     <div class="lane-head-right">
       {{if .Preview}}<span class="preview" title="{{.Preview}}">&quot;{{.Preview}}&quot;</span>
@@ -105,10 +122,10 @@ fetch — the data is already server-rendered, just not visible until clicked. *
 {{if .Run}}
 <div class="node stack" tabindex="0" role="button"
      data-route="{{index .Head.RoutingChain 0}}" data-provider="{{.Head.Provider}}" data-kind="{{.Head.Kind}}"
-     data-status="{{.Head.StatusCode}}" data-count="{{.Count}}" data-cost="{{usd .Head.CostUSD}}"
+     data-status="{{.Head.StatusCode}}" data-count="{{.Count}}" data-cost="{{usd .TotalCostUSD}}"
      data-latency="{{dur .Head.LatencyMs}}" data-trace="{{.Head.TraceID}}" data-open-href="{{.OpenHref}}"
      data-rationale="{{.Count}}× streamed turns, same route, collapsed into one node — click to open its transcript.">
-  <span class="tip">{{.Count}}× streamed turns · {{usd .Head.CostUSD}} total</span>
+  <span class="tip">{{.Count}}× streamed turns · {{usd .TotalCostUSD}} total</span>
   <span class="stackn">{{.Count}}×</span>
 </div>
 {{else}}

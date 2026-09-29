@@ -201,3 +201,44 @@ classifiers:
 		t.Fatalf("want a decisive-type error, got %v", err)
 	}
 }
+
+// The matcher's request-kind key is `request_kind:`, the same word the router's
+// `when:` clause uses — one spelling for one concept across the whole config
+// language (the old `kind:` was a deliberate break, not a deprecation, so the
+// old spelling must fail at load with an error that NAMES it: an operator
+// upgrading a config that still says `kind:` must be told what happened, not
+// handed a generic "value or request_kind required" that reads like a missing
+// field).
+func TestClassifierMatchAcceptsRequestKindKey(t *testing.T) {
+	cfg := loadConfigOK(t, baseConfig+`
+classifiers:
+  - name: "request-kind"
+    type: "heuristic"
+    axis: "domain"
+    config:
+      match: "You are a title generator."
+      request_kind: "title"
+`)
+	cc := cfg.Classifiers[0]
+	if got, _ := cc.Config["request_kind"].(string); got != "title" {
+		t.Fatalf("request_kind = %v, want title", cc.Config["request_kind"])
+	}
+}
+
+func TestClassifierMatchRejectsOldKindSpelling(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+classifiers:
+  - name: "request-kind"
+    type: "heuristic"
+    axis: "domain"
+    config:
+      match: "You are a title generator."
+      kind: "title"
+`)
+	if err == nil {
+		t.Fatal("the retired `kind:` spelling must be a load error, not silently dropped")
+	}
+	if !strings.Contains(err.Error(), `match requires "value"`) || !strings.Contains(err.Error(), "request_kind") || !strings.Contains(err.Error(), "kind") {
+		t.Fatalf("error must name both the required keys and the retired spelling, got %v", err)
+	}
+}

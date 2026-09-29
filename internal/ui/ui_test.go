@@ -2,7 +2,6 @@ package ui
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -48,6 +47,16 @@ func newSeededHandler(t *testing.T, events ...store.Event) (*Handler, *store.SQL
 		t.Fatalf("open reader: %v", err)
 	}
 	t.Cleanup(func() { _ = r.Close() })
+	// The Discovery ledger reads from content_hash_stats, a rollup fed by a
+	// background sweep in production (see cmd/arbiter/store.go's
+	// startSweeper) rather than computed live. Running it once here after
+	// seeding keeps every other newSeededHandler caller's existing
+	// "seed, then it's visible" assumption true without every test needing
+	// to know the rollup exists. A no-op (nothing captured, or no content
+	// capture in the seed) costs one cheap query.
+	if _, _, err := r.RollupContentHashStats(context.Background()); err != nil {
+		t.Fatalf("rollup content hash stats: %v", err)
+	}
 	return New(r, logger), nil
 }
 
@@ -344,37 +353,4 @@ func TestStaticAssetsAreServedAndVersioned(t *testing.T) {
 	if got := serve(t, h, "GET", "/admin/ui/static/htmx.min.js", false).Code; got != http.StatusOK {
 		t.Errorf("htmx.min.js = %d, want 200", got)
 	}
-}
-
-// The cursor is opaque and URL-safe: the payload contains the stored timestamp
-// text, whose `+` characters must not survive into a query string as spaces.
-func TestCursorIsOpaqueAndRoundTrips(t *testing.T) {
-	stored := "2026-09-16 11:59:39.812343302 +0000 UTC"
-	token := encodeCursor(stored, 42)
-	if strings.ContainsAny(token, "+/= ") {
-		t.Errorf("cursor %q is not URL-safe", token)
-	}
-	ts, id, err := decodeCursor(token)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if ts != stored || id != 42 {
-		t.Errorf("round trip = (%q, %d), want (%q, 42)", ts, id, stored)
-	}
-	for _, bad := range []string{"", "!!!!", "Zm9v", encodeCursor("", 1), encodeCursor(stored, 0)} {
-		if _, _, err := decodeCursor(bad); err == nil {
-			t.Errorf("decodeCursor(%q) accepted a malformed cursor", bad)
-		}
-	}
-}
-
-// The list JSON shape is what the JSON surface's own clients see; the UI must
-// not have changed it by adding its cursor field to the wire.
-func TestCursorFieldIsNotOnTheWire(t *testing.T) {
-	h, _ := newSeededHandler(t)
-	body := serve(t, h, "GET", "/admin/ui/requests", false).Body.String()
-	if strings.Contains(body, "tsraw") || strings.Contains(body, "TsRaw") {
-		t.Error("the internal cursor field leaked into a rendered page")
-	}
-	_ = json.Marshal // keep the import honest if the assertions above change
 }

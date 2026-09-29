@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -453,6 +454,175 @@ func TestCaptureRequestSkipsEmptyBlocks(t *testing.T) {
 	// empty one was.
 	if blocks[0].Position != 1 {
 		t.Errorf("position = %d, want 1 (the second block)", blocks[0].Position)
+	}
+}
+
+// TestCaptureRequestStoresToolDefinitions is #60: the tool definitions a client
+// offers are stored, one block per tool, so "what tools was this agent offered"
+// is answerable from the store. Tool *calls* were already recorded; the
+// definitions they were made against were not, on any path.
+func TestCaptureRequestStoresToolDefinitions(t *testing.T) {
+	req := &types.NormalizedRequest{
+		Messages: []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "read the file"}}}},
+		Tools: []types.Tool{
+			{Name: "read_file", Description: "Read a file", InputSchema: map[string]interface{}{"type": "object"}},
+			{Name: "write_file", Description: "Write a file"},
+		},
+	}
+	blocks := CaptureRequest(req)
+
+	var defs []Block
+	for _, b := range blocks {
+		if b.Kind == "tool_def" {
+			defs = append(defs, b)
+		}
+	}
+	if len(defs) != 2 {
+		t.Fatalf("got %d tool_def blocks, want 2 (one per tool): %+v", len(defs), blocks)
+	}
+
+	// Position is the tool's index in the request's tools array, so the store
+	// can say which slot a definition occupied.
+	if defs[0].Position != 0 || defs[1].Position != 1 {
+		t.Errorf("positions = %d,%d, want 0,1 in tools order", defs[0].Position, defs[1].Position)
+	}
+	// A tool definition belongs to no message, so it must not share a
+	// coordinate with one — 0 is the system prompt's index.
+	if defs[0].MsgIndex != toolDefsMsgIndex || defs[1].MsgIndex != toolDefsMsgIndex {
+		t.Errorf("MsgIndex = %d, want %d (tool defs are not message blocks)",
+			defs[0].MsgIndex, toolDefsMsgIndex)
+	}
+	// The kind is "tool_def", not "tool_use": what the client OFFERED is a
+	// different fact from what the model CHOSE to call, and a query that
+	// conflates them cannot answer "which clients send read_file".
+	if defs[0].Kind == "tool_use" {
+		t.Error("tool definitions were stored as tool_use, conflating offered with called")
+	}
+	if !strings.Contains(string(defs[0].Body), `"read_file"`) {
+		t.Errorf("tool body = %q, want the tool's name", defs[0].Body)
+	}
+	if !strings.Contains(string(defs[0].Body), `"Read a file"`) {
+		t.Errorf("tool body = %q, want the description retained", defs[0].Body)
+	}
+
+	// The user message must still be present and still indexed from 0 — tool
+	// defs are additive and must not shift the message numbering.
+	user := blocks[len(blocks)-1]
+	if user.Role != "user" || user.MsgIndex != 0 {
+		t.Errorf("user block = %+v, want MsgIndex 0 (tool defs must not shift messages)", user)
+	}
+}
+
+// TestCaptureRequestToolDefinitionsDedupByName proves the reason the store
+// keeps one block per tool instead of one blob for the whole array: with an
+// array blob, the same `read_file` reaching Arbiter from two clients whose
+// descriptions differ slightly would hash differently and read as two
+// unrelated tools, making "which clients send read_file" unanswerable.
+func TestCaptureRequestToolDefinitionsDedupByName(t *testing.T) {
+	a := CaptureRequest(&types.NormalizedRequest{
+		Tools: []types.Tool{{Name: "read_file", Description: "Read a file"}},
+	})
+	b := CaptureRequest(&types.NormalizedRequest{
+		Tools: []types.Tool{{Name: "read_file", Description: "Read a file"}},
+	})
+	if len(a) != 1 || len(b) != 1 {
+		t.Fatalf("got %d and %d blocks, want 1 each", len(a), len(b))
+	}
+	if string(a[0].Hash()) != string(b[0].Hash()) {
+		t.Error("the same tool from two requests hashed differently, so it cannot dedup")
+	}
+
+	// A different description is a genuinely different tool definition and
+	// must not be silently merged into the same address.
+	c := CaptureRequest(&types.NormalizedRequest{
+		Tools: []types.Tool{{Name: "read_file", Description: "Read a file from disk"}},
+	})
+	if string(a[0].Hash()) == string(c[0].Hash()) {
+		t.Error("a differently-described tool hashed the same, hiding the difference")
+	}
+}
+
+// TestToolDefinitionsRoundTripThroughStore closes #60 end to end: a tool
+// definition captured by CaptureRequest must actually reach the content tables
+// and come back readable, addressed by its own name. Testing CaptureRequest
+// alone would prove only that blocks were produced, not that the store keeps
+// them — the write path, the hash-only branch, and ContentForRequest all sit
+// between those two facts.
+func TestToolDefinitionsRoundTripThroughStore(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	req := &types.NormalizedRequest{
+		Messages: []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "read it"}}}},
+		Tools: []types.Tool{
+			{Name: "read_file", Description: "Read a file", InputSchema: map[string]interface{}{"type": "object"}},
+		},
+	}
+	w.Record(Event{
+		TraceID: "t", Format: "anthropic", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: CaptureRequest(req)},
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	rows, err := r.ListRequests(ctx, RequestFilter{})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListRequests = %v, %v", rows, err)
+	}
+	blocks, _, err := r.ContentForRequest(ctx, rows[0].ID, false)
+	if err != nil {
+		t.Fatalf("ContentForRequest: %v", err)
+	}
+
+	var def *ContentBlock
+	for i := range blocks {
+		if blocks[i].BlockType == "tool_def" {
+			def = &blocks[i]
+		}
+	}
+	if def == nil {
+		t.Fatalf("no tool_def block survived the store: %+v", blocks)
+	}
+	// Captured, not hash-only: a definition whose bytes are dropped is
+	// addressable but unreadable, which is the same as not having it.
+	if !def.Captured {
+		t.Error("tool definition was stored hash-only, so its schema cannot be read back")
+	}
+	if def.Role != "tool_def" {
+		t.Errorf("role = %q, want tool_def", def.Role)
+	}
+	if !strings.Contains(def.Body, "read_file") || !strings.Contains(def.Body, "Read a file") {
+		t.Errorf("body = %q, want the name and description", def.Body)
+	}
+	// The message content must still reassemble alongside it.
+	var sawUser bool
+	for _, b := range blocks {
+		if b.Role == "user" && b.Body == "read it" {
+			sawUser = true
+		}
+	}
+	if !sawUser {
+		t.Errorf("tool definitions displaced the message content: %+v", blocks)
+	}
+}
+
+// TestCaptureRequestSkipsNamelessTools: a nameless schema would dedup against
+// every other nameless schema and address nothing — the same uselessness that
+// empty text blocks are skipped for.
+func TestCaptureRequestSkipsNamelessTools(t *testing.T) {
+	req := &types.NormalizedRequest{
+		Tools: []types.Tool{
+			{Name: "", Description: "anonymous"},
+			{Name: "real_tool"},
+		},
+	}
+	blocks := CaptureRequest(req)
+	if len(blocks) != 1 {
+		t.Fatalf("got %d blocks, want 1 (nameless tool skipped): %+v", len(blocks), blocks)
+	}
+	if blocks[0].Position != 1 {
+		t.Errorf("position = %d, want 1 — the nameless tool still occupied slot 0", blocks[0].Position)
 	}
 }
 

@@ -35,6 +35,15 @@ func (w *capturingWriter) last() (store.Event, bool) {
 	return w.events[len(w.events)-1], true
 }
 
+// snapshot returns a copy of every recorded event, in order.
+func (w *capturingWriter) snapshot() []store.Event {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]store.Event, len(w.events))
+	copy(out, w.events)
+	return out
+}
+
 // streamingNormalizer is fakeNormalizer with Stream=true, so Execute takes the
 // streaming path. The shared fake leaves Stream false.
 type streamingNormalizer struct{ model string }
@@ -70,13 +79,21 @@ func TestExecuteRecordsCompletedRequest(t *testing.T) {
 		nil, &fakeRouter{}, fu, testProviders(), nil, nil, nil,
 		fakeLogger{}, time.Minute, nil, w, catalogLookup(), nil, nil)
 
+	before := time.Now()
 	if _, err := p.Execute(context.Background(), []byte("hello"), "openai", "t1", ""); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
+	after := time.Now()
 
 	ev, ok := w.last()
 	if !ok {
 		t.Fatal("no event recorded")
+	}
+	// ArrivalTs must be Execute's own start — bounded by this call. (Ts
+	// itself is stamped by the real SQLiteWriter.Record, not by this test's
+	// capturingWriter, so it stays zero here and isn't compared against.)
+	if ev.ArrivalTs.Before(before) || ev.ArrivalTs.After(after) {
+		t.Errorf("ArrivalTs = %v, want between %v and %v", ev.ArrivalTs, before, after)
 	}
 	if ev.TraceID != "t1" || ev.Provider != "primary" || ev.Model != "m-primary" {
 		t.Errorf("identity fields wrong: %+v", ev)
@@ -282,6 +299,9 @@ func TestRecordedOnUpstreamFailure(t *testing.T) {
 	if !ok {
 		t.Fatal("failed request was not recorded")
 	}
+	if ev.ArrivalTs.IsZero() {
+		t.Error("ArrivalTs is zero, want Execute's start time even on failure")
+	}
 	if ev.StatusCode != 400 {
 		t.Errorf("StatusCode = %d, want the upstream 400", ev.StatusCode)
 	}
@@ -317,6 +337,9 @@ func TestExecuteStreamRecordsCompletedRequest(t *testing.T) {
 	ev, ok := waitForEvent(w)
 	if !ok {
 		t.Fatal("streamed request was not recorded")
+	}
+	if ev.ArrivalTs.IsZero() {
+		t.Error("ArrivalTs is zero, want Execute's start time on a streamed request")
 	}
 	if !ev.Stream {
 		t.Error("Stream = false, want true for a streamed request")
@@ -354,6 +377,9 @@ func TestExecuteStreamRecordsMidStreamFailure(t *testing.T) {
 	ev, ok := waitForEvent(w)
 	if !ok {
 		t.Fatal("failed stream was not recorded")
+	}
+	if ev.ArrivalTs.IsZero() {
+		t.Error("ArrivalTs is zero, want Execute's start time even on a mid-stream failure")
 	}
 	if ev.StatusCode == 200 {
 		t.Errorf("StatusCode = 200 for a stream that failed mid-flight, want the failure status")

@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -220,5 +221,79 @@ logging:
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load: want error for invalid session_affinity.default_ttl, got nil")
+	}
+}
+
+// TestSessionAffinityNoPinAcceptsAnAliasDeclaredKind proves no_pin validates
+// against request_kind values an alias declares, not just ones a classifier
+// declares — either source makes a kind real.
+func TestSessionAffinityNoPinAcceptsAnAliasDeclaredKind(t *testing.T) {
+	cfg := loadConfigOK(t, baseConfig+`
+aliases:
+  subagent-worker:
+    force: {}
+    request_kind: "subagent"
+session_affinity:
+  no_pin: ["subagent"]
+`)
+	if len(cfg.SessionAffinity.NoPin) != 1 || cfg.SessionAffinity.NoPin[0] != "subagent" {
+		t.Fatalf("no_pin = %v, want [subagent]", cfg.SessionAffinity.NoPin)
+	}
+}
+
+// TestSessionAffinityNoPinAcceptsAClassifierDeclaredKind proves the other
+// source: a heuristic classifier's match.request_kind (how "title" is
+// declared in the shipped config) also counts as a known kind.
+func TestSessionAffinityNoPinAcceptsAClassifierDeclaredKind(t *testing.T) {
+	cfg := loadConfigOK(t, baseConfig+`
+classifiers:
+  - name: "title-detector"
+    type: "heuristic"
+    config:
+      match:
+        - mode: "prefix"
+          pattern: "Generate a title"
+      request_kind: "title"
+      decisive: true
+session_affinity:
+  no_pin: ["title"]
+`)
+	if len(cfg.SessionAffinity.NoPin) != 1 || cfg.SessionAffinity.NoPin[0] != "title" {
+		t.Fatalf("no_pin = %v, want [title]", cfg.SessionAffinity.NoPin)
+	}
+}
+
+// TestSessionAffinityNoPinRejectsUnknownKind is the point of validating at
+// all: a typo here would otherwise silently do nothing, invisible at
+// runtime.
+func TestSessionAffinityNoPinRejectsUnknownKind(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+session_affinity:
+  no_pin: ["titel"]
+`)
+	if err == nil || !strings.Contains(err.Error(), "unknown request_kind") {
+		t.Fatalf("want an unknown-request_kind error, got %v", err)
+	}
+}
+
+// TestSessionAffinityNoPinRejectsEmptyEntry proves an empty string in the
+// list is rejected rather than silently matching ordinary client traffic
+// (which has no request_kind at all).
+func TestSessionAffinityNoPinRejectsEmptyEntry(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+session_affinity:
+  no_pin: [""]
+`)
+	if err == nil || !strings.Contains(err.Error(), "no_pin entries must not be empty") {
+		t.Fatalf("want an empty-entry error, got %v", err)
+	}
+}
+
+// TestSessionAffinityNoPinDefaultsEmpty proves the shipped default is no
+// behaviour change: with no no_pin configured at all, every kind still pins.
+func TestSessionAffinityNoPinDefaultsEmpty(t *testing.T) {
+	cfg := loadConfigOK(t, baseConfig)
+	if len(cfg.SessionAffinity.NoPin) != 0 {
+		t.Fatalf("no_pin default = %v, want empty", cfg.SessionAffinity.NoPin)
 	}
 }

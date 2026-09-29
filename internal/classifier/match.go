@@ -41,9 +41,11 @@ type RequestMatcher struct {
 	value string
 
 	// kind is the request kind recorded on a match — "title", later
-	// "subagent". Independent of value: a title request fills a kind and no
-	// domain, because "what is this request about" has no meaningful answer
-	// for a title generator. See types.Signals.RequestKind.
+	// "subagent". Spelled `request_kind:` in config, matching the router's
+	// `when: {request_kind: ...}` spelling. Independent of value: a title
+	// request fills a kind and no domain, because "what is this request about"
+	// has no meaningful answer for a title generator. See
+	// types.Signals.RequestKind.
 	kind string
 
 	// where selects which parts of the request are searched. Defaults to
@@ -70,7 +72,7 @@ func NewRequestMatcher(patterns []types.MatchPattern, value, kind string, where 
 		return nil, fmt.Errorf("match needs at least one pattern")
 	}
 	if value == "" && kind == "" {
-		return nil, fmt.Errorf("match needs a %q (the axis value a hit fills) or a %q (the request kind a hit records)", "value", "kind")
+		return nil, fmt.Errorf("match needs a %q (the axis value a hit fills) or a %q (the request kind a hit records)", "value", "request_kind")
 	}
 	m := &RequestMatcher{value: value, kind: kind, decisive: decisive}
 	for _, p := range patterns {

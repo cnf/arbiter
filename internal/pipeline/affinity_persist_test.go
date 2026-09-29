@@ -15,35 +15,39 @@ import (
 // fakePinner is an in-memory stand-in for the store, and it deliberately outlives
 // a pipeline: a test builds a pipeline, pins through it, throws it away, and
 // builds a new one over the same fake. That is exactly the reload case.
+//
+// Keyed by (SessionKey, PromptHash) — the same composite key the real store
+// uses — so these tests exercise the real collision boundary: two prompt
+// families sharing one SessionKey must land in different slots.
 type fakePinner struct {
 	mu    sync.Mutex
-	pins  map[string]AffinityPinRecord
+	pins  map[[2]string]AffinityPinRecord
 	saves int
 }
 
 func newFakePinner() *fakePinner {
-	return &fakePinner{pins: make(map[string]AffinityPinRecord)}
+	return &fakePinner{pins: make(map[[2]string]AffinityPinRecord)}
 }
 
 func (f *fakePinner) SavePin(ctx context.Context, p AffinityPinRecord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.pins[p.SessionKey] = p
+	f.pins[[2]string{p.SessionKey, p.PromptHash}] = p
 	f.saves++
 	return nil
 }
 
-func (f *fakePinner) LoadPin(ctx context.Context, key string) (AffinityPinRecord, bool, error) {
+func (f *fakePinner) LoadPin(ctx context.Context, sessionKey, promptHash string) (AffinityPinRecord, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	p, ok := f.pins[key]
+	p, ok := f.pins[[2]string{sessionKey, promptHash}]
 	return p, ok, nil
 }
 
-func (f *fakePinner) DeletePin(ctx context.Context, key string) error {
+func (f *fakePinner) DeletePin(ctx context.Context, sessionKey, promptHash string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	delete(f.pins, key)
+	delete(f.pins, [2]string{sessionKey, promptHash})
 	return nil
 }
 
@@ -56,12 +60,12 @@ func TestPinSurvivesPipelineRebuild(t *testing.T) {
 
 	// First "process"/pipeline records a pin.
 	before := newAffinityStore(pinner)
-	before.pin(ctx, "sess-1", "auto", "claude", "claude-sonnet-5", time.Hour)
+	before.pin(ctx, "sess-1", "ph-main", "auto", "claude", "claude-sonnet-5", time.Hour)
 
 	// A reload throws that pipeline away and builds a fresh one — its in-memory
 	// cache starts empty, so the pin can only come from the store.
 	after := newAffinityStore(pinner)
-	provider, model, ok := after.get(ctx, "sess-1", "auto")
+	provider, model, ok := after.get(ctx, "sess-1", "ph-main", "auto")
 	if !ok {
 		t.Fatal("pin lost across a pipeline rebuild — this is the reload bug")
 	}
@@ -78,19 +82,19 @@ func TestPinIsCachedAfterAStoreHit(t *testing.T) {
 	pinner := newFakePinner()
 
 	writer := newAffinityStore(pinner)
-	writer.pin(ctx, "sess-1", "auto", "claude", "m", time.Hour)
+	writer.pin(ctx, "sess-1", "ph-main", "auto", "claude", "m", time.Hour)
 
 	reader := newAffinityStore(pinner)
-	if _, _, ok := reader.get(ctx, "sess-1", "auto"); !ok {
+	if _, _, ok := reader.get(ctx, "sess-1", "ph-main", "auto"); !ok {
 		t.Fatal("expected the pin from the store")
 	}
 
 	// Drop it from the store entirely. A second get must still hit, because the
 	// first one cached it — proving no further store read is needed.
-	if err := pinner.DeletePin(ctx, "sess-1"); err != nil {
+	if err := pinner.DeletePin(ctx, "sess-1", "ph-main"); err != nil {
 		t.Fatalf("DeletePin: %v", err)
 	}
-	if _, _, ok := reader.get(ctx, "sess-1", "auto"); !ok {
+	if _, _, ok := reader.get(ctx, "sess-1", "ph-main", "auto"); !ok {
 		t.Error("second get missed; the store hit was not cached")
 	}
 }
@@ -104,15 +108,15 @@ func TestStoredPinDoesNotApplyToADifferentRequestedModel(t *testing.T) {
 	pinner := newFakePinner()
 
 	writer := newAffinityStore(pinner)
-	writer.pin(ctx, "sess-1", "auto", "claude", "m", time.Hour)
+	writer.pin(ctx, "sess-1", "ph-main", "auto", "claude", "m", time.Hour)
 
 	reader := newAffinityStore(pinner)
-	if _, _, ok := reader.get(ctx, "sess-1", "gpt-4o"); ok {
+	if _, _, ok := reader.get(ctx, "sess-1", "ph-main", "gpt-4o"); ok {
 		t.Error("a stored pin applied to a different requested model")
 	}
 	// And it must not have been cached under the new model either, or the next
 	// turn would wrongly hit.
-	if _, _, ok := reader.get(ctx, "sess-1", "gpt-4o"); ok {
+	if _, _, ok := reader.get(ctx, "sess-1", "ph-main", "gpt-4o"); ok {
 		t.Error("a mismatched stored pin was cached and then applied")
 	}
 }
@@ -125,6 +129,7 @@ func TestExpiredStoredPinIsNotHonoured(t *testing.T) {
 	pinner := newFakePinner()
 	if err := pinner.SavePin(ctx, AffinityPinRecord{
 		SessionKey:     "sess-1",
+		PromptHash:     "ph-main",
 		RequestedModel: "auto",
 		Provider:       "claude",
 		Model:          "m",
@@ -134,7 +139,7 @@ func TestExpiredStoredPinIsNotHonoured(t *testing.T) {
 	}
 
 	s := newAffinityStore(pinner)
-	if _, _, ok := s.get(ctx, "sess-1", "auto"); ok {
+	if _, _, ok := s.get(ctx, "sess-1", "ph-main", "auto"); ok {
 		t.Error("an expired stored pin was honoured")
 	}
 }
@@ -145,13 +150,13 @@ func TestExpiredStoredPinIsNotHonoured(t *testing.T) {
 func TestNoPinnerStillWorksInMemory(t *testing.T) {
 	ctx := context.Background()
 	s := newAffinityStore(nil)
-	s.pin(ctx, "sess-1", "auto", "claude", "m", time.Hour)
+	s.pin(ctx, "sess-1", "ph-main", "auto", "claude", "m", time.Hour)
 
-	if _, _, ok := s.get(ctx, "sess-1", "auto"); !ok {
+	if _, _, ok := s.get(ctx, "sess-1", "ph-main", "auto"); !ok {
 		t.Error("in-memory pinning stopped working without a store")
 	}
 	// A fresh store has nothing to load from, and must not panic doing it.
-	if _, _, ok := newAffinityStore(nil).get(ctx, "sess-1", "auto"); ok {
+	if _, _, ok := newAffinityStore(nil).get(ctx, "sess-1", "ph-main", "auto"); ok {
 		t.Error("a pin appeared without any store to hold it")
 	}
 }
@@ -163,14 +168,14 @@ func TestForgetClearsBothCacheAndStore(t *testing.T) {
 	ctx := context.Background()
 	pinner := newFakePinner()
 	s := newAffinityStore(pinner)
-	s.pin(ctx, "sess-1", "auto", "claude", "m", time.Hour)
+	s.pin(ctx, "sess-1", "ph-main", "auto", "claude", "m", time.Hour)
 
-	s.forget(ctx, "sess-1")
+	s.forget(ctx, "sess-1", "ph-main")
 
-	if _, _, ok := s.get(ctx, "sess-1", "auto"); ok {
+	if _, _, ok := s.get(ctx, "sess-1", "ph-main", "auto"); ok {
 		t.Error("pin still hit after forget")
 	}
-	if _, ok, _ := pinner.LoadPin(ctx, "sess-1"); ok {
+	if _, ok, _ := pinner.LoadPin(ctx, "sess-1", "ph-main"); ok {
 		t.Error("pin still in the store after forget — a reload would resurrect it")
 	}
 }
@@ -182,12 +187,12 @@ func TestPinIsPersistedOnEveryWrite(t *testing.T) {
 	pinner := newFakePinner()
 	s := newAffinityStore(pinner)
 
-	s.pin(ctx, "sess-1", "auto", "claude", "m", time.Hour)
+	s.pin(ctx, "sess-1", "ph-main", "auto", "claude", "m", time.Hour)
 
 	if pinner.saves == 0 {
 		t.Fatal("pin was never written to the store")
 	}
-	rec, ok, err := pinner.LoadPin(ctx, "sess-1")
+	rec, ok, err := pinner.LoadPin(ctx, "sess-1", "ph-main")
 	if err != nil || !ok {
 		t.Fatalf("LoadPin = (%v, %v), want a stored pin", ok, err)
 	}
@@ -196,5 +201,28 @@ func TestPinIsPersistedOnEveryWrite(t *testing.T) {
 	}
 	if !rec.ExpiresAt.After(time.Now()) {
 		t.Errorf("stored expiry %v is not in the future", rec.ExpiresAt)
+	}
+}
+
+// TestDifferentPromptHashesDoNotCollide is the regression test for the actual
+// bug (#69): a title-gen call and the main thread share one SessionKey (both
+// carry the same X-Session-Id from Hermes) but have different system prompts,
+// so they must land in different pin slots and never evict each other.
+func TestDifferentPromptHashesDoNotCollide(t *testing.T) {
+	ctx := context.Background()
+	pinner := newFakePinner()
+	s := newAffinityStore(pinner)
+
+	s.pin(ctx, "sess-1", "ph-main", "arbiter", "claude", "claude-sonnet-5", time.Hour)
+	s.pin(ctx, "sess-1", "ph-title", "arbiter", "openrouter", "free", time.Hour)
+
+	provider, model, ok := s.get(ctx, "sess-1", "ph-main", "arbiter")
+	if !ok || provider != "claude" || model != "claude-sonnet-5" {
+		t.Errorf("main thread pin = (%q, %q, %v), want (claude, claude-sonnet-5, true) — the title pin evicted it", provider, model, ok)
+	}
+
+	provider, model, ok = s.get(ctx, "sess-1", "ph-title", "arbiter")
+	if !ok || provider != "openrouter" || model != "free" {
+		t.Errorf("title pin = (%q, %q, %v), want (openrouter, free, true)", provider, model, ok)
 	}
 }

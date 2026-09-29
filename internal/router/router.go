@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	arbitererrors "github.com/cnf/arbiter/pkg/errors"
 	"github.com/cnf/arbiter/pkg/types"
@@ -22,18 +21,7 @@ func containsModel(models []string, model string) bool {
 
 // Router determines which upstream provider handles a request.
 type Router interface {
-	Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, types.Metadata, error)
-}
-
-// Factory creates a Router from config.
-type Factory func(name string, config map[string]interface{}, providers map[string]types.ProviderConfig) (Router, error)
-
-// Registry holds all registered router factories.
-var Registry = make(map[string]Factory)
-
-// Register registers a router factory by type name.
-func Register(typeName string, factory Factory) {
-	Registry[typeName] = factory
+	Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, error)
 }
 
 // ChainedRouter tries multiple routers in sequence, taking the first
@@ -62,24 +50,24 @@ func NewChainedRouter(name string, routers []Router) *ChainedRouter {
 // router doesn't apply here" — the chain exists to compose the second kind
 // of miss, and treating a stop as one would let a later router quietly
 // override an operator's explicit refusal.
-func (cr *ChainedRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, types.Metadata, error) {
+func (cr *ChainedRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, error) {
 	if len(cr.routers) == 0 {
-		return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: no routers configured", cr.name)
+		return types.Route{}, fmt.Errorf("router %q: no routers configured", cr.name)
 	}
 
 	var lastErr error
 	for _, r := range cr.routers {
-		route, meta, err := r.Route(ctx, req, signals)
+		route, err := r.Route(ctx, req, signals)
 		if err == nil {
-			return route, meta, nil
+			return route, nil
 		}
 		var stopErr *arbitererrors.StopError
 		if errors.As(err, &stopErr) {
-			return types.Route{}, types.Metadata{}, err
+			return types.Route{}, err
 		}
 		lastErr = err
 	}
-	return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: all routers failed: %w", cr.name, lastErr)
+	return types.Route{}, fmt.Errorf("router %q: all routers failed: %w", cr.name, lastErr)
 }
 
 // SimpleRouter always routes to a default provider, falling back to a
@@ -107,14 +95,14 @@ func NewSimpleRouter(name, defaultProvider, fallbackProvider string, providerCon
 // in the provider map (e.g. missing API key / not configured for this
 // deployment). The requested model, if any, is preserved; otherwise the
 // provider's first configured model is used.
-func (sr *SimpleRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, types.Metadata, error) {
+func (sr *SimpleRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, error) {
 	providerName := sr.defaultProvider
 	cfg, ok := sr.providerConfig[providerName]
 	if !ok {
 		providerName = sr.fallbackProvider
 		cfg, ok = sr.providerConfig[providerName]
 		if !ok {
-			return types.Route{}, types.Metadata{}, fmt.Errorf("router %q: neither default provider %q nor fallback %q are configured", sr.name, sr.defaultProvider, sr.fallbackProvider)
+			return types.Route{}, fmt.Errorf("router %q: neither default provider %q nor fallback %q are configured", sr.name, sr.defaultProvider, sr.fallbackProvider)
 		}
 	}
 
@@ -143,10 +131,5 @@ func (sr *SimpleRouter) Route(ctx context.Context, req *types.NormalizedRequest,
 		Config:    cfg,
 		Rationale: rationale,
 	}
-	meta := types.Metadata{
-		LatencyTarget: "normal",
-		TraceID:       req.TraceID,
-		RoutedAt:      time.Now(),
-	}
-	return route, meta, nil
+	return route, nil
 }

@@ -75,6 +75,17 @@ func TestClassifierCallRecordedOnceThenSkippedByAffinityPin(t *testing.T) {
 
 	events := w.events
 	var classifierEvents, clientEvents int
+	var clientArrival time.Time
+	for _, ev := range events {
+		switch ev.Kind {
+		case "client", "":
+			clientEvents++
+			clientArrival = ev.ArrivalTs
+			if ev.ArrivalTs.IsZero() {
+				t.Error("client event ArrivalTs is zero, want Execute's start time")
+			}
+		}
+	}
 	for _, ev := range events {
 		switch ev.Kind {
 		case "classifier":
@@ -85,8 +96,12 @@ func TestClassifierCallRecordedOnceThenSkippedByAffinityPin(t *testing.T) {
 			if ev.Provider != "cls-provider" || ev.Model != "cls-model" {
 				t.Errorf("classifier event provider/model = %s/%s, want cls-provider/cls-model", ev.Provider, ev.Model)
 			}
-		case "client", "":
-			clientEvents++
+			if ev.ArrivalTs.IsZero() {
+				t.Errorf("classifier event ArrivalTs is zero, want the parent request's arrival time (classifier rows sort into the lane by arrival same as any other row)")
+			}
+			if !ev.ArrivalTs.Equal(clientArrival) {
+				t.Errorf("classifier event ArrivalTs = %v, want it to match the parent client event's arrival %v — a classifier call happens inside the same request", ev.ArrivalTs, clientArrival)
+			}
 		}
 	}
 	if classifierEvents != 1 {

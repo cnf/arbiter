@@ -15,12 +15,22 @@
 -- config_epoch is the hash of the resolved config that served this request
 -- (Config.Epoch): the join key for "did this config change save or cost
 -- money?". NULL for rows written before the column existed.
+--
+-- arrival_ts is when the request reached Arbiter (Execute's own entry),
+-- distinct from ts (when the request finished and this row was written).
+-- The two differ whenever a request takes any real time upstream — a
+-- classifier call started by a parent request routinely WRITES its row
+-- before the parent does, because it finishes first (see SessionChildren's
+-- doc comment, and issue #8). arrival_ts exists so causal order (what
+-- triggered what) can be recovered directly instead of inferred from
+-- trace_id nesting. NULL for rows written before the column existed.
 CREATE TABLE IF NOT EXISTS requests (
     id                    INTEGER PRIMARY KEY,
     trace_id              TEXT NOT NULL,
     session_key           TEXT,
     client_id             TEXT,
     ts                    TIMESTAMP NOT NULL,
+    arrival_ts            TIMESTAMP,
     format                TEXT NOT NULL,       -- "anthropic" | "openai"
     provider              TEXT NOT NULL,
     model                 TEXT NOT NULL,
@@ -120,6 +130,62 @@ CREATE INDEX IF NOT EXISTS idx_content_refs_hash ON content_refs(hash);
 CREATE INDEX IF NOT EXISTS idx_content_refs_repeated ON content_refs(owner_kind, direction, hash, owner_id, block_type, role);
 
 -- ---------------------------------------------------------------------------
+-- Content hash rollup (Discovery's counts, kept incrementally)
+-- ---------------------------------------------------------------------------
+-- RepeatedContent/ContentHashCounts used to aggregate content_refs JOIN
+-- requests from scratch on every Discovery page load — two full scans of a
+-- table that only ever grows (content is immutable once written), at ~6-7s
+-- each on a real deployment. content_hash_stats is that same aggregate kept
+-- as a running total instead: an hourly background sweep folds in whatever
+-- is new since it last ran (see Reader.RollupContentHashStats), and the page
+-- becomes a lookup over at most a few tens of thousands of rows.
+--
+-- This is deliberately all-time, not windowed: a per-day bucketed rollup
+-- would let the page keep an accurate sliding window, but the operator
+-- explicitly accepted approximate counts here ("this was sent in 55
+-- sessions" is a spot-check, not a number anyone audits) and the drill-down
+-- (SessionsForContent) always re-queries exactly. See PICKUP.md.
+--
+-- requests is a running COUNT(DISTINCT owner_id): safe to add to directly
+-- because each content_refs row is written exactly once, ever, and the
+-- rollup only ever looks at owner_ids it hasn't processed before.
+--
+-- sessions cannot be summed the same way — the same session sends the same
+-- block on every turn, so a naive +1 per batch would double-count a session
+-- that reappears in a later batch. content_hash_sessions below is the
+-- dedup memory that makes an incremental session count correct.
+CREATE TABLE IF NOT EXISTS content_hash_stats (
+    hash        BLOB PRIMARY KEY,
+    block_type  TEXT NOT NULL,
+    role        TEXT NOT NULL DEFAULT '',
+    requests    INTEGER NOT NULL DEFAULT 0,
+    sessions    INTEGER NOT NULL DEFAULT 0,
+    first_ts    TIMESTAMP,
+    last_ts     TIMESTAMP
+) WITHOUT ROWID;
+
+-- Which (hash, session_key) pairs have already been counted into
+-- content_hash_stats.sessions, so a session resending the same block in a
+-- later rollup batch is recognised as already-counted rather than bumping
+-- the total again. Pure bookkeeping: nothing reads this table except the
+-- rollup itself.
+CREATE TABLE IF NOT EXISTS content_hash_sessions (
+    hash        BLOB NOT NULL,
+    session_key TEXT NOT NULL,
+    PRIMARY KEY (hash, session_key)
+) WITHOUT ROWID;
+
+-- rollup_state is the high-water mark: the highest requests.id already
+-- folded into content_hash_stats. One row (name='content_hash'). Request ids
+-- are a safe watermark because a request row and its content_refs commit in
+-- the same transaction (see writer.go's writeEvent) — once a request is
+-- visible to a reader, its content is already there to aggregate.
+CREATE TABLE IF NOT EXISTS rollup_state (
+    name          TEXT PRIMARY KEY,
+    last_owner_id INTEGER NOT NULL DEFAULT 0
+);
+
+-- ---------------------------------------------------------------------------
 -- Discovery state
 -- ---------------------------------------------------------------------------
 -- Operator-set seen/ignored marks on a repeated content block, keyed by the
@@ -156,20 +222,34 @@ CREATE TABLE IF NOT EXISTS discovery_state (
 --
 -- requested_model is the client's `model` value at pin time: a pin only applies
 -- while the client keeps asking for that same model, because a client that
--- explicitly switches models means it. At most one pin per session key — a pin
--- recorded under a new requested model replaces the old one rather than
--- accumulating.
+-- explicitly switches models means it.
+--
+-- prompt_hash separates prompt FAMILIES sharing one session_key: a client's
+-- session header (when sent) groups a whole chat session, but a chat session
+-- routinely contains several distinct system prompts (the main thread, a
+-- title-generation call, a subagent run) that must not share a pin slot — a
+-- title call would otherwise silently overwrite the main thread's target and
+-- vice versa. Derived from the client's own pre-guardrail system prompt
+-- (pipeline.PromptHash), so it needs no classification and no config: two
+-- calls with the same prompt are the same family regardless of what either
+-- prompt actually says. Empty string is a valid family (no session header
+-- present, or the caller has no prompt to hash) and behaves like any other
+-- value. At most one pin per (session_key, prompt_hash) — a pin recorded
+-- under a new requested model REPLACES the old one for that family rather
+-- than accumulating.
 --
 -- expires_at is an absolute deadline computed at write time (idle-timeout
 -- semantics: a hit refreshes it, an abandoned conversation expires). The
 -- deadline is stored rather than a TTL because the reader must be able to
 -- reject a stale row without knowing the TTL it was pinned with.
 CREATE TABLE IF NOT EXISTS affinity_pins (
-    session_key     TEXT PRIMARY KEY,
+    session_key     TEXT NOT NULL,
+    prompt_hash     TEXT NOT NULL DEFAULT '',
     requested_model TEXT NOT NULL,
     provider        TEXT NOT NULL,
     model           TEXT NOT NULL,
-    expires_at      TIMESTAMP NOT NULL
+    expires_at      TIMESTAMP NOT NULL,
+    PRIMARY KEY (session_key, prompt_hash)
 );
 -- Feeds the expiry sweep, which deletes pins whose deadline has passed.
 CREATE INDEX IF NOT EXISTS idx_affinity_expires ON affinity_pins(expires_at);

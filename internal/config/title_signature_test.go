@@ -17,7 +17,7 @@ import (
 // So the loaded patterns are compared to the intended regexes, compiled, and run
 // against the real prompts.
 func TestShippedTitlePatternsAreTheIntendedRegexes(t *testing.T) {
-	cfg, err := Load("../../arbiter.yaml")
+	cfg, err := Load("../../arbiter.example.yaml")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

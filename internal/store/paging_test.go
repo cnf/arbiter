@@ -38,7 +38,7 @@ func openSeeded(t *testing.T, events ...Event) *Reader {
 }
 
 func event(ts time.Time, provider, model string) Event {
-	return Event{Ts: ts, TraceID: "t", Format: "openai", Provider: provider, Model: model,
+	return Event{Ts: ts, ArrivalTs: ts, TraceID: "t", Format: "openai", Provider: provider, Model: model,
 		LatencyMs: 1, StatusCode: 200}
 }
 
@@ -76,12 +76,12 @@ func TestKeysetPagingWalksTheWholeList(t *testing.T) {
 		}
 		for _, row := range rows {
 			seen[row.ID]++
-			if row.TsRaw == "" {
-				t.Fatal("TsRaw is empty; the cursor has nothing to carry")
+			if row.ArrivalTsRaw == "" {
+				t.Fatal("ArrivalTsRaw is empty; the cursor has nothing to carry")
 			}
 		}
 		last := rows[len(rows)-1]
-		cursor = RequestFilter{BeforeTs: last.TsRaw, BeforeID: last.ID}
+		cursor = RequestFilter{BeforeTs: last.ArrivalTsRaw, BeforeID: last.ID}
 		pages++
 		if pages > 20 {
 			t.Fatal("paging did not terminate")
@@ -133,12 +133,12 @@ func TestKeysetCursorSurvivesAFractionalTimestamp(t *testing.T) {
 	if newest.Model != "fractional" {
 		t.Fatalf("newest = %q, want fractional", newest.Model)
 	}
-	if newest.TsRaw == "" || newest.TsRaw == rows[1].TsRaw {
-		t.Fatalf("stored text for the two rows is not distinct: %q vs %q", newest.TsRaw, rows[1].TsRaw)
+	if newest.ArrivalTsRaw == "" || newest.ArrivalTsRaw == rows[1].ArrivalTsRaw {
+		t.Fatalf("stored text for the two rows is not distinct: %q vs %q", newest.ArrivalTsRaw, rows[1].ArrivalTsRaw)
 	}
 
 	rest, err := r.ListRequests(context.Background(), RequestFilter{
-		BeforeTs: newest.TsRaw, BeforeID: newest.ID,
+		BeforeTs: newest.ArrivalTsRaw, BeforeID: newest.ID,
 	})
 	if err != nil {
 		t.Fatal(err)

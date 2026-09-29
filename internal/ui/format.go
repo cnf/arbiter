@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/cnf/arbiter/internal/store"
 )
 
 // funcs are the template helpers. Every one of them is a *formatter*: nothing
@@ -32,19 +34,13 @@ var funcs = stdhtml.FuncMap{
 	"sessionsNav": func(raw string) string { return sessionsNavHref(raw) },
 	"sinceLabel":  sinceLabel,
 	"chars":       fmtChars,
-	// requestsForSession builds a link to the flat request list filtered to one
-	// session — the request-level view of the same conversation. It is a func
-	// rather than a precomputed field because it is used with a key that is
-	// already in the view model, in two different templates.
-	"requestsForSession": requestsForSession,
-	"trace8":             fmtTrace,
+	"trace8":      fmtTrace,
 	// Overview (#54). cacheClass/pctWidth exist so the drawer's gauge can be
 	// coloured and sized without the template doing arithmetic or holding the
-	// thresholds; overviewURL/nodeURL keep query-string assembly out of the
-	// template, same reason requestsForBlock does.
+	// thresholds; nodeURL keeps query-string assembly out of the template,
+	// same reason requestsForBlock does.
 	"cacheClass":    cacheGaugeClass,
 	"pctWidth":      pctWidth,
-	"overviewURL":   overviewURL,
 	"nodeURL":       nodeURL,
 	"sinceChoices":  sinceChoices,
 	"activeSince":   activeSince,
@@ -249,17 +245,12 @@ func fmtTs(ts string) string {
 // normalises to RFC3339 in UTC, but a raw sqlite value can reach a template if
 // a query is added without going through it, so the driver's own layout is
 // accepted too rather than rendered as garbage.
+//
+// The layouts live in the store (store.ParseStoredTime), which is the package
+// that knows what the column actually holds — the UI should not carry its own
+// copy that can drift from it.
 func parseTS(s string) (time.Time, bool) {
-	if s == "" {
-		return time.Time{}, false
-	}
-	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04:05.999999999 -0700 MST",
-		"2006-01-02 15:04:05.999999999-07:00", "2006-01-02 15:04:05"} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC(), true
-		}
-	}
-	return time.Time{}, false
+	return store.ParseStoredTime(s)
 }
 
 // statusClass maps an HTTP status to a CSS class. It returns an identifier

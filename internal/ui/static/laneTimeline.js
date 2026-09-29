@@ -114,6 +114,16 @@
     document.querySelectorAll(".lane-row").forEach(fit);
   }
 
+  // Exposed for laneLive.js: a lane that genuinely changed is replaced with a
+  // freshly rendered copy, which arrives at its natural spacing, and the poll
+  // that did it fires no htmx event — so nothing here would otherwise re-fit
+  // it. (An UNCHANGED lane is no longer replaced at all, so in the common case
+  // there is nothing to re-fit; this is for the lane that really did grow.)
+  // Same pattern as window.ArbiterLaneDetail, which laneLive.js already calls.
+  window.ArbiterLaneTimeline = {
+    fitAll: scheduleFit,
+  };
+
   var pending = false;
   function scheduleFit() {
     if (pending) return;

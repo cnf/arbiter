@@ -180,13 +180,11 @@ func TestTranscriptLoadMoreAppendsTurnsOnly(t *testing.T) {
 	if !strings.Contains(body, "of 5") {
 		t.Errorf("the load-more control does not say how many turns there are in total:\n%s", body)
 	}
-	if !strings.Contains(body, `id="preamble-btn"`) {
-		t.Error("the first page is missing the preamble control")
-	}
 
-	// The appended page is the fragment form, requested by htmx.
+	// The appended page is the fragment form, requested by htmx: it must not
+	// re-render the page chrome (crumb, jump control, stats) a second time.
 	frag := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=2&offset=2", true).Body.String()
-	if strings.Contains(frag, `id="preamble-btn"`) || strings.Contains(frag, "toolbar") {
+	if strings.Contains(frag, `id="jump-trigger"`) || strings.Contains(frag, "toolbar") {
 		t.Errorf("the appended page re-renders the page chrome; it must carry turns only:\n%s", frag)
 	}
 	if !strings.Contains(frag, "#3") || !strings.Contains(frag, "#4") {
@@ -401,6 +399,74 @@ func TestTranscriptPreambleModalShowsBothForms(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("preamble modal missing %q\n--- body ---\n%s", want, body)
 		}
+	}
+}
+
+// #59: each turn's own inspector shows the system prompt that request
+// actually ran with, not just the session opener's — and a classifier child
+// exposes its own system prompt too. newestRequestMessage narrows splitBlocks
+// to the request's newest message index, which would otherwise silently
+// drop every system-role block along with the deduped history; buildPreamble
+// reads the system prompt from a fresh, unfiltered ContentForRequest call so
+// it survives that narrowing.
+func TestTranscriptShowsEachRequestsOwnSystemPrompt(t *testing.T) {
+	now := time.Now().UTC()
+	key := "sess-sysprompt"
+
+	events := []store.Event{
+		{TraceID: "tr-1", SessionKey: key, Kind: "client",
+			Provider: "anthropic", Model: "claude-sonnet", StatusCode: 200,
+			Ts: now, LatencyMs: 100,
+			Content: &store.CapturedContent{
+				Request: []store.Block{
+					{MsgIndex: 0, Position: 0, Role: "system", Kind: "text", Body: []byte("opener preamble")},
+					{MsgIndex: 1, Position: 0, Role: "user", Kind: "text", Body: []byte("hi")},
+				},
+			}},
+		// Turn 2 resends turn 1's history but carries a DIFFERENT system
+		// prompt — a title/subagent-style prompt swap mid-session — plus a
+		// pre-guardrail rewrite, so both the "own prompt, not the opener's"
+		// and the "original vs guardrailed" claims are exercised together.
+		{TraceID: "tr-2", SessionKey: key, Kind: "client",
+			Provider: "anthropic", Model: "claude-sonnet", StatusCode: 200,
+			Ts: now.Add(2 * time.Second), LatencyMs: 100,
+			Content: &store.CapturedContent{
+				Request:            []store.Block{{MsgIndex: 0, Position: 0, Role: "system", Kind: "text", Body: []byte("turn 2's own preamble")}},
+				RequestGuardrailed: []store.Block{{MsgIndex: 0, Position: 0, Role: "system", Kind: "text", Body: []byte("turn 2's rewritten preamble")}},
+			}},
+		// A classifier call nested under turn 1, with its own system prompt —
+		// distinct from both client turns'.
+		{TraceID: "tr-1", SessionKey: "classifier-key", Kind: "classifier",
+			Provider: "anthropic", Model: "claude-haiku", StatusCode: 200,
+			Ts: now.Add(1 * time.Second), LatencyMs: 20,
+			Content: &store.CapturedContent{
+				Request: []store.Block{{MsgIndex: 0, Position: 0, Role: "system", Kind: "text", Body: []byte("classifier's own preamble")}},
+			}},
+	}
+
+	h, _ := newSeededHandler(t, events...)
+	body := serve(t, h, "GET", "/admin/ui/session?key="+key, false).Body.String()
+
+	for _, want := range []string{
+		"opener preamble",
+		"turn 2&#39;s rewritten preamble", // as-sent (guardrailed) form, shown by default
+		"turn 2&#39;s own preamble",       // client original form
+		"classifier&#39;s own preamble",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q from a per-request system prompt\n--- body ---\n%s", want, body)
+		}
+	}
+	// "opener preamble" appears exactly once in one render: turn 1's own
+	// (hidden, moved-on-click) preamble panel, in the single-panel form the
+	// no-guardrail case now uses (see transcriptInspector.html — rendering
+	// AsSent and Original separately when they're byte-identical was the
+	// actual page-weight regression on a long session with a large system
+	// prompt, not the DB reads). The real invariant under test is that it
+	// does NOT also leak into turn 2's panel — if it did, the count would
+	// climb past this exact total.
+	if n := strings.Count(body, "opener preamble"); n != 1 {
+		t.Errorf("opener preamble appeared %d times, want exactly 1 (turn 2 must not also show turn 1's prompt)\n%s", n, body)
 	}
 }
 

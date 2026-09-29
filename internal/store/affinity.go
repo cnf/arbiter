@@ -16,9 +16,10 @@ import (
 // broke its prompt cache. Session pinning is what keeps a conversation coherent
 // and cheap, so it has to survive both a reload and a restart.
 
-// AffinityPin is one session's pin.
+// AffinityPin is one prompt family's pin within a session.
 type AffinityPin struct {
 	SessionKey     string
+	PromptHash     string
 	RequestedModel string
 	Provider       string
 	Model          string
@@ -34,8 +35,8 @@ type AffinityPin struct {
 // when no store is configured.
 type Pinner interface {
 	SavePin(ctx context.Context, p AffinityPin) error
-	LoadPin(ctx context.Context, sessionKey string) (AffinityPin, bool, error)
-	DeletePin(ctx context.Context, sessionKey string) error
+	LoadPin(ctx context.Context, sessionKey, promptHash string) (AffinityPin, bool, error)
+	DeletePin(ctx context.Context, sessionKey, promptHash string) error
 }
 
 // SQLiteWriter implements Pinner. Asserted at compile time because the failure
@@ -59,49 +60,50 @@ func (w *SQLiteWriter) SavePin(ctx context.Context, p AffinityPin) error {
 	}
 
 	const q = `
-INSERT INTO affinity_pins (session_key, requested_model, provider, model, expires_at)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT(session_key) DO UPDATE SET
+INSERT INTO affinity_pins (session_key, prompt_hash, requested_model, provider, model, expires_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(session_key, prompt_hash) DO UPDATE SET
     requested_model = excluded.requested_model,
     provider        = excluded.provider,
     model           = excluded.model,
     expires_at      = excluded.expires_at`
-	if _, err := w.db.ExecContext(ctx, q, p.SessionKey, p.RequestedModel, p.Provider, p.Model, p.ExpiresAt.UTC()); err != nil {
+	if _, err := w.db.ExecContext(ctx, q, p.SessionKey, p.PromptHash, p.RequestedModel, p.Provider, p.Model, p.ExpiresAt.UTC()); err != nil {
 		return fmt.Errorf("save affinity pin for session %q: %w", p.SessionKey, err)
 	}
 	return nil
 }
 
-// DeletePin removes a session's pin. Used when a client explicitly switches
-// models, which means the pin no longer applies.
-func (w *SQLiteWriter) DeletePin(ctx context.Context, sessionKey string) error {
+// DeletePin removes one prompt family's pin. Used when a client explicitly
+// switches models within that family, which means the pin no longer applies —
+// the other families sharing this session_key are untouched.
+func (w *SQLiteWriter) DeletePin(ctx context.Context, sessionKey, promptHash string) error {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	if w.closed {
 		return fmt.Errorf("event store is closed")
 	}
-	if _, err := w.db.ExecContext(ctx, `DELETE FROM affinity_pins WHERE session_key = ?`, sessionKey); err != nil {
+	if _, err := w.db.ExecContext(ctx, `DELETE FROM affinity_pins WHERE session_key = ? AND prompt_hash = ?`, sessionKey, promptHash); err != nil {
 		return fmt.Errorf("delete affinity pin for session %q: %w", sessionKey, err)
 	}
 	return nil
 }
 
-// LoadPin reads a session's pin through the writer's own connection.
+// LoadPin reads one prompt family's pin through the writer's own connection.
 //
 // It lives here as well as on Reader because Pinner requires all three methods on
 // one type, and the pipeline is handed the writer. Without it, no single type
 // satisfied Pinner and the wiring silently degraded to in-memory pins — a failure
 // with no error anywhere, which is why the end-to-end check for this feature
 // asserts a row actually lands in the table.
-func (w *SQLiteWriter) LoadPin(ctx context.Context, sessionKey string) (AffinityPin, bool, error) {
-	return loadPin(ctx, w.db, sessionKey)
+func (w *SQLiteWriter) LoadPin(ctx context.Context, sessionKey, promptHash string) (AffinityPin, bool, error) {
+	return loadPin(ctx, w.db, sessionKey, promptHash)
 }
 
-// LoadPin reads a session's pin. ok=false means no usable pin: absent, or
+// LoadPin reads one prompt family's pin. ok=false means no usable pin: absent, or
 // present but expired. The reader's copy exists so read-side callers (and tests)
 // need no writer handle; both run the same SQL through loadPin.
-func (r *Reader) LoadPin(ctx context.Context, sessionKey string) (AffinityPin, bool, error) {
-	return loadPin(ctx, r.db, sessionKey)
+func (r *Reader) LoadPin(ctx context.Context, sessionKey, promptHash string) (AffinityPin, bool, error) {
+	return loadPin(ctx, r.db, sessionKey, promptHash)
 }
 
 // loadPin is the shared implementation. The expiry check happens here rather than
@@ -109,14 +111,14 @@ func (r *Reader) LoadPin(ctx context.Context, sessionKey string) (AffinityPin, b
 // can sit in the table for up to a sweep interval, and honouring it would pin a
 // conversation to a provider long after the idle timeout was supposed to release
 // it.
-func loadPin(ctx context.Context, db *sql.DB, sessionKey string) (AffinityPin, bool, error) {
+func loadPin(ctx context.Context, db *sql.DB, sessionKey, promptHash string) (AffinityPin, bool, error) {
 	const q = `
-SELECT session_key, requested_model, provider, model, expires_at
+SELECT session_key, prompt_hash, requested_model, provider, model, expires_at
 FROM affinity_pins
-WHERE session_key = ?`
+WHERE session_key = ? AND prompt_hash = ?`
 	var p AffinityPin
-	err := db.QueryRowContext(ctx, q, sessionKey).Scan(
-		&p.SessionKey, &p.RequestedModel, &p.Provider, &p.Model, &p.ExpiresAt)
+	err := db.QueryRowContext(ctx, q, sessionKey, promptHash).Scan(
+		&p.SessionKey, &p.PromptHash, &p.RequestedModel, &p.Provider, &p.Model, &p.ExpiresAt)
 	if err == sql.ErrNoRows {
 		return AffinityPin{}, false, nil
 	}

@@ -2,6 +2,14 @@
 // configuration file. Provider API keys are written as ${ENV_VAR}
 // placeholders in the YAML and substituted from the process environment at
 // load time, so secrets never live in the config file itself.
+//
+// The package is split so "where is X validated" has an obvious answer:
+//
+//	config.go       every config struct, plus Load, Validate, and the
+//	                name-uniqueness and catalog-merge helpers
+//	classifiers.go  classifier validation: axes, llm/decisions, match, input cap
+//	aliases.go      alias validation: membership, catalog entries, cycles
+//	env.go          ${ENV_VAR} expansion, done before YAML parsing
 package config
 
 import (
@@ -11,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -129,6 +136,23 @@ type SessionAffinityConfig struct {
 	// timeout, refreshed on every hit), parsed as a Go duration. Defaults to
 	// 5m if unset.
 	DefaultTTL string `yaml:"default_ttl,omitempty"`
+	// NoPin lists request_kind values that must never be pinned — the
+	// request still classifies and routes normally, it just never writes or
+	// reads an affinity_pins row. Since #70, pins are already keyed on
+	// (session_key, hash(system prompt)), so a title call and the main
+	// thread can no longer collide; this is a cost knob, not a correctness
+	// fix. A title call's own key is never reused (its conversation is
+	// different every time), so pinning it is a write that is never read —
+	// harmless, but pure churn. NoPin lets an operator who knows their own
+	// traffic shape skip that write for kinds they know will never benefit.
+	//
+	// Empty (the shipped default) pins every classified kind, same as
+	// before this field existed — Arbiter has no way to know which kinds a
+	// given deployment even produces, so it ships no opinion. "title" is a
+	// reasonable value to add for a deployment that sees title calls; it is
+	// documented as an example, not defaulted, because that is the
+	// operator's call about their own traffic, not Arbiter's to assume.
+	NoPin []string `yaml:"no_pin,omitempty"`
 }
 
 // AdminConfig governs Arbiter's /admin/* surface. Arbiter deliberately
@@ -201,6 +225,17 @@ type AliasConfig struct {
 	// { domain: ["code_generation"] }. Mutually exclusive with Type.
 	Force map[string][]string `yaml:"force,omitempty"`
 
+	// RequestKind is what a request naming this alias IS — e.g. "subagent"
+	// for an alias dedicated to subagent traffic. It is stamped onto every
+	// request that routes through the alias, at every path the alias decides
+	// the route (the pinned/group short-circuit, the affinity pin serving a
+	// later turn, and the force-alias override), so the row says what the
+	// request is even where classification never runs. Not an axis: like a
+	// kind-only matcher hit it carries no confidence and no `force:` key can
+	// express it — see types.Signals.RequestKind. Empty means the alias
+	// says nothing about the request's kind.
+	RequestKind string `yaml:"request_kind,omitempty"`
+
 	Type     string `yaml:"type,omitempty"` // "pinned" | "group"
 	Provider string `yaml:"provider,omitempty"`
 	Model    string `yaml:"model,omitempty"`
@@ -243,23 +278,6 @@ type LoggingConfig struct {
 	Output string `yaml:"output"`
 }
 
-// envVarPattern matches ${VAR_NAME} placeholders.
-var envVarPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
-
-// expandEnv replaces ${VAR_NAME} placeholders with their environment
-// values. A placeholder for an unset variable is left untouched (rather
-// than silently becoming "") so a missing secret is easy to spot in a
-// dumped config instead of quietly turning into an empty API key.
-func expandEnv(raw []byte) []byte {
-	return envVarPattern.ReplaceAllFunc(raw, func(match []byte) []byte {
-		name := envVarPattern.FindSubmatch(match)[1]
-		if val, ok := os.LookupEnv(string(name)); ok {
-			return []byte(val)
-		}
-		return match
-	})
-}
-
 // Validate checks that the config is well-formed: every named component
 // (classifier/router/guardrail) has a registered type, every router's
 // default/fallback providers exist, and every guardrail/classifier/router
@@ -291,6 +309,17 @@ func (c *Config) Validate() error {
 	if c.SessionAffinity.DefaultTTL != "" {
 		if _, err := time.ParseDuration(c.SessionAffinity.DefaultTTL); err != nil {
 			return arbitererrors.NewConfigError(fmt.Sprintf("session_affinity: invalid default_ttl %q", c.SessionAffinity.DefaultTTL), err)
+		}
+	}
+	if len(c.SessionAffinity.NoPin) > 0 {
+		known := knownRequestKinds(c)
+		for _, kind := range c.SessionAffinity.NoPin {
+			if kind == "" {
+				return arbitererrors.NewConfigError("session_affinity: no_pin entries must not be empty — an empty entry would match ordinary client traffic, which has no request_kind at all", nil)
+			}
+			if !containsString(known, kind) {
+				return arbitererrors.NewConfigError(fmt.Sprintf("session_affinity: no_pin: unknown request_kind %q (declared kinds: %v) — a typo here silently pins as if the entry were absent", kind, known), nil)
+			}
 		}
 	}
 
@@ -425,703 +454,6 @@ func validateClassifierAxes(cs []ClassifierConfig) error {
 	return nil
 }
 
-// validateLLMClassifiers checks every "llm"-type classifier's alias, labels,
-// escape label, instructions and fallback reference. This is the one place a
-// classifier's otherwise-opaque `config:` map (cmd/arbiter's buildClassifier is
-// what interprets it for every type) gets a load-time look from this package —
-// worth the exception because a bad alias or a missing fallback would otherwise
-// only surface as a silent runtime fallback (every classification call failing
-// and falling through to its wrapped classifier, with no load-time signal
-// that anything is wrong) rather than a config error, which is exactly the
-// class of mistake this package exists to catch elsewhere.
-func (c *Config) validateLLMClassifiers() error {
-	classifierTypes := make(map[string]string, len(c.Classifiers)) // name -> type
-	for _, cc := range c.Classifiers {
-		classifierTypes[cc.Name] = cc.Type
-	}
-
-	for _, cc := range c.Classifiers {
-		if cc.Type != "llm" {
-			continue
-		}
-		alias, _ := cc.Config["alias"].(string)
-		model, _ := cc.Config["model"].(string)
-		if alias != "" && model != "" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"llm\" must set exactly one of \"alias\" or \"model\", not both", cc.Name), nil)
-		}
-		if alias == "" && model == "" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"llm\" requires exactly one of \"alias\" or \"model\"", cc.Name), nil)
-		}
-		if model != "" {
-			// The model must be declared by some configured provider, or the
-			// classifier's call can only fail at request time.
-			if !c.modelDeclared(model) {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: model %q is not a declared model of any configured provider", cc.Name, model), nil)
-			}
-		}
-		if alias != "" {
-			if _, ok := c.Aliases[alias]; !ok {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: alias %q is not configured", cc.Name, alias), nil)
-			}
-			// The alias must name a pinned/group alias, never a force-alias:
-			// a force alias selects no provider/model (it only shapes routing
-			// axes), so routing the classification call through it would only
-			// fail at request time. Same class of check validateDecisionsAlias
-			// performs.
-			if a, ok := c.Aliases[alias]; ok && a.Force != nil {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: alias %q is a force-alias and selects no provider/model — a classifier needs a pinned or group alias to route its calls through", cc.Name, alias), nil)
-			}
-		}
-		// Parsed with the same function the builder uses, so a shape
-		// validation accepts cannot be one construction drops. Labels may be
-		// bare names or name -> rubric-description pairs.
-		labels, err := types.ParseLabels(cc.Config["labels"])
-		if err != nil {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: invalid labels: %v", cc.Name, err), nil)
-		}
-		if len(labels) == 0 {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"llm\" requires a non-empty \"labels\" list", cc.Name), nil)
-		}
-		seen := make(map[string]bool, len(labels))
-		for _, l := range labels {
-			if l.Name == "" {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: labels must not contain an empty name", cc.Name), nil)
-			}
-			key := strings.ToLower(l.Name)
-			if seen[key] {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: label %q is declared more than once", cc.Name, l.Name), nil)
-			}
-			// "unmatched" is the reserved sentinel value an escape verdict
-			// fills the axis with (see types.UnmatchedValue) — a real label
-			// of that name would be indistinguishable in a `when:` rule from
-			// "nothing matched".
-			if key == types.UnmatchedValue {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: label %q is reserved — it is the sentinel value an escape verdict fills the axis with", cc.Name, l.Name), nil)
-			}
-			seen[key] = true
-		}
-		// An escape label must be one of the declared labels: it is the name
-		// the model is told to reply with, so a name the model is never offered
-		// could only ever be reached by coincidence.
-		if escape, _ := cc.Config["escape"].(string); escape != "" {
-			if !seen[strings.ToLower(escape)] {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: escape label %q is not one of the declared labels", cc.Name, escape), nil)
-			}
-		}
-		if raw, ok := cc.Config["instructions"]; ok {
-			if _, isStr := raw.(string); !isStr {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: instructions must be a string", cc.Name), nil)
-			}
-		}
-		fallback, _ := cc.Config["fallback"].(string)
-		if fallback == "" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"llm\" requires \"fallback\"", cc.Name), nil)
-		}
-		fbType, ok := classifierTypes[fallback]
-		if !ok {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: fallback %q is not a configured classifier", cc.Name, fallback), nil)
-		}
-		if fbType == "llm" || fbType == "decisions" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: fallback %q must not itself be a model-backed classifier (%q) — a failed classification must not become a second classification call", cc.Name, fallback, fbType), nil)
-		}
-		if raw, _ := cc.Config["timeout"].(string); raw != "" {
-			if _, err := time.ParseDuration(raw); err != nil {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: invalid timeout %q", cc.Name, raw), err)
-			}
-		}
-	}
-	return nil
-}
-
-// validateDecisionsClassifiers checks every "decisions"-type classifier's
-// alias, questions, labels, escape labels, instructions and fallback reference.
-//
-// Same exception as validateLLMClassifiers and for the same reason: a
-// classifier's `config:` map is otherwise opaque to this package, but a bad
-// alias or a missing fallback would only ever surface as a silent runtime
-// fallback — every classification call failing and quietly deferring to the
-// wrapped classifier, with no load-time signal that anything is wrong.
-//
-// The one rule that is genuinely decisions-specific: a question's type must be
-// "choice". Only that primitive is built, and accepting "score" or "noul" in
-// config while the builder ignores them would be exactly the silent no-op this
-// package exists to catch.
-func (c *Config) validateDecisionsClassifiers() error {
-	classifierTypes := make(map[string]string, len(c.Classifiers)) // name -> type
-	for _, cc := range c.Classifiers {
-		classifierTypes[cc.Name] = cc.Type
-	}
-
-	for _, cc := range c.Classifiers {
-		if cc.Type != "decisions" {
-			continue
-		}
-		alias, _ := cc.Config["alias"].(string)
-		model, _ := cc.Config["model"].(string)
-		if alias != "" && model != "" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"decisions\" must set exactly one of \"alias\" or \"model\", not both", cc.Name), nil)
-		}
-		if alias == "" && model == "" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"decisions\" requires exactly one of \"alias\" or \"model\"", cc.Name), nil)
-		}
-		if model != "" {
-			if !c.modelDeclared(model) {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: model %q is not a declared model of any configured provider", cc.Name, model), nil)
-			}
-			// A decisions classifier's call must go to a decisions-type
-			// provider, whatever the target is — the endpoint is called
-			// directly, not as a chat completion.
-			if !c.modelOnDecisionsProvider(model) {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: model %q is not declared by a provider of type \"decisions\" — a decisions classifier needs a decisions provider (its endpoint is called directly, not as a chat completion)", cc.Name, model), nil)
-			}
-		}
-		if alias != "" {
-			if _, ok := c.Aliases[alias]; !ok {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: alias %q is not configured", cc.Name, alias), nil)
-			}
-			// The alias must resolve to a provider that speaks the decisions
-			// protocol. A pinned alias naming an ordinary chat provider would
-			// otherwise send a `state`/`questions` body to /chat/completions and
-			// fail at request time with a translation error, which is a far worse
-			// place to learn it than config load.
-			if err := c.validateDecisionsAlias(cc.Name, alias); err != nil {
-				return err
-			}
-		}
-
-		raw, ok := cc.Config["questions"]
-		if !ok {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"decisions\" requires \"questions\"", cc.Name), nil)
-		}
-		questions, ok := raw.(map[string]interface{})
-		if !ok {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: \"questions\" must be a map of name -> question", cc.Name), nil)
-		}
-		if len(questions) == 0 {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"decisions\" requires at least one question", cc.Name), nil)
-		}
-
-		// Every question is asked in one call, so two questions filling the
-		// same axis would race for it with nothing to break the tie — the
-		// verdict would depend on map iteration order.
-		axesSeen := make(map[string]string, len(questions))
-		for qname, rawQ := range questions {
-			q, ok := rawQ.(map[string]interface{})
-			if !ok {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q must be a map", cc.Name, qname), nil)
-			}
-			qtype, _ := q["type"].(string)
-			if qtype != types.DecisionChoice {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q has type %q, which is not supported yet (want %q)", cc.Name, qname, qtype, types.DecisionChoice), nil)
-			}
-			axis, _ := q["axis"].(string)
-			if axis == "" {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q requires \"axis\"", cc.Name, qname), nil)
-			}
-			if !canonicalAxisSet[axis] {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q has unknown axis %q (want one of %v)", cc.Name, qname, axis, types.KnownAxes), nil)
-			}
-			if other, taken := axesSeen[axis]; taken {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: questions %q and %q both fill axis %q — they are asked in one call, so neither can win", cc.Name, other, qname, axis), nil)
-			}
-			axesSeen[axis] = qname
-
-			// Parsed with the same function the builder uses, so a shape
-			// validation accepts cannot be one construction drops.
-			labels, err := types.ParseLabels(q["labels"])
-			if err != nil {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: invalid labels: %v", cc.Name, qname, err), nil)
-			}
-			if len(labels) == 0 {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q requires a non-empty \"labels\" list", cc.Name, qname), nil)
-			}
-			seen := make(map[string]bool, len(labels))
-			for _, l := range labels {
-				if l.Name == "" {
-					return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: labels must not contain an empty name", cc.Name, qname), nil)
-				}
-				key := strings.ToLower(l.Name)
-				if seen[key] {
-					return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: label %q is declared more than once", cc.Name, qname, l.Name), nil)
-				}
-				seen[key] = true
-			}
-
-			// "other" is the name this codebase sends for the escape option, so
-			// a label of that name would collide with it: the criteria map is
-			// keyed by name, and the second write would win silently.
-			if seen["other"] {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: label \"other\" is reserved (it is the option name sent for the escape label)", cc.Name, qname), nil)
-			}
-
-			// "unmatched" is the reserved sentinel value an escape verdict
-			// fills the axis with (see types.UnmatchedValue) — a real label
-			// of that name would be indistinguishable in a `when:` rule from
-			// "nothing matched".
-			if seen[types.UnmatchedValue] {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: label \"unmatched\" is reserved — it is the sentinel value an escape verdict fills the axis with", cc.Name, qname), nil)
-			}
-
-			// An escape label must be one of the declared labels: it is the
-			// option the model is offered, so a name never sent could only be
-			// reached by coincidence.
-			if escape, _ := q["escape"].(string); escape != "" {
-				if !seen[strings.ToLower(escape)] {
-					return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: escape label %q is not one of the declared labels", cc.Name, qname, escape), nil)
-				}
-			}
-
-			if raw, ok := q["instructions"]; ok {
-				if _, isStr := raw.(string); !isStr {
-					return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: instructions must be a string", cc.Name, qname), nil)
-				}
-			}
-		}
-
-		fallback, _ := cc.Config["fallback"].(string)
-		if fallback == "" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: type \"decisions\" requires \"fallback\"", cc.Name), nil)
-		}
-		fbType, ok := classifierTypes[fallback]
-		if !ok {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: fallback %q is not a configured classifier", cc.Name, fallback), nil)
-		}
-		// A decisions classifier MAY fall back to an llm classifier, unlike an
-		// llm classifier (see validateLLMClassifiers). The rule there exists to
-		// bound chains; decisions -> llm is depth 1 and terminates, because the
-		// llm classifier's own fallback must still be a non-model classifier.
-		// It is also the useful direction: a chat model asked the same question
-		// is exactly the escalation a failed decision call wants.
-		if fbType == "decisions" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: fallback %q must not itself be type \"decisions\" (no chained decision calls)", cc.Name, fallback), nil)
-		}
-		if raw, _ := cc.Config["timeout"].(string); raw != "" {
-			if _, err := time.ParseDuration(raw); err != nil {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: invalid timeout %q", cc.Name, raw), err)
-			}
-		}
-	}
-	return nil
-}
-
-// modelDeclared reports whether model is a declared model of some configured
-// provider. Used to reject a classifier whose `model:` target could only fail
-// at request time (no provider offers it).
-func (c *Config) modelDeclared(model string) bool {
-	for _, pc := range c.Providers {
-		for _, m := range pc.Models {
-			if m == model {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// modelOnDecisionsProvider reports whether model is declared by a provider of
-// type "decisions". A decisions classifier's call goes to the decision
-// endpoint directly, not as a chat completion, so its target must be one.
-func (c *Config) modelOnDecisionsProvider(model string) bool {
-	for _, pc := range c.Providers {
-		if pc.Type != "decisions" {
-			continue
-		}
-		for _, m := range pc.Models {
-			if m == model {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// validateDecisionsAlias resolves a decisions classifier's alias and requires
-// every target it can reach to be a provider of type "decisions" — including a
-// group alias's members and any alias they resolve through.
-func (c *Config) validateDecisionsAlias(classifier, alias string) error {
-	seen := make(map[string]bool)
-	var walk func(name string) error
-	walk = func(name string) error {
-		if seen[name] {
-			// Cycles are rejected by validateAliases; stopping here keeps this
-			// walk from looping while that error is reported.
-			return nil
-		}
-		seen[name] = true
-
-		a, ok := c.Aliases[name]
-		if !ok {
-			return nil
-		}
-		if a.Type == "pinned" && a.Provider != "" {
-			// A member may itself name another alias, resolved recursively.
-			if _, isAlias := c.Aliases[a.Provider]; isAlias {
-				return walk(a.Provider)
-			}
-			if pc, ok := c.Providers[a.Provider]; ok && pc.Type != "decisions" {
-				return arbitererrors.NewConfigError(fmt.Sprintf(
-					"classifier %q: alias %q resolves to provider %q of type %q — a decisions classifier needs a provider of type \"decisions\" (its endpoint is called directly, not as a chat completion)",
-					classifier, name, a.Provider, pc.Type), nil)
-			}
-		}
-		for _, m := range a.Members {
-			if err := walk(m.Provider); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	return walk(alias)
-}
-
-// validateClassifierMatch checks every classifier's optional `match:` and
-// `detect:` blocks.
-//
-// `match` and `detect` are interpreted by cmd/arbiter's buildClassifier, which
-// this package cannot reach, so a shape it would drop has to be caught here.
-// The failure mode is the one this file exists to prevent: a `match` block the
-// builder ignores looks exactly like a `match` block that never hits, and the
-// operator concludes the signature is wrong rather than the config.
-func validateClassifierMatch(cs []ClassifierConfig) error {
-	for _, cc := range cs {
-		// `detect` and `long_context_tokens` are only meaningful on the
-		// capabilities axis. On any other axis the structural hit would be
-		// discarded by fillAxis.
-		if raw, ok := cc.Config["detect"]; ok {
-			if cc.Type != "capability_detector" && cc.Axis != types.AxisCapabilitiesName {
-				return arbitererrors.NewConfigError(fmt.Sprintf(
-					"classifier %q: \"detect\" only applies to the capabilities axis (this one fills %q; use type \"capability_detector\" or axis: %q)",
-					cc.Name, cc.Axis, types.AxisCapabilitiesName), nil)
-			}
-			names, err := matchStringList(raw, "detect")
-			if err != nil {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: %v", cc.Name, err), nil)
-			}
-			if len(names) == 0 {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: \"detect\" must name at least one capability (want one of %v)", cc.Name, types.KnownCapabilities), nil)
-			}
-			for _, name := range names {
-				if !containsString(types.KnownCapabilities, name) {
-					return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: unknown capability %q in detect (want one of %v)", cc.Name, name, types.KnownCapabilities), nil)
-				}
-				// long_context is the one capability that needs a threshold:
-				// without one it could never fire, and "never fires" is
-				// indistinguishable from "the request was short".
-				if name == types.CapLongContext {
-					if n, _ := cc.Config["long_context_tokens"].(int); n <= 0 {
-						return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: detect \"long_context\" requires \"long_context_tokens\" (a positive token threshold); without one it can never match", cc.Name), nil)
-					}
-				}
-			}
-		}
-
-		raw, ok := cc.Config["match"]
-		if !ok {
-			continue
-		}
-		patterns, err := types.ParseMatchPatterns(raw)
-		if err != nil {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: match: %v", cc.Name, err), nil)
-		}
-		if len(patterns) == 0 {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: match needs at least one pattern", cc.Name), nil)
-		}
-		value, _ := cc.Config["value"].(string)
-		kind, _ := cc.Config["kind"].(string)
-		if value == "" && kind == "" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: match requires \"value\" (the axis value a hit fills) or \"kind\" (the request kind a hit records)", cc.Name), nil)
-		}
-		if raw, ok := cc.Config["where"]; ok {
-			where, err := matchStringList(raw, "where")
-			if err != nil {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: %v", cc.Name, err), nil)
-			}
-			if _, err := types.ParseMatchTargets(where); err != nil {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: %v", cc.Name, err), nil)
-			}
-		}
-		if raw, ok := cc.Config["decisive"]; ok {
-			if _, isBool := raw.(bool); !isBool {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: decisive must be a boolean", cc.Name), nil)
-			}
-		}
-		// A decisive matcher ends classification for everything after it, so
-		// it must not be able to end it for a request it does not match.
-		// Compiling each pattern is the only way to know that here.
-		for _, p := range patterns {
-			if _, err := types.NewTextMatcher(p.Pattern, types.MatchMode(p.Mode)); err != nil {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: match pattern %q: %v", cc.Name, p.Pattern, err), nil)
-			}
-		}
-	}
-	return nil
-}
-
-// validateClassifierInputCap checks a model-backed classifier's optional
-// `max_input_chars`.
-//
-// The builder reads it with intFromConfig, which returns 0 for any shape it
-// does not recognise — and 0 means "unset, take the default". So a value that
-// is a string, a float or a map would silently become the default cap while the
-// operator believes they set one. Caught here because cmd/arbiter cannot report
-// it: by the time the builder runs, "unset" and "unreadable" are the same 0.
-func validateClassifierInputCap(cs []ClassifierConfig) error {
-	for _, cc := range cs {
-		raw, ok := cc.Config["max_input_chars"]
-		if !ok {
-			continue
-		}
-		n, isInt := raw.(int)
-		if !isInt {
-			return arbitererrors.NewConfigError(fmt.Sprintf(
-				"classifier %q: max_input_chars must be a whole number of characters (got %T); 0 is rejected too — omit the field for the default, or use a negative value to mean unlimited",
-				cc.Name, raw), nil)
-		}
-		if n == 0 {
-			// 0 would read as "unset" and take the default, so an operator
-			// writing it expects either no limit or no input at all — both
-			// different from what they would get.
-			return arbitererrors.NewConfigError(fmt.Sprintf(
-				"classifier %q: max_input_chars of 0 is ambiguous — omit the field for the default, or use a negative value for unlimited",
-				cc.Name), nil)
-		}
-	}
-	return nil
-}
-
-// matchStringList reads a config value that may be a YAML list or a single
-// string, for the shapes this file validates on its own rather than through a
-// types parser.
-func matchStringList(raw interface{}, field string) ([]string, error) {
-	switch v := raw.(type) {
-	case nil:
-		return nil, nil
-	case string:
-		return []string{v}, nil
-	case []interface{}:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("%s entries must be strings, got %T", field, item)
-			}
-			out = append(out, s)
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("%s must be a string or a list of strings, got %T", field, raw)
-	}
-}
-
-func containsString(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
-		}
-	}
-	return false
-}
-
-// validateAliases checks the aliases block: names unique and disjoint from
-// provider names (an unqualified lookup must be unambiguous), pinned/group
-// members reference a configured provider and one of its declared models
-// (unless the member instead names another alias, resolved recursively),
-// force keys are known axis names, and the alias graph has no cycles.
-func (c *Config) validateAliases() error {
-	if len(c.Aliases) == 0 {
-		return nil
-	}
-
-	// Since a declared model name takes routing precedence over an alias, an
-	// alias sharing a model's name would be silently unreachable — reject it.
-	declaredModels := make(map[string]string)
-	for provider, pc := range c.Providers {
-		for _, m := range pc.Models {
-			declaredModels[m] = provider
-		}
-	}
-
-	for name, a := range c.Aliases {
-		if name == "" {
-			return arbitererrors.NewConfigError("alias: entry missing name", nil)
-		}
-		if _, ok := c.Providers[name]; ok {
-			return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: name collides with a configured provider", name), nil)
-		}
-		if provider, ok := declaredModels[name]; ok {
-			return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: name collides with a model declared by provider %q (an explicit model name takes precedence, so this alias would be unreachable)", name, provider), nil)
-		}
-
-		switch {
-		case a.Force != nil:
-			// A declared force block, even an empty one (`force: {}`) — the
-			// latter is the "full auto" alias: force nothing, let every axis
-			// classify and the rules decide.
-			if a.Type != "" {
-				return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: force alias must not also set type", name), nil)
-			}
-			for axis := range a.Force {
-				if !knownAxisSet[axis] {
-					return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: force names unknown axis %q", name, axis), nil)
-				}
-			}
-
-		case a.Type == "pinned":
-			if err := c.validateAliasMember(name, AliasMemberConfig{Provider: a.Provider, Model: a.Model}); err != nil {
-				return err
-			}
-
-		case a.Type == "group":
-			if len(a.Members) == 0 {
-				return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: group has no members", name), nil)
-			}
-			if !validSelect(a.Select) {
-				return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: unknown select %q (want one of %s)", name, a.Select, strings.Join(selectStrategies, ", ")), nil)
-			}
-			for _, m := range a.Members {
-				if err := c.validateAliasMember(name, m); err != nil {
-					return err
-				}
-			}
-
-		default:
-			return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: must set force, or type \"pinned\"/\"group\"", name), nil)
-		}
-	}
-
-	return c.detectAliasCycles()
-}
-
-// selectStrategies are the values a group alias's `select:` accepts. The
-// cost/latency ones require catalog entries to be useful; without them they
-// degrade to first-listed (see router.selectMember). "ordered" is the one
-// strategy that needs no catalog at all: it takes the members exactly as
-// written, so the declared list *is* the preference order and the remaining
-// members become the degradation path.
-var selectStrategies = []string{"random", "cheapest_input", "cheapest_output", "fastest", "ordered"}
-
-// validSelect reports whether s is a known strategy. Empty means the default
-// (random).
-func validSelect(s string) bool {
-	if s == "" {
-		return true
-	}
-	for _, v := range selectStrategies {
-		if s == v {
-			return true
-		}
-	}
-	return false
-}
-
-// validateModelCatalog checks catalog rows: the provider must be configured,
-// and the model must be one of that provider's declared Models. Both are
-// errors — a row that can never match is a config bug, and the lookup's
-// unknown-row tolerance is for genuinely absent entries, not typos. By the
-// time this runs, mergeModelCatalogFile has already dropped any
-// model_catalog_file row that fails this same check (a generated catalog is
-// expected to be a superset), so in practice this only ever rejects the
-// hand-written inline model_catalog: block — which is exactly where a typo is
-// worth catching.
-func (c *Config) validateModelCatalog() error {
-	seen := make(map[string]int, len(c.ModelCatalog))
-	for i, e := range c.ModelCatalog {
-		if e.Provider == "" || e.Model == "" {
-			return arbitererrors.NewConfigError(fmt.Sprintf("model_catalog[%d]: provider and model are required", i), nil)
-		}
-		p, ok := c.Providers[e.Provider]
-		if !ok {
-			return arbitererrors.NewConfigError(fmt.Sprintf("model_catalog[%d]: provider %q is not configured", i, e.Provider), nil)
-		}
-		if !slicesContain(p.Models, e.Model) {
-			return arbitererrors.NewConfigError(fmt.Sprintf("model_catalog[%d]: model %q is not declared by provider %q", i, e.Model, e.Provider), nil)
-		}
-		key := e.Provider + "\x00" + e.Model
-		if prev, dup := seen[key]; dup {
-			return arbitererrors.NewConfigError(fmt.Sprintf("model_catalog[%d]: duplicate row for %s/%s (already at index %d)", i, e.Provider, e.Model, prev), nil)
-		}
-		seen[key] = i
-	}
-	return nil
-}
-
-// validateAliasMember checks one pinned/group member: its Provider must be
-// a configured provider, and Model must be one of that provider's declared
-// Models (the Member row may set Model to override the first declared model,
-// which is useful when a single provider lists several models and only one
-// is the alias's representative). Empty Model is accepted when the provider
-// has no declared models.
-//
-// If the Member itself names another alias, the caller (detectAliasCycles)
-// resolves it elsewhere; here the Provider is another alias name and we skip
-// the Model check.
-func (c *Config) validateAliasMember(aliasName string, m AliasMemberConfig) error {
-	if m.Provider == "" {
-		return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: member missing provider", aliasName), nil)
-	}
-	if _, isAlias := c.Aliases[m.Provider]; isAlias {
-		return nil
-	}
-	pc, ok := c.Providers[m.Provider]
-	if !ok {
-		return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: member provider %q is not configured", aliasName, m.Provider), nil)
-	}
-	if m.Model != "" && len(pc.Models) > 0 && !slicesContain(pc.Models, m.Model) {
-		return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: member model %q is not declared for provider %q", aliasName, m.Model, m.Provider), nil)
-	}
-	return nil
-}
-
-// detectAliasCycles runs a DFS over the alias graph (edges: pinned/group
-// member -> alias it names) and errors on any cycle, rather than letting one
-// slip through to the runtime's maxAliasDepth backstop.
-func (c *Config) detectAliasCycles() error {
-	const (
-		unvisited = 0
-		visiting  = 1
-		done      = 2
-	)
-	state := make(map[string]int, len(c.Aliases))
-
-	var visit func(name string) error
-	visit = func(name string) error {
-		a, ok := c.Aliases[name]
-		if !ok {
-			return nil // not an alias (a real provider); nothing to follow
-		}
-		switch state[name] {
-		case visiting:
-			return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: cycle detected", name), nil)
-		case done:
-			return nil
-		}
-		state[name] = visiting
-
-		var members []AliasMemberConfig
-		switch a.Type {
-		case "pinned":
-			members = []AliasMemberConfig{{Provider: a.Provider, Model: a.Model}}
-		case "group":
-			members = a.Members
-		}
-		for _, m := range members {
-			if err := visit(m.Provider); err != nil {
-				return err
-			}
-		}
-
-		state[name] = done
-		return nil
-	}
-
-	for name := range c.Aliases {
-		if err := visit(name); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func slicesContain(list []string, want string) bool {
 	for _, v := range list {
 		if v == want {
@@ -1137,6 +469,32 @@ func classifierNames(cs []ClassifierConfig) []string {
 		names[i] = c.Name
 	}
 	return names
+}
+
+// knownRequestKinds collects every request_kind value that can actually
+// appear on a request's Signals: the ones aliases declare (a force alias's
+// own metadata, e.g. "subagent") and the ones classifiers declare (a
+// heuristic's match.request_kind, e.g. "title"). This is the vocabulary
+// session_affinity.no_pin is validated against — a value that can never
+// appear on a real request is almost always a typo for one that can.
+func knownRequestKinds(c *Config) []string {
+	seen := map[string]bool{}
+	var kinds []string
+	add := func(k string) {
+		if k != "" && !seen[k] {
+			seen[k] = true
+			kinds = append(kinds, k)
+		}
+	}
+	for _, a := range c.Aliases {
+		add(a.RequestKind)
+	}
+	for _, cc := range c.Classifiers {
+		if kind, ok := cc.Config["request_kind"].(string); ok {
+			add(kind)
+		}
+	}
+	return kinds
 }
 
 func routerNames(rs []RouterConfig) []string {

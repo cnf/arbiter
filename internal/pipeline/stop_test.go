@@ -17,8 +17,8 @@ type stoppingRouter struct {
 	message    string
 }
 
-func (r *stoppingRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, types.Metadata, error) {
-	return types.Route{}, types.Metadata{}, arbitererrors.NewStopError(r.statusCode, r.message)
+func (r *stoppingRouter) Route(ctx context.Context, req *types.NormalizedRequest, signals types.Signals) (types.Route, error) {
+	return types.Route{}, arbitererrors.NewStopError(r.statusCode, r.message)
 }
 
 // A router's StopError must reach the Execute caller unwrapped — not folded

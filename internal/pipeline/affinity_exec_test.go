@@ -41,9 +41,9 @@ type recordingRouter struct {
 	route types.Route
 }
 
-func (r *recordingRouter) Route(context.Context, *types.NormalizedRequest, types.Signals) (types.Route, types.Metadata, error) {
+func (r *recordingRouter) Route(context.Context, *types.NormalizedRequest, types.Signals) (types.Route, error) {
 	r.calls++
-	return r.route, types.Metadata{}, nil
+	return r.route, nil
 }
 
 // affinityTestResolver configures "auto" and "manual" as force aliases (force
@@ -208,6 +208,88 @@ func TestCacheTTLForUsesProviderOverride(t *testing.T) {
 	}
 	if got := p.cacheTTLFor("fallback1"); got != time.Minute {
 		t.Fatalf("cacheTTLFor(fallback1) = %v, want the default 1m", got)
+	}
+}
+
+// TestNoPinSkipsPinningForListedKind is #71: session_affinity.no_pin excludes
+// a request_kind from pinning without touching what the classifier does or
+// how the request routes. A "subagent" alias declares its own RequestKind
+// (see router.Alias.RequestKind), which is exactly how a real deployment
+// marks non-main traffic — no special-casing the string in pipeline code.
+func TestNoPinSkipsPinningForListedKind(t *testing.T) {
+	rr := &recordingRouter{route: primaryRoute()}
+	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
+	resolver := router.NewAliasResolver(map[string]router.Alias{
+		"subagent": {Name: "subagent", Force: map[string][]string{}, RequestKind: "subagent"},
+	}, testProviders(), nil, nil)
+	p := NewPipeline(nil, fakeNormalizer{model: "subagent"}, fakeDenormalizer{}, nil, rr, fu,
+		testProviders(), nil, nil, nil, fakeLogger{}, time.Minute, resolver, nil, nil, nil, nil)
+	p.SetNoPin([]string{"subagent"})
+
+	msg := []byte("explain how the custom parser handles nesting")
+	if _, err := p.Execute(context.Background(), msg, "openai", "t1", "chat-1"); err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+	if _, err := p.Execute(context.Background(), msg, "openai", "t2", "chat-1"); err != nil {
+		t.Fatalf("turn 2: %v", err)
+	}
+	if rr.calls != 2 {
+		t.Fatalf("routing calls = %d, want 2 (no_pin must mean no pin was ever written, so every turn routes fresh)", rr.calls)
+	}
+}
+
+// TestNoPinDoesNotAffectOtherKinds proves no_pin excludes only the kinds
+// named — a session whose main-thread traffic carries no request_kind at
+// all must still pin normally even when some other kind is excluded.
+func TestNoPinDoesNotAffectOtherKinds(t *testing.T) {
+	rr := &recordingRouter{route: primaryRoute()}
+	fu := &fakeUpstream{resp: &types.NormalizedResponse{}}
+	n := fakeNormalizer{model: "auto"}
+	p := newAffinityPipeline(rr, fu, n, nil, time.Minute)
+	p.SetNoPin([]string{"subagent"})
+
+	msg := []byte("explain how the custom parser handles nesting")
+	if _, err := p.Execute(context.Background(), msg, "openai", "t1", ""); err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+	if _, err := p.Execute(context.Background(), msg, "openai", "t2", ""); err != nil {
+		t.Fatalf("turn 2: %v", err)
+	}
+	if rr.calls != 1 {
+		t.Fatalf("routing calls = %d, want 1 (ordinary traffic must still pin when a different kind is excluded)", rr.calls)
+	}
+}
+
+// TestSetNoPinEmptyIsByteIdenticalToUnset proves the default really is a
+// no-op: calling SetNoPin with an empty/nil list behaves exactly like never
+// calling it.
+func TestSetNoPinEmptyIsByteIdenticalToUnset(t *testing.T) {
+	p := NewPipeline(nil, nil, nil, nil, nil, nil, testProviders(), nil, nil, nil, fakeLogger{}, time.Minute, nil, nil, nil, nil, nil)
+	if !p.pins("subagent") {
+		t.Fatal("with no_pin never set, every kind must be pin-eligible")
+	}
+	p.SetNoPin(nil)
+	if !p.pins("subagent") {
+		t.Fatal("SetNoPin(nil) must behave like never calling it")
+	}
+	p.SetNoPin([]string{})
+	if !p.pins("subagent") {
+		t.Fatal("SetNoPin([]) must behave like never calling it")
+	}
+}
+
+// TestPinsAlwaysEligibleForOrdinaryTraffic proves an empty RequestKind (the
+// common case: ordinary client traffic names no alias kind) is never excluded
+// — no_pin excludes named kinds, and "no kind at all" isn't one an operator
+// could have named.
+func TestPinsAlwaysEligibleForOrdinaryTraffic(t *testing.T) {
+	p := NewPipeline(nil, nil, nil, nil, nil, nil, testProviders(), nil, nil, nil, fakeLogger{}, time.Minute, nil, nil, nil, nil, nil)
+	p.SetNoPin([]string{"subagent", "title"})
+	if !p.pins("") {
+		t.Fatal("ordinary traffic (empty RequestKind) must always be pin-eligible")
+	}
+	if p.pins("subagent") {
+		t.Fatal("a listed kind must not be pin-eligible")
 	}
 }
 

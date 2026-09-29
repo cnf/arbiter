@@ -18,17 +18,6 @@ type Guardrail interface {
 	ShouldRun(req *types.NormalizedRequest) bool
 }
 
-// Factory creates a Guardrail from config.
-type Factory func(name string, config map[string]interface{}) (Guardrail, error)
-
-// Registry holds all registered guardrail factories.
-var Registry = make(map[string]Factory)
-
-// Register registers a guardrail factory by type name.
-func Register(typeName string, factory Factory) {
-	Registry[typeName] = factory
-}
-
 // SystemPromptGuardrail injects or overrides system prompts. With
 // override=false (the common case) it prepends the configured prompt ahead
 // of whatever the client sent, so Arbiter's baseline personality/instructions

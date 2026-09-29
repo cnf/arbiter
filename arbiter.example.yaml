@@ -131,22 +131,24 @@ providers:
 #     mode:       exact | prefix | regex (default prefix). Same vocabulary and
 #                 the same code as the prompt_rewrite guardrail's.
 #     pattern:    the text to look for.
-#   value:        the axis value a hit fills. One of value/kind is required.
-#   kind:         the request KIND a hit records — "title", later "subagent".
+#   value:        the axis value a hit fills. One of value/request_kind is
+#                 required.
+#   request_kind: the request KIND a hit records — "title", later "subagent".
 #                 Not an axis: it is what the request IS, not what it is about,
 #                 so it carries no confidence, no force-alias can target it, and
 #                 a kind-only matcher (no `value`) fills no axis at all. That is
 #                 the normal shape for a signature like a title generator's,
-#                 whose "domain" has no meaningful answer.
+#                 whose "domain" has no meaningful answer. Same spelling as the
+#                 router's `when: {request_kind: ...}`.
 #   where:        system | messages | all (default system).
 #   decisive:     optional bool — a HIT ends classification, so classifiers
 #                 declared after this one do not run. A MISS falls through
 #                 normally.
 #
-# A `kind:` signature is what makes an internal-looking request identifiable on
-# its row without changing where it routes. It also bounds the cost: declared
-# first and decisive, it skips every model-backed classifier behind it, so an
-# identified request pays for no classification call at all.
+# A `request_kind:` signature is what makes an internal-looking request
+# identifiable on its row without changing where it routes. It also bounds the
+# cost: declared first and decisive, it skips every model-backed classifier
+# behind it, so an identified request pays for no classification call at all.
 #
 # classifiers:
 #   - name: "request-kind"
@@ -155,7 +157,7 @@ providers:
 #       match:
 #         - mode: "prefix"
 #           pattern: "You name chat sessions."
-#       kind: "title"
+#       request_kind: "title"
 #       decisive: true
 #
 # A `capability_detector` may take `detect:`, which proves capabilities from the
@@ -190,14 +192,16 @@ providers:
 classifiers:
   # A title-generating request is one the client sends to name a session, not a
   # turn of the conversation. It has no meaningful `domain`, so a hit fills no
-  # axis — it records `kind: "title"`, which is what makes the request
+  # axis — it records `request_kind: "title"`, which is what makes the request
   # identifiable on its row.
   #
   # Declared first and decisive, so an identified title call skips every
   # model-backed classifier behind it and pays for no classification call at all.
-  # That is the whole cost win: a title call never pins to a session (its session
-  # key hashes the conversation being titled, which differs every call), so
-  # without this it would classify on every single call.
+  # That is the whole cost win: without it, an unidentified title call would
+  # classify on every single call. A title call DOES get its own real
+  # affinity-pin slot (keyed on session_key + a hash of its own prompt — see
+  # PromptHash / session_affinity below), but that pin never collides with the
+  # main thread's, since each prompt family gets its own slot regardless.
   #
   # The three patterns below are written against the clients' REAL prompts, read
   # out of the live store (79 distinct system prompts, all three verified to hit
@@ -228,7 +232,7 @@ classifiers:
         # rather than on the start of the block.
         - mode: "regex"
           pattern: "(?i)Generate a concise, sentence-case title"
-      kind: "title"
+      request_kind: "title"
       decisive: true
 
   - name: "domain"
@@ -294,6 +298,23 @@ classifiers:
 #   - pinned:     names one concrete provider/model.
 #   - group:      an ordered candidate set; the selected member is the
 #                 primary and the rest are its fallback chain.
+# A FORCE alias may also declare `request_kind:` — what a request naming this
+# alias IS (e.g. "subagent"). It is stamped onto the row of EVERY request
+# that routes through the alias, including turn 2+ (served by the
+# session-affinity pin, where classification never runs), so the traffic is
+# identifiable end to end. Not an axis: no confidence, and a `force:` key
+# cannot express it — it is a SIBLING of force, not a key inside it.
+# The canonical shape is a force alias: the alias declares identity, the
+# rules decide where the traffic goes:
+#   subagent:
+#     force: {}
+#     request_kind: "subagent"
+# The three shapes are exclusive — a pinned/group alias is a DESTINATION
+# (it says where the request goes) and a request_kind is metadata, so
+# declaring both is rejected at load. If the alias is meant to BE the
+# destination AND its traffic identified, that is two aliases: a pinned one
+# for the routing, a force one declaring the kind for the label — or a force
+# alias with a rule (when: {request_kind: "subagent"}) picking the target.
 aliases:
   auto:
     force: {}                      # full auto: no axis forced
@@ -480,14 +501,25 @@ guardrails:
 # The same header is also the primary (and cheapest) way Arbiter ties a
 # title-generation request back to the session it named: a client that sends
 # this header on every call — Hermes does, by design, on its title-gen calls
-# specifically — makes the title row's own session_key equal to its parent's,
-# an exact indexed lookup with no need for capture_content at all. Without the
-# header, linking falls back to a content-hash join that DOES need
-# capture_content — see that setting above.
+# specifically — makes the title row's own session_key equal to its parent's
+# in the requests table, an exact indexed lookup with no need for
+# capture_content at all. The affinity_pins table additionally keys on
+# prompt_hash (a hash of the request's own system prompt — see PromptHash),
+# so the title call's pin and the main thread's pin never collide even though
+# they share a session_key. Without the header, linking falls back to a
+# content-hash join that DOES need capture_content — see that setting above.
 #
 # session_affinity:
 #   header: "X-Session-Id"
 #   default_ttl: "25h"
+#   # no_pin excludes request_kind values (as declared by an alias's
+#   # request_kind, or by the classifier) from ever being pinned. The prompt
+#   # hash already keeps every kind's pin separate (see above), so this is
+#   # pure hygiene, not a correctness fix — nothing collides even with no_pin
+#   # left empty. Use it for traffic that never benefits from a pin, e.g. a
+#   # one-shot title call that always misses cache anyway. Ships empty:
+#   # Arbiter cannot know what kinds a given client's traffic uses.
+#   no_pin: []
 
 logging:
   level: "info"

@@ -48,9 +48,15 @@ type sessionTailResponse struct {
 	// Lanes is every currently-*active* session's freshly rendered lane —
 	// see SessionsTailHandler for what "active" means here and why an
 	// inactive lane is never included. The client matches each one to the
-	// .lane-row already on screen by Key and swaps it in place; a lane not
-	// currently on screen (filtered out, or the page has since navigated
-	// away) is simply not found and skipped, not inserted.
+	// .lane-row already on screen by Key: it swaps it in place if the markup
+	// changed, leaves it alone if it did not, and — for a session that went
+	// live after the page loaded — inserts it, which is why the rendered lane
+	// carries its own data-last-seen (see laneRow.html). A lane already on
+	// screen that is NOT in this list is deliberately left standing: whether
+	// it still belongs depends on the page's filters and window, which only
+	// the server knows, so removal is left to the next load or filter change.
+	// The list is unordered — the tail walks a map of active pins, and the
+	// client positions an inserted lane itself, so no sort is needed here.
 	Lanes []sessionTailLane `json:"lanes"`
 
 	// ActiveCount is the nav bar's "N active" Sessions stat, refreshed on
@@ -168,8 +174,7 @@ func (h *Handler) SessionsTailHandler(w http.ResponseWriter, r *http.Request) {
 // renderLaneRow renders one lane through the same "lane-row" partial the page
 // itself uses, so a polled lane and a page-loaded lane cannot drift apart in
 // markup. A render failure yields an empty string, which the client already
-// treats as "nothing to swap" — see live.go's renderTailRow for the same
-// convention on the request list's tail.
+// treats as "nothing to swap".
 func renderLaneRow(ctx context.Context, h *Handler, lane laneRow) string {
 	set, ok := h.fragments["fragments"]
 	if !ok {

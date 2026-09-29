@@ -55,7 +55,12 @@ func normalizedToOpenAIFinishReason(reason string) string {
 
 func anthropicContentToBlock(c types.AnthropicContent) types.ContentBlock {
 	switch c.Type {
-	case "text", "thinking":
+	case "thinking":
+		// A thinking block's text lives under Anthropic's "thinking" key, not
+		// "text" — reading c.Text here yields an empty string and no error,
+		// which is how the text was being lost.
+		return types.ContentBlock{Type: c.Type, Text: c.Thinking, Signature: c.Signature}
+	case "text":
 		return types.ContentBlock{Type: c.Type, Text: c.Text}
 	case "tool_use":
 		return types.ContentBlock{Type: "tool_use", ToolUseID: c.ID, ToolName: c.Name, ToolInput: c.Input}
@@ -97,7 +102,12 @@ func toolResultContentToText(content interface{}) string {
 
 func blockToAnthropicContent(cb types.ContentBlock) types.AnthropicContent {
 	switch cb.Type {
-	case "text", "thinking":
+	case "thinking":
+		// Mirror of the inbound split: a thinking block must be written back
+		// under its own key or the upstream sees a thinking block with no
+		// text.
+		return types.AnthropicContent{Type: cb.Type, Thinking: cb.Text, Signature: cb.Signature}
+	case "text":
 		return types.AnthropicContent{Type: cb.Type, Text: cb.Text}
 	case "tool_use":
 		return types.AnthropicContent{Type: "tool_use", ID: cb.ToolUseID, Name: cb.ToolName, Input: cb.ToolInput}

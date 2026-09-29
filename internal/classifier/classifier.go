@@ -12,17 +12,6 @@ type Classifier interface {
 	Classify(ctx context.Context, req *types.NormalizedRequest) (types.Signals, error)
 }
 
-// Factory creates a Classifier from config.
-type Factory func(name string, config map[string]interface{}) (Classifier, error)
-
-// Registry holds all registered classifier factories.
-var Registry = make(map[string]Factory)
-
-// Register registers a classifier factory by type name.
-func Register(typeName string, factory Factory) {
-	Registry[typeName] = factory
-}
-
 // Axis names a Signals field a classifier produces. Each heuristic instance
 // declares which axis it fills, so several instances can run side by side
 // (domain, effort, capabilities) without overwriting each other's axis —
@@ -112,6 +101,51 @@ func (hc *HeuristicClassifier) DecisiveMatch(req *types.NormalizedRequest) bool 
 // model-backed types and every pre-existing classifier are untouched.
 type decisiveMatcher interface {
 	DecisiveMatch(req *types.NormalizedRequest) bool
+}
+
+// modelBacked is the shared skeleton of the two classifiers that call an
+// upstream model (LLMClassifier and DecisionsClassifier). Both try a model
+// call, and on failure defer entirely to a wrapped fallback — keeping the
+// failed attempt's diagnostics so the stored row still explains what happened.
+//
+// The two Classify methods were otherwise identical for ~20 lines, including
+// the same "fallback failed too, but still keep the call diagnostics" comment;
+// only the success half (one label vs several verdicts) differs. Splitting the
+// prologue out means the failure policy has one home and the two types only
+// supply what is genuinely theirs.
+//
+// tryFn reports ok=false when the model call failed outright; call is still
+// non-nil in that case so the failure is recorded.
+func modelBacked[V any](
+	ctx context.Context,
+	req *types.NormalizedRequest,
+	fallback Classifier,
+	tryFn func() (verdicts V, call *types.ClassifierCallInfo, ok bool),
+	onSuccess func(sig *types.Signals, verdicts V),
+) (types.Signals, error) {
+	verdicts, call, ok := tryFn()
+	if !ok {
+		sig := types.Signals{}
+		if fallback != nil {
+			if fb, err := fallback.Classify(ctx, req); err == nil {
+				sig = fb
+			}
+			// A fallback error is a config/programmer error, not a network
+			// one — HeuristicClassifier never errors. Keep the model call's
+			// own diagnostics rather than losing them to it.
+		}
+		if call != nil {
+			sig.ClassifierCalls = append(sig.ClassifierCalls, call)
+		}
+		return sig, nil
+	}
+
+	sig := types.Signals{
+		AxisConfidence:  map[string]float64{},
+		ClassifierCalls: []*types.ClassifierCallInfo{call},
+	}
+	onSuccess(&sig, verdicts)
+	return sig, nil
 }
 
 // onlyIfUnsetClassifier is implemented by a model-backed classifier that must

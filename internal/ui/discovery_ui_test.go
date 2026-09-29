@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -250,6 +251,16 @@ func TestDiscoveryCacheServesStaleWithinTTL(t *testing.T) {
 		t.Fatalf("open reader: %v", err)
 	}
 	t.Cleanup(func() { _ = r.Close() })
+	// See newSeededHandler's comment: the ledger reads from a rollup, not a
+	// live aggregation, so seeded data needs one rollup pass to become
+	// visible. Deliberately not run again after the post-load write below —
+	// that write staying invisible within the cache TTL is the property
+	// this test proves, and it would stay invisible either way (the cache
+	// sits in front of the rollup too), but running the rollup on it would
+	// muddy what's actually being tested.
+	if _, _, err := r.RollupContentHashStats(context.Background()); err != nil {
+		t.Fatalf("rollup content hash stats: %v", err)
+	}
 	h := New(r, logger)
 
 	first := serve(t, h, "GET", "/admin/ui/content/repeated", false).Body.String()
@@ -404,6 +415,11 @@ func TestDiscoveryBlockBodyIsNotTruncated(t *testing.T) {
 		t.Fatalf("open reader: %v", err)
 	}
 	t.Cleanup(func() { _ = r.Close() })
+	// See newSeededHandler's comment: the ledger reads from a rollup, not a
+	// live aggregation.
+	if _, _, err := r.RollupContentHashStats(context.Background()); err != nil {
+		t.Fatalf("rollup content hash stats: %v", err)
+	}
 	h := New(r, logger)
 
 	ledger := serve(t, h, "GET", "/admin/ui/content/repeated?min_sessions=0", false).Body.String()
@@ -427,9 +443,9 @@ func TestDiscoveryBlockBodyIsNotTruncated(t *testing.T) {
 	}
 }
 
-// hide_ignored drops ignored rows from the rendered ledger entirely — the
-// default (dim-in-place) still shows them, which is not "ignored" from the
-// operator's point of view.
+// Ignored rows are hidden by default — an ignored block is boilerplate the
+// operator already dismissed, so it should not keep occupying a row on
+// every future visit. show_ignored is the opt-IN to seeing them again.
 func TestDiscoveryHideIgnoredDropsRows(t *testing.T) {
 	h, _ := newSeededHandler(t, discoverySeed()...)
 	hash := contentHashOf(t, h, "Always follow the user&#39;s instructions exactly")
@@ -443,16 +459,16 @@ func TestDiscoveryHideIgnoredDropsRows(t *testing.T) {
 	serve(t, h, "POST", base, true)
 	serve(t, h, "POST", base, true)
 
-	withIgnored := serve(t, h, "GET", "/admin/ui/content/repeated", false).Body.String()
-	if !strings.Contains(withIgnored, "data-hash=\""+hash+"\"") {
-		t.Fatal("ignored row is missing from the default (unfiltered) ledger")
+	hidden := serve(t, h, "GET", "/admin/ui/content/repeated", false).Body.String()
+	if strings.Contains(hidden, "data-hash=\""+hash+"\"") {
+		t.Fatal("ignored row is present on the default (unfiltered) ledger — ignored should be hidden by default")
 	}
 
-	hidden := serve(t, h, "GET", "/admin/ui/content/repeated?hide_ignored=1", false).Body.String()
-	if strings.Contains(hidden, "data-hash=\""+hash+"\"") {
-		t.Error("hide_ignored=1 still rendered an ignored row")
+	shown := serve(t, h, "GET", "/admin/ui/content/repeated?show_ignored=1", false).Body.String()
+	if !strings.Contains(shown, "data-hash=\""+hash+"\"") {
+		t.Error("show_ignored=1 did not render the ignored row")
 	}
-	if !strings.Contains(hidden, "checked") {
-		t.Error("hide_ignored checkbox did not render checked when the filter is active")
+	if !strings.Contains(shown, "checked") {
+		t.Error("show ignored checkbox did not render checked when the filter is active")
 	}
 }

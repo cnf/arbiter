@@ -20,6 +20,13 @@ trip (transcript.js moves the full text into the content modal). */}}
     {{if ge .StatusCode 400}}<span class="chip err">HTTP {{.StatusCode}}</span>{{end}}
     {{if eq .Kind "client"}}{{if .RequestKind}}<span class="chip warn">{{.RequestKind}}</span>{{end}}
     {{else}}<span class="chip warn">{{.Kind}}</span>{{end}}
+    {{if .Inspector.SystemPrompt.Present}}
+    <button class="preamble-btn{{if .Inspector.SystemPrompt.Guardrailed}} touched{{end}}" type="button"
+            data-preamble-trigger
+            title="{{if .Inspector.SystemPrompt.Guardrailed}}a pre-guardrail rewrote this before it went upstream{{else}}sent unmodified{{end}}">
+      <span class="touched-dot"></span>preamble
+    </button>
+    {{end}}
   </div>
   <div class="f-sub"><span title="{{ts .Ts}}">{{clock .Ts}} UTC</span> · trace <span title="{{.TraceID}}">{{trace8 .TraceID}}</span> · {{usd .CostUSD}} · {{dur .LatencyMs}}</div>
 
@@ -93,6 +100,45 @@ trip (transcript.js moves the full text into the content modal). */}}
   </div>
   {{end}}
 
+  {{if .Inspector.SystemPrompt.Present}}
+  {{/* Hidden here; moved into the shared #preamble-modal-body by
+  transcript.js on click (see the .preamble-btn above), the same "move, don't
+  copy or fetch" pattern the inspector pane itself uses — and moved back when
+  the modal closes, so it survives selecting a different turn and back. */}}
+  <div class="preamble-src" hidden>
+    <div class="box-head">
+      <span>preamble{{if .Inspector.SystemPrompt.Guardrailed}} <span class="touched-dot inline"></span>{{end}}</span>
+      {{if .Inspector.SystemPrompt.Guardrailed}}
+      <div class="tabs">
+        <button class="tab active" type="button" data-tab="sent">as sent (guardrailed)</button>
+        <button class="tab" type="button" data-tab="original">client original</button>
+        <button class="tab" type="button" data-tab="diff">diff</button>
+      </div>
+      {{end}}
+      <span class="x" data-preamble-close>✕</span>
+    </div>
+    <div class="box-body">
+      {{if .Inspector.SystemPrompt.Guardrailed}}
+      {{/* Original and AsSent differ, so both forms are worth the page
+      weight of shipping them separately — this is the rare case (#48/#59). */}}
+      <div class="preamble-panel" data-panel="sent">{{.Inspector.SystemPrompt.AsSent}}</div>
+      <div class="preamble-panel" data-panel="original" hidden>{{.Inspector.SystemPrompt.Original}}</div>
+      <div class="preamble-panel" data-panel="diff" hidden>
+        {{range .Inspector.SystemPrompt.Diff}}<span class="diff-{{.Kind}}">{{.Text}}</span>{{end}}
+      </div>
+      {{else}}
+      {{/* The common case: no guardrail touched this request, so AsSent and
+      Original are byte-identical. Rendering both (or even a tab strip with
+      nothing to switch between) would double a multi-KB system prompt in
+      every turn's hidden DOM for nothing — on a long session with a large
+      prompt that duplication was the actual page-weight regression, not the
+      DB reads. One plain panel, no tabs. */}}
+      <div class="preamble-panel" data-panel="sent">{{.Inspector.SystemPrompt.AsSent}}</div>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
   {{if .Inspector.UserMessages}}
   <div class="f-section">
     <div class="label">{{if .Inspector.IsClassifier}}text classified{{else}}user message{{end}}</div>
@@ -127,7 +173,7 @@ trip (transcript.js moves the full text into the content modal). */}}
   </div>
   {{end}}
 
-  {{if and .Inspector.ContentLoaded (not .Inspector.UserMessages) (not .Inspector.Reasoning) (not .Inspector.Calls)}}
+  {{if and .Inspector.ContentLoaded (not .Inspector.SystemPrompt.Present) (not .Inspector.UserMessages) (not .Inspector.Reasoning) (not .Inspector.Calls)}}
   <div class="f-section"><span class="f-note">no client-visible content on this turn</span></div>
   {{end}}
   {{if and .Inspector.ContentLoaded .Inspector.CaptureOff}}

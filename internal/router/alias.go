@@ -24,6 +24,14 @@ const maxAliasDepth = 4
 //   - Group alias: Type == "group". Names an ordered set of candidate
 //     members to route within; the first is the primary and the rest are its
 //     ordered fallback chain.
+//
+// RequestKind is the metadata a FORCE alias attaches to traffic: set on a
+// force alias, it stamps what a request naming the alias IS onto its stored
+// row (see the config field's comment and pipeline.stampAliasKind). It is
+// deliberately NOT available on the destination shapes (pinned/group) — those
+// aliases say where a request goes, and mixing identity onto them is a
+// config-level error (see config.validateAliases) — though the router itself
+// will still report it if handed one.
 type Alias struct {
 	Name string
 	// Force overrides axes before rule matching. Values are lists because
@@ -31,6 +39,14 @@ type Alias struct {
 	// gets a one-element list. Keys are canonical axis names (see
 	// types.KnownAxes); the config layer maps deprecated spellings onto them.
 	Force map[string][]string
+
+	// RequestKind is what a request naming this alias IS ("subagent").
+	// Deliberately NOT a force-map key: RequestKind is not a routing axis
+	// (no confidence, not in types.KnownAxes) and the force map's contract
+	// is axis names only. It is stamped for the record, never for routing —
+	// a rule can of course still route ON it via `when: {request_kind: ...}`
+	// on the classify+rules path.
+	RequestKind string
 
 	Type     string // "pinned" | "group"; empty when Force is set
 	Provider string // type == "pinned"
@@ -89,6 +105,19 @@ func (r *AliasResolver) Force(name string) (map[string][]string, bool) {
 		return nil, false
 	}
 	return a.Force, true
+}
+
+// RequestKind returns what an alias declares a request naming it to be, for
+// the record — "subagent", say — and whether name is a configured alias at
+// all. Empty kind means the alias says nothing about the request's kind. Any
+// alias shape may declare it; see pipeline.stampAliasKind for where it is
+// applied.
+func (r *AliasResolver) RequestKind(name string) (string, bool) {
+	a, ok := r.aliases[name]
+	if !ok {
+		return "", false
+	}
+	return a.RequestKind, true
 }
 
 // Resolve expands an alias name into a concrete provider/model. ok is false

@@ -4,11 +4,8 @@
 package upstream
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -69,20 +66,35 @@ func (c *HTTPClient) Send(ctx context.Context, route types.Route, req *types.Nor
 		defer cancel()
 	}
 
+	wf, ok := wireFor(route.Config.Type)
+	if !ok {
+		return nil, arbitererrors.NewUpstreamError(route.Provider, 0, fmt.Sprintf("unknown provider type %q", route.Config.Type), nil)
+	}
+
 	// Route.Model is the resolved model to actually send upstream, which
 	// may differ from what the client originally asked for (e.g. fallback
 	// routing rewrote it) — always use it over req.Model.
 	reqCopy := *req
 	reqCopy.Model = route.Model
 
-	switch route.Config.Type {
-	case "anthropic":
-		return c.sendAnthropic(ctx, route, &reqCopy)
-	case "openai", "ollama":
-		return c.sendOpenAI(ctx, route, &reqCopy)
-	default:
-		return nil, arbitererrors.NewUpstreamError(route.Provider, 0, fmt.Sprintf("unknown provider type %q", route.Config.Type), nil)
+	httpReq, err := buildWireRequest(ctx, c.translator, route, &reqCopy, wf)
+	if err != nil {
+		return nil, err
 	}
+
+	body, respHeader, err := c.doAndRead(route.Provider, httpReq, "read response body")
+	if err != nil {
+		return nil, err
+	}
+
+	normalized, err := wf.fromWire(c.translator, body)
+	if err != nil {
+		return nil, err
+	}
+	if wf.rateLimit != nil {
+		normalized.RateLimit = wf.rateLimit(respHeader)
+	}
+	return normalized, nil
 }
 
 // SendStream sends a streaming request to the upstream provider and returns
@@ -104,6 +116,12 @@ func (c *HTTPClient) SendStream(ctx context.Context, route types.Route, req *typ
 	ctx, cancel := context.WithCancel(ctx)
 	watchdog := newStreamWatchdog(route.Config.Timeout, cancel)
 
+	wf, ok := wireFor(route.Config.Type)
+	if !ok {
+		watchdog.stop()
+		return nil, nil, arbitererrors.NewUpstreamError(route.Provider, 0, fmt.Sprintf("unknown provider type %q", route.Config.Type), nil)
+	}
+
 	// Route.Model is the resolved model to actually send upstream.
 	reqCopy := *req
 	reqCopy.Model = route.Model
@@ -111,23 +129,10 @@ func (c *HTTPClient) SendStream(ctx context.Context, route types.Route, req *typ
 	eventChan := make(chan *types.NormalizedStreamEvent, 10)
 	errChan := make(chan error, 1)
 
-	switch route.Config.Type {
-	case "anthropic":
-		if err := c.sendAnthropicStream(ctx, route, &reqCopy, eventChan, errChan, watchdog); err != nil {
-			watchdog.stop()
-			close(eventChan)
-			return nil, nil, err
-		}
-	case "openai", "ollama":
-		if err := c.sendOpenAIStream(ctx, route, &reqCopy, eventChan, errChan, watchdog); err != nil {
-			watchdog.stop()
-			close(eventChan)
-			return nil, nil, err
-		}
-	default:
+	if err := c.streamFrom(ctx, route, &reqCopy, wf, eventChan, errChan, watchdog); err != nil {
 		watchdog.stop()
 		close(eventChan)
-		return nil, nil, arbitererrors.NewUpstreamError(route.Provider, 0, fmt.Sprintf("unknown provider type %q", route.Config.Type), nil)
+		return nil, nil, err
 	}
 
 	return eventChan, errChan, nil
@@ -171,114 +176,6 @@ func (w *streamWatchdog) stop() {
 		w.timer.Stop()
 	}
 	w.cancel()
-}
-
-func (c *HTTPClient) sendAnthropic(ctx context.Context, route types.Route, req *types.NormalizedRequest) (*types.NormalizedResponse, error) {
-	wireReq, err := c.translator.NormalizedToAnthropicRequest(req)
-	if err != nil {
-		return nil, arbitererrors.NewTranslationError("post_routing", "normalized to anthropic request", err)
-	}
-
-	body, err := json.Marshal(wireReq)
-	if err != nil {
-		return nil, arbitererrors.NewTranslationError("post_routing", "marshal anthropic request", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, route.Config.Endpoint+"/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return nil, arbitererrors.NewUpstreamError(route.Provider, 0, "build request", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", route.Config.APIKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	// The client's beta opt-ins, forwarded — same reasoning as the streaming
-	// path: the body is rebuilt, so a beta the client negotiated is lost
-	// unless the header is carried, and interleaved thinking is gated on one.
-	if req.ClientBeta != "" {
-		httpReq.Header.Set("anthropic-beta", req.ClientBeta)
-	}
-	for k, v := range route.Config.Headers {
-		httpReq.Header.Set(k, v)
-	}
-
-	httpResp, err := c.http.Do(httpReq)
-	if err != nil {
-		return nil, arbitererrors.NewUpstreamError(route.Provider, 0, "request failed", err)
-	}
-	defer func() {
-		_ = httpResp.Body.Close()
-	}()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, arbitererrors.NewUpstreamError(route.Provider, httpResp.StatusCode, "read response body", err)
-	}
-
-	if httpResp.StatusCode >= 400 {
-		return nil, upstreamErrorFrom(route.Provider, httpResp, respBody)
-	}
-
-	var wireResp types.AnthropicResponse
-	if err := json.Unmarshal(respBody, &wireResp); err != nil {
-		return nil, arbitererrors.NewTranslationError("post_routing", "unmarshal anthropic response", err)
-	}
-
-	normalized, err := c.translator.AnthropicResponseToNormalized(&wireResp)
-	if err != nil {
-		return nil, arbitererrors.NewTranslationError("post_routing", "anthropic response to normalized", err)
-	}
-	normalized.RateLimit = parseAnthropicRateLimitHeaders(httpResp.Header)
-	return normalized, nil
-}
-
-func (c *HTTPClient) sendOpenAI(ctx context.Context, route types.Route, req *types.NormalizedRequest) (*types.NormalizedResponse, error) {
-	wireReq, err := c.translator.NormalizedToOpenAIRequest(req)
-	if err != nil {
-		return nil, arbitererrors.NewTranslationError("post_routing", "normalized to openai request", err)
-	}
-
-	body, err := json.Marshal(wireReq)
-	if err != nil {
-		return nil, arbitererrors.NewTranslationError("post_routing", "marshal openai request", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, route.Config.Endpoint+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, arbitererrors.NewUpstreamError(route.Provider, 0, "build request", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+route.Config.APIKey)
-	for k, v := range route.Config.Headers {
-		httpReq.Header.Set(k, v)
-	}
-
-	httpResp, err := c.http.Do(httpReq)
-	if err != nil {
-		return nil, arbitererrors.NewUpstreamError(route.Provider, 0, "request failed", err)
-	}
-	defer func() {
-		_ = httpResp.Body.Close()
-	}()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, arbitererrors.NewUpstreamError(route.Provider, httpResp.StatusCode, "read response body", err)
-	}
-
-	if httpResp.StatusCode >= 400 {
-		return nil, upstreamErrorFrom(route.Provider, httpResp, respBody)
-	}
-
-	var wireResp types.OpenAIResponse
-	if err := json.Unmarshal(respBody, &wireResp); err != nil {
-		return nil, arbitererrors.NewTranslationError("post_routing", "unmarshal openai response", err)
-	}
-
-	normalized, err := c.translator.OpenAIResponseToNormalized(&wireResp)
-	if err != nil {
-		return nil, arbitererrors.NewTranslationError("post_routing", "openai response to normalized", err)
-	}
-	return normalized, nil
 }
 
 // upstreamErrorFrom builds an UpstreamError from an HTTP error response,

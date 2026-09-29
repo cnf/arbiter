@@ -5,6 +5,118 @@ import (
 	"testing"
 )
 
+// TestContentForRequestsMatchesTranscriptFiltering is #59's perf fix: the
+// transcript page's batched read (ContentForRequests) pushes "only the
+// newest resent message per direction, plus any role=system row" down into
+// SQL, instead of fetching every resent copy of the conversation and
+// filtering in Go (see contentFor's doc comment — that used to cost 26k rows
+// / 53MB read for 315 actually-used rows on one real 100-turn page).
+//
+// This must NOT be compared against ContentForRequest: that call answers a
+// different question (the full captured set, for the single-request detail
+// view and lanePreview) and is deliberately unfiltered. What has to hold is
+// that ContentForRequests' result matches what the transcript page actually
+// displays — i.e. applying the same "newest message, or system" rule in Go
+// to the unfiltered set produces an identical result to what the batched SQL
+// version returns directly.
+func TestContentForRequestsMatchesTranscriptFiltering(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	// t1 simulates a 3-turn resent conversation landing on one request row:
+	// msg_index 0 is the system prompt (must survive despite not being
+	// newest), 1 is an earlier turn's user message (resent, must be
+	// dropped), 2 is this turn's own new user message (must survive as the
+	// newest). The response side is this request's own reply.
+	w.Record(Event{
+		TraceID: "t1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{
+			Request: []Block{
+				textBlock("system", 0, 0, "SYSTEM PROMPT"),
+				textBlock("user", 1, 0, "earlier turn's message, resent"),
+				textBlock("user", 2, 0, "this turn's own new message"),
+			},
+			Response: []Block{textBlock("assistant", 0, 0, "the reply")},
+		},
+	})
+	// t2: guardrailed system prompt plus a single (non-resent) user message,
+	// to prove the role=system carve-out also applies to the guardrailed
+	// direction and coexists with hasGuardrailed.
+	w.Record(Event{
+		TraceID: "t2", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{
+			Request:            []Block{textBlock("system", 0, 0, "CLIENT SYSTEM PROMPT")},
+			RequestGuardrailed: []Block{textBlock("system", 0, 0, "ARBITER INJECTED PROMPT")},
+		},
+	})
+	w.Record(Event{
+		TraceID: "t3", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		// No captured content at all — the "capture off" case.
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	rows, err := r.ListRequests(ctx, RequestFilter{})
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("ListRequests = %v, %v", rows, err)
+	}
+	ids := make([]int64, len(rows))
+	for i, row := range rows {
+		ids[i] = row.ID
+	}
+
+	batchBlocks, batchGuardrailed, err := r.ContentForRequests(ctx, ids)
+	if err != nil {
+		t.Fatalf("ContentForRequests: %v", err)
+	}
+
+	for _, id := range ids {
+		fullBlocks, wantGuardrailed, err := r.ContentForRequest(ctx, id, false)
+		if err != nil {
+			t.Fatalf("ContentForRequest(%d): %v", id, err)
+		}
+		if batchGuardrailed[id] != wantGuardrailed {
+			t.Errorf("id %d: hasGuardrailed = %v, want %v", id, batchGuardrailed[id], wantGuardrailed)
+		}
+		wantBlocks := transcriptFilterForTest(fullBlocks)
+		gotBlocks := batchBlocks[id]
+		if len(gotBlocks) != len(wantBlocks) {
+			t.Fatalf("id %d: blocks = %+v, want (transcript-filtered) %+v", id, gotBlocks, wantBlocks)
+		}
+		for i := range wantBlocks {
+			if gotBlocks[i].Body != wantBlocks[i].Body || gotBlocks[i].Direction != wantBlocks[i].Direction ||
+				gotBlocks[i].MsgIndex != wantBlocks[i].MsgIndex {
+				t.Errorf("id %d block %d: got %+v, want %+v", id, i, gotBlocks[i], wantBlocks[i])
+			}
+		}
+	}
+}
+
+// transcriptFilterForTest mirrors newestRequestMessage's rule
+// (internal/ui/transcript.go) plus the role=system carve-out
+// ContentForRequests applies in SQL: keep every response-direction block,
+// every system-role request block regardless of index, and only the
+// highest-msg_index non-system request block(s). It exists here, rather than
+// importing internal/ui, to keep this a store-level test of the SQL's
+// output shape without a package-layering dependency on the UI.
+func transcriptFilterForTest(blocks []ContentBlock) []ContentBlock {
+	newest := int64(-1)
+	for _, b := range blocks {
+		if b.Direction == "request" && b.Role != "system" && b.MsgIndex > newest {
+			newest = b.MsgIndex
+		}
+	}
+	out := make([]ContentBlock, 0, len(blocks))
+	for _, b := range blocks {
+		if b.Direction == "request" && b.Role != "system" && b.MsgIndex != newest {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
 // TestContentForRequestDefaultsToGuardrailedForm is #13's core promise: when a
 // pre-guardrail actually ran and both captures were written, the default view
 // (showAsSent=false) returns what went upstream, not what the client sent.

@@ -43,7 +43,13 @@ type Event struct {
 	SessionKey string
 	ClientID   string
 
-	Ts               time.Time // zero means "now", filled in by Record
+	Ts time.Time // zero means "now", filled in by Record
+	// ArrivalTs is when the request reached Execute — the request's own
+	// start, not when this row got written. Zero means unknown (a call
+	// site that hasn't been updated to set it, or a non-client kind that
+	// has no meaningful arrival distinct from Ts). See schema.sql's comment
+	// on requests.arrival_ts and issue #8 for why this exists.
+	ArrivalTs        time.Time
 	Format           string
 	Provider         string
 	Model            string
@@ -164,11 +170,20 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 	// added to schema.sql after a database was first created never appears on
 	// it. Add the ones we know about explicitly; an insert referencing a
 	// missing column fails every time, which would silently lose events.
-	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT", "actual_model TEXT", "kind TEXT NOT NULL DEFAULT 'client'", "request_kind TEXT"} {
+	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT", "actual_model TEXT", "kind TEXT NOT NULL DEFAULT 'client'", "request_kind TEXT", "arrival_ts TIMESTAMP"} {
 		if err := addColumnIfMissing(db, "requests", col); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate event store schema: %w", err)
 		}
+	}
+	// affinity_pins predates prompt_hash and its composite primary key (see
+	// schema.sql): a database created before that change has session_key as
+	// its sole PRIMARY KEY, and CREATE TABLE IF NOT EXISTS above is a no-op
+	// against it — an ADD COLUMN alone cannot widen a primary key, so this
+	// needs a real rebuild.
+	if err := migrateAffinityPinsPromptHash(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate event store schema: %w", err)
 	}
 
 	w := &SQLiteWriter{
@@ -189,6 +204,16 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 func (w *SQLiteWriter) Record(ev Event) {
 	if ev.Ts.IsZero() {
 		ev.Ts = time.Now().UTC()
+	}
+	// ArrivalTs is always set explicitly on every real write path (see
+	// pipeline/record.go, execute.go, streaming.go) — this fallback exists
+	// so the many test fixtures that only ever set Ts don't silently write a
+	// NULL arrival_ts that sorts before every real row and breaks every
+	// arrival-ordered read. A NULL here in production would mean a caller
+	// forgot to stamp arrival, which is worth treating as "arrived when it
+	// finished" rather than "arrived at the beginning of time".
+	if ev.ArrivalTs.IsZero() {
+		ev.ArrivalTs = ev.Ts
 	}
 
 	w.mu.RLock()
@@ -257,6 +282,73 @@ func addColumnIfMissing(db *sql.DB, table, decl string) error {
 	if _, err := db.ExecContext(context.Background(),
 		"ALTER TABLE "+table+" ADD COLUMN "+decl); err != nil {
 		return fmt.Errorf("add %s.%s: %w", table, name, err)
+	}
+	return nil
+}
+
+// migrateAffinityPinsPromptHash rebuilds affinity_pins onto the composite
+// (session_key, prompt_hash) primary key when an older database still has
+// session_key alone as its PRIMARY KEY. A no-op on a fresh database (the
+// embedded schema.sql already created the new shape) and on one already
+// migrated.
+//
+// This cannot be addColumnIfMissing: SQLite has no ALTER TABLE to widen a
+// PRIMARY KEY, so an existing table must be rebuilt — create the new shape,
+// copy every row across with prompt_hash defaulted to ” (every pin recorded
+// before this migration existed for the whole session, which is exactly what
+// an empty prompt_hash means going forward), drop the old table, rename the
+// new one into place. Losing a live pin here is not a correctness risk: the
+// next request for that session just re-routes once and re-pins, the same
+// outcome as an idle-timeout expiry.
+func migrateAffinityPinsPromptHash(db *sql.DB) error {
+	rows, err := db.QueryContext(context.Background(), "PRAGMA table_info(affinity_pins)")
+	if err != nil {
+		return fmt.Errorf("read affinity_pins columns: %w", err)
+	}
+	hasPromptHash := false
+	for rows.Next() {
+		var (
+			cid       int
+			colName   string
+			colType   string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &colName, &colType, &notNull, &dfltValue, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan affinity_pins columns: %w", err)
+		}
+		if colName == "prompt_hash" {
+			hasPromptHash = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("read affinity_pins columns: %w", err)
+	}
+	_ = rows.Close()
+	if hasPromptHash {
+		return nil
+	}
+
+	const rebuild = `
+CREATE TABLE affinity_pins_new (
+    session_key     TEXT NOT NULL,
+    prompt_hash     TEXT NOT NULL DEFAULT '',
+    requested_model TEXT NOT NULL,
+    provider        TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    expires_at      TIMESTAMP NOT NULL,
+    PRIMARY KEY (session_key, prompt_hash)
+);
+INSERT INTO affinity_pins_new (session_key, prompt_hash, requested_model, provider, model, expires_at)
+    SELECT session_key, '', requested_model, provider, model, expires_at FROM affinity_pins;
+DROP TABLE affinity_pins;
+ALTER TABLE affinity_pins_new RENAME TO affinity_pins;
+CREATE INDEX IF NOT EXISTS idx_affinity_expires ON affinity_pins(expires_at);`
+	if _, err := db.ExecContext(context.Background(), rebuild); err != nil {
+		return fmt.Errorf("rebuild affinity_pins with prompt_hash: %w", err)
 	}
 	return nil
 }
@@ -330,17 +422,17 @@ type execer interface {
 func insertRequestTx(ctx context.Context, db execer, ev Event) (int64, error) {
 	const q = `
 INSERT INTO requests (
-    trace_id, session_key, client_id, ts, format, provider, model, actual_model,
+    trace_id, session_key, client_id, ts, arrival_ts, format, provider, model, actual_model,
     alias_used, routing_rationale, domain, effort, cost_class, confidence,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
     cost_usd, latency_ms, status_code, error, stream, tool_calls_json,
     config_epoch, headers_json, kind, request_kind
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?
+    ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?
 )`
 
 	// kind is NOT NULL with a schema default, but this INSERT always binds it
@@ -358,6 +450,7 @@ INSERT INTO requests (
 		nullStr(ev.SessionKey),
 		nullStr(ev.ClientID),
 		ev.Ts,
+		nullTime(ev.ArrivalTs),
 		ev.Format,
 		ev.Provider,
 		ev.Model,
@@ -397,6 +490,16 @@ func nullStr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// nullTime returns nil for the zero time.Time (arrival not set by this call
+// site) so it is written as SQL NULL rather than 0001-01-01, matching how
+// nullStr treats "" as absent rather than a real empty string.
+func nullTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 func toolCallsJSON(names []string) *string {

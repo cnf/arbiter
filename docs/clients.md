@@ -286,6 +286,13 @@ hourly sweep, because a stale row can sit in the table for up to a sweep interva
 and honouring it would pin a conversation past its idle timeout. With no store
 configured, pins stay in memory only — the behaviour before persistence existed.
 
+**`session_affinity.no_pin`** excludes specific `request_kind` values (an
+alias's declared `request_kind`, or the classifier's) from ever being pinned.
+The pin key already separates every kind from every other (see above), so this
+is hygiene, not a correctness fix — nothing collides even with `no_pin` left
+at its default `[]`. It exists for traffic that gets nothing out of a pin, for
+example a one-shot title call that never repeats a route.
+
 ## What survives a config reload
 
 A reload rebuilds the whole pipeline — providers, routers, classifiers,

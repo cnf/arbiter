@@ -7,16 +7,13 @@
 // once the Sessions page grew its own tail (#52/laneLive.js) — see #56/#57.
 // What survives here is the view-model machinery Sessions and Discovery still
 // consume: foldRequestLines/attachTraceChildren (Sessions' lane timelines),
-// requestRowView/RoutingChain (Sessions, Discovery's drill-down), the keyset
-// cursor codec, and the guardrail-diff fragment (the session transcript).
-// Deleting the file wholesale to "finish the rip-out" would break all four.
+// requestRowView/RoutingChain (Sessions, Discovery's drill-down), and the
+// guardrail-diff fragment (the session transcript).
 package ui
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -101,6 +98,13 @@ type requestLineView struct {
 	// Count is how many requests this line stands for. It counts the rows
 	// *loaded on this page* — see the note in the template and the README.
 	Count int
+
+	// TotalCostUSD is the sum of every row folded into this line — the cost
+	// the run actually spent, not Head's own single-turn cost. A folded line
+	// renders this as its "total"; Head.CostUSD alone previously stood in for
+	// it and was off by however many turns the run held (the point of
+	// folding is to hide N-1 rows, not their spend).
+	TotalCostUSD float64
 
 	// Rows is every constituent, newest first, for the expanded view. It is
 	// only rendered in Flat mode; the line itself renders Head.
@@ -286,10 +290,10 @@ func lineAttr(row requestRowView) string {
 	return lineKeyAttr(requestLineKey(row.RequestRow))
 }
 
-// foldRequestLines collapses the page's rows into lines: one per group, in the
-// order each group's *newest* row appears.
+// foldRequestLines collapses the page's rows into lines: one per contiguous
+// run of rows sharing a key, in the page's own order.
 //
-// A group becomes a collapsed line only when it repeats something that should be
+// A run becomes a collapsed line only when it repeats something that should be
 // folded away, which is a narrow condition on purpose:
 //
 //   - it must hold more than one row (nothing to collapse otherwise), and
@@ -298,6 +302,15 @@ func lineAttr(row requestRowView) string {
 //     request cannot end up inside a streamed run, and a group of non-streamed
 //     requests keeps one row per request, exactly as the list renders today.
 //
+// Contiguous, not "anywhere on the page": a row joins the line only when it is
+// the very next row after the current line's last row and shares its key. Two
+// matching rows separated by a different request in between start two separate
+// lines rather than one, because folding across whatever sits between them
+// would erase that it happened at all — the list's whole job is to be an
+// honest account of what the page actually shows, in the order it shows it.
+// This also means the fold is order-sensitive: it is only as truthful as the
+// order the rows arrive in (see ListRequests' arrival_ts ordering, #8).
+//
 // Grouping is done over the rows of the page, so the count is "how many rows on
 // this page", not the conversation's true total. That is a limit of folding a
 // page rather than querying the store, and the template says so rather than
@@ -305,38 +318,38 @@ func lineAttr(row requestRowView) string {
 // follows).
 func foldRequestLines(rows []requestRowView) []requestLineView {
 	lines := make([]requestLineView, 0, len(rows))
-	index := make(map[string]int, len(rows))
 
 	for _, row := range rows {
 		key := requestLineKey(row.RequestRow)
-		i, seen := index[key]
-		if !seen {
-			index[key] = len(lines)
-			lines = append(lines, requestLineView{
-				Key:  key,
-				Attr: lineAttr(row),
-				Head: row,
-				Rows: []requestRowView{row},
-			})
+		if n := len(lines); n > 0 && lines[n-1].Key == key {
+			lines[n-1].Rows = append(lines[n-1].Rows, row)
 			continue
 		}
-		lines[i].Rows = append(lines[i].Rows, row)
+		lines = append(lines, requestLineView{
+			Key:  key,
+			Attr: lineAttr(row),
+			Head: row,
+			Rows: []requestRowView{row},
+		})
 	}
 
 	for i := range lines {
 		lines[i].Count = len(lines[i].Rows)
 		lines[i].Run = lines[i].Count > 1 && allStreamed(lines[i].Rows)
+		for _, row := range lines[i].Rows {
+			lines[i].TotalCostUSD += row.CostUSD
+		}
 	}
 
-	// A group that does not fold expands back into one line per row, in page
-	// order.
+	// A run that does not qualify (not streamed throughout) expands back into
+	// one line per row, in page order.
 	//
-	// This is not a formatting detail. A non-collapsed group of several rows is a
-	// group by *identity* only — a non-streamed request, or one unpinned row — and
-	// rendering just its head would hide every other row in it, which is the exact
-	// failure this whole feature exists to undo. "Not a run" therefore has to mean
-	// "one line per request", which is what the list rendered before grouping
-	// existed.
+	// This is not a formatting detail. A non-collapsed run of several rows is
+	// contiguous by *position* but not eligible by *rule* — a non-streamed
+	// request, or one unpinned row — and rendering just its head would hide
+	// every other row in it, which is the exact failure this whole feature
+	// exists to undo. "Not a run" therefore has to mean "one line per
+	// request", which is what the list rendered before grouping existed.
 	out := make([]requestLineView, 0, len(lines))
 	for _, line := range lines {
 		if line.Run {
@@ -350,7 +363,8 @@ func foldRequestLines(rows []requestRowView) []requestLineView {
 				Head: row,
 				Rows: []requestRowView{row},
 				// Count stays 1 and Run stays false: one line, one request.
-				Count: 1,
+				Count:        1,
+				TotalCostUSD: row.CostUSD,
 			})
 		}
 	}
@@ -513,41 +527,6 @@ func allStreamed(rows []requestRowView) bool {
 type blockView struct {
 	store.ContentBlock
 	OwnerID int64
-}
-
-// cursorSeparator splits the two halves of a cursor payload. It cannot occur in
-// either half: a timestamp is digits and punctuation, an id is digits.
-const cursorSeparator = "\x00"
-
-// encodeCursor packs the keyset position into one opaque, URL-safe token.
-//
-// It is opaque deliberately. The honest cursor is the row's stored timestamp
-// text, which is `2026-09-16 11:59:39.812343302 +0000 UTC` — a value whose `+`
-// characters a query string is entitled to read as spaces, and a client or
-// proxy that does so produces a bound matching no row at all. That failure is
-// silent: the page renders "no results" rather than an error, which is exactly
-// the shape this codebase refuses elsewhere. Base64 keeps the payload exact and
-// URL-safe, and hides the store's internal time format from the address bar.
-func encodeCursor(ts string, id int64) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(ts + cursorSeparator + strconv.FormatInt(id, 10)))
-}
-
-// decodeCursor reverses encodeCursor. A malformed cursor is an error the caller
-// reports as a 400, never a silently ignored page position.
-func decodeCursor(raw string) (string, int64, error) {
-	b, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
-		return "", 0, fmt.Errorf("not base64")
-	}
-	parts := strings.SplitN(string(b), cursorSeparator, 2)
-	if len(parts) != 2 || parts[0] == "" {
-		return "", 0, fmt.Errorf("malformed payload")
-	}
-	id, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil || id < 1 {
-		return "", 0, fmt.Errorf("malformed id")
-	}
-	return parts[0], id, nil
 }
 
 // guardrailDiffView is the diff fragment: one block's before/after text,

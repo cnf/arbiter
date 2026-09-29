@@ -921,7 +921,7 @@ footer.appfoot .spacer {
  * rules .box itself has, or its default min-height:auto refuses to shrink
  * below its content size — .box's overflow:hidden then just clips it instead
  * of letting .box-body's own overflow-y:auto scroll. */
-.preamble-src { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.preamble-src:not([hidden]) { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .content-modal .box { width: min(880px, 92vw); max-height: 84vh; }
 .preamble-modal .box { width: min(900px, 92vw); max-height: 86vh; }
 .jump-modal { align-items: flex-start; padding-top: 14vh; }

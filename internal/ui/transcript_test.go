@@ -589,6 +589,26 @@ func TestTranscriptUnknownSessionSaysSo(t *testing.T) {
 	}
 }
 
+func TestPreambleHiddenAndEscapeRestoresIt(t *testing.T) {
+	css, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatalf("read embedded CSS: %v", err)
+	}
+	if !strings.Contains(string(css), ".preamble-src:not([hidden]) {") {
+		t.Error("preamble layout rule must not override the hidden attribute")
+	}
+
+	js, err := assets.ReadFile("static/transcript.js")
+	if err != nil {
+		t.Fatalf("read embedded transcript script: %v", err)
+	}
+	script := string(js)
+	escapeClose := "if (preambleModal && preambleModal.classList.contains(\"open\")) {\n      closePreamble();"
+	if !strings.Contains(script, escapeClose) {
+		t.Error("Escape must use closePreamble so the active prompt is restored and hidden")
+	}
+}
+
 // The preamble modal shows the session's standing instructions in both forms,
 // and only claims a guardrail touched them when the two actually differ.
 func TestTranscriptPreambleModalShowsBothForms(t *testing.T) {

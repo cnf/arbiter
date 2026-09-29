@@ -344,7 +344,7 @@
   document.addEventListener("keydown", function (ev) {
     if (ev.key !== "Escape") return;
     if (preambleModal && preambleModal.classList.contains("open")) {
-      preambleModal.classList.remove("open");
+      closePreamble();
       return;
     }
     if (jumpModal && jumpModal.classList.contains("open")) closeJump();

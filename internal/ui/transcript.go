@@ -12,15 +12,12 @@ import (
 	"github.com/cnf/arbiter/internal/store"
 )
 
-// transcriptPageSize is how many turns one page of the transcript list loads.
-//
-// It is deliberately the reader's own per-query cap (maxRequestListLimit) so a
-// page can never ask for more rows than a query will return — the same rule
-// the flat requests list follows with defaultListLimit, except that a
-// transcript is read as a conversation rather than browsed as a feed, so the
-// step is larger and each page is the whole conversation-so-far rather than a
-// screenful.
-const transcriptPageSize = 100
+// transcriptPageSize is how many turns one page of the transcript list loads
+// — the lazy-load window (#73), not "the whole conversation so far" the way
+// the old 100-turn page was. A typical screen fits 10-20 rows; 30 leaves
+// headroom for the auto-fill-viewport check in transcript.js without
+// shipping a page's worth of hidden inspector markup nobody will open.
+const transcriptPageSize = 30
 
 // sessionView is the session transcript page: a scrollable list of one
 // conversation's turns (each with the classifier/title calls it triggered
@@ -64,6 +61,14 @@ type sessionView struct {
 	// MoreURL is the htmx target that appends the next page of turns. Empty
 	// when there is nothing more to load.
 	MoreURL string
+
+	// HasOlder/OlderURL are MoreURL's backward twin (#73): whether turns
+	// exist before the earliest one currently loaded (Offset > 0), and the
+	// htmx target that prepends the previous window if so. Populated
+	// whenever a page's window does not start at the conversation's
+	// beginning — a jump/deep-link included, not just a "load older" click.
+	HasOlder bool
+	OlderURL string
 
 	// Set only by a jump (?seq=N): the turn the page should open with.
 	SelectedID int64
@@ -215,6 +220,24 @@ func (h *Handler) SessionHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
+	// before names a position to load the window immediately BEFORE — the
+	// transcript's "load older" direction (#73, see SessionClientPageBefore).
+	// It is its own query parameter rather than a signed/negative offset
+	// because offset already has a well-established forward meaning
+	// (RFC-quality query strings should not need a sign to change what a
+	// number means); a before value simply switches which direction this
+	// request reads, checked ahead of seq/id/offset below.
+	before := 0
+	haveBefore := false
+	if raw := q.Get("before"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			h.fail(w, r, http.StatusBadRequest, "before must be a non-negative integer")
+			return
+		}
+		before = n
+		haveBefore = true
+	}
 
 	view := sessionView{
 		viewBase: h.base(r.Context(), "Sessions"),
@@ -225,80 +248,113 @@ func (h *Handler) SessionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	view.Title = "session " + shortSessionKey(key)
 
-	if h.reader != nil {
-		// A jump to a turn number is resolved here, before any turns are read:
-		// the handler has to know how far into the conversation that turn is
-		// before it can load a page containing it. Reading it as its own step
-		// also means a jump is one request — "load the page turn N falls on" —
-		// rather than the browser paging forward until it arrives.
-		if raw := q.Get("seq"); raw != "" {
-			n, err := strconv.Atoi(raw)
-			if err != nil || n < 1 {
-				h.fail(w, r, http.StatusBadRequest, "seq must be a positive integer (a turn number)")
-				return
-			}
-			id, ok, err := h.reader.SessionTurnAt(r.Context(), key, n)
-			if err != nil {
-				h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
-				return
-			}
-			if !ok {
-				h.fail(w, r, http.StatusNotFound,
-					fmt.Sprintf("session %s has no turn #%d", shortSessionKey(key), n))
-				return
-			}
-			offset = ((n - 1) / limit) * limit
-			view.Offset = offset
-			view.SelectedID = id
-		} else if raw := q.Get("id"); raw != "" {
-			// ?id=<request id> is how a link from outside the transcript
-			// (a Sessions lane node, a satellite/child call included) names
-			// its target: an id has no turn number of its own to page by, so
-			// it is resolved to the turn its owning client row falls on —
-			// SessionTurnForRequest does the client-vs-satellite distinction
-			// laneRow.OpenHref itself doesn't need to know about. The turn
-			// only decides which page to load; SelectedID stays the id that
-			// was asked for, so a satellite child is what actually gets
-			// selected — select() in transcript.js already matches
-			// .child-row by its own data-id, not just .row.
-			id, err := strconv.ParseInt(raw, 10, 64)
-			if err != nil {
-				h.fail(w, r, http.StatusBadRequest, "id must be an integer (a request id)")
-				return
-			}
-			turnKey, n, ok, err := h.reader.SessionTurnForRequest(r.Context(), id)
-			if err != nil {
-				h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
-				return
-			}
-			if !ok || turnKey != key {
-				h.fail(w, r, http.StatusNotFound,
-					fmt.Sprintf("session %s has no request #%d", shortSessionKey(key), id))
-				return
-			}
-			offset = ((n - 1) / limit) * limit
-			view.Offset = offset
-			view.SelectedID = id
-		}
+	if h.reader == nil {
+		h.render(w, r, "session", "session-turns", view)
+		return
+	}
 
-		if err := h.fillTranscript(r, &view); err != nil {
+	if haveBefore {
+		// The "load older" append: a window immediately before a position
+		// already on the page, never combined with seq/id/a fresh offset —
+		// the reader is scrolling an already-open transcript, not jumping.
+		if err := h.fillTranscriptBefore(r, &view, before); err != nil {
 			h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
 			return
 		}
+		h.render(w, r, "session", "transcript-older", view)
+		return
+	}
 
-		// The fragment form exists only for the "load more" append: the page
-		// itself is one server-rendered document, but a conversation longer
-		// than one page grows by appending the next one rather than by
-		// re-rendering everything already read. Extra pages carry turns only;
-		// the toolbar and the preamble modal belong to the first page and are
-		// not duplicated into an append.
-		if offset > 0 {
-			h.render(w, r, "session", "transcript-more", view)
+	// A jump to a turn number is resolved here, before any turns are read:
+	// the handler has to know how far into the conversation that turn is
+	// before it can load a window containing it. Reading it as its own step
+	// also means a jump is one request — "load a window around turn N" —
+	// rather than the browser paging forward until it arrives.
+	//
+	// The window is centered on the turn rather than page-aligned forward
+	// from it (#73): a jump into the middle of a long conversation should
+	// land with room to scroll toward either edge, not just forward — the
+	// whole point of pairing this with the "load older" direction above.
+	if raw := q.Get("seq"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			h.fail(w, r, http.StatusBadRequest, "seq must be a positive integer (a turn number)")
 			return
 		}
+		id, ok, err := h.reader.SessionTurnAt(r.Context(), key, n)
+		if err != nil {
+			h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
+			return
+		}
+		if !ok {
+			h.fail(w, r, http.StatusNotFound,
+				fmt.Sprintf("session %s has no turn #%d", shortSessionKey(key), n))
+			return
+		}
+		offset = centeredOffset(n, limit)
+		view.Offset = offset
+		view.SelectedID = id
+	} else if raw := q.Get("id"); raw != "" {
+		// ?id=<request id> is how a link from outside the transcript
+		// (a Sessions lane node, a satellite/child call included) names
+		// its target: an id has no turn number of its own to page by, so
+		// it is resolved to the turn its owning client row falls on —
+		// SessionTurnForRequest does the client-vs-satellite distinction
+		// laneRow.OpenHref itself doesn't need to know about. The turn
+		// only decides which window to load; SelectedID stays the id that
+		// was asked for, so a satellite child is what actually gets
+		// selected — select() in transcript.js already matches
+		// .child-row by its own data-id, not just .row.
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			h.fail(w, r, http.StatusBadRequest, "id must be an integer (a request id)")
+			return
+		}
+		turnKey, n, ok, err := h.reader.SessionTurnForRequest(r.Context(), id)
+		if err != nil {
+			h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
+			return
+		}
+		if !ok || turnKey != key {
+			h.fail(w, r, http.StatusNotFound,
+				fmt.Sprintf("session %s has no request #%d", shortSessionKey(key), id))
+			return
+		}
+		offset = centeredOffset(n, limit)
+		view.Offset = offset
+		view.SelectedID = id
+	}
+
+	if err := h.fillTranscript(r, &view); err != nil {
+		h.fail(w, r, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+
+	// The fragment form exists only for the "load more" append: the page
+	// itself is one server-rendered document, but a conversation longer
+	// than one window grows by appending the next one rather than by
+	// re-rendering everything already read. Extra pages carry turns only;
+	// the toolbar and the preamble modal belong to the first page and are
+	// not duplicated into an append.
+	if offset > 0 {
+		h.render(w, r, "session", "transcript-more", view)
+		return
 	}
 
 	h.render(w, r, "session", "session-turns", view)
+}
+
+// centeredOffset is the starting offset for a limit-sized window centered on
+// turn n (1-based) — see SessionHandler's jump handling (#73). Clamped to 0
+// rather than negative: a turn near the start of the conversation gets a
+// window that starts at the beginning and runs long, not a window that would
+// reach before turn 1.
+func centeredOffset(n, limit int) int {
+	offset := n - 1 - limit/2
+	if offset < 0 {
+		return 0
+	}
+	return offset
 }
 
 // fillTranscript reads one page of a conversation and everything the page
@@ -331,6 +387,14 @@ func (h *Handler) fillTranscript(r *http.Request, view *sessionView) error {
 	view.Found = len(rows) > 0 || view.Offset > 0
 	view.Loaded = len(rows)
 	view.HasMore = int64(view.Offset+len(rows)) < totals.Turns
+	view.HasOlder = view.Offset > 0
+	if view.HasOlder {
+		older := url.Values{}
+		older.Set("key", view.Key)
+		older.Set("before", strconv.Itoa(view.Offset))
+		older.Set("limit", strconv.Itoa(view.Limit))
+		view.OlderURL = "/admin/ui/session?" + older.Encode()
+	}
 	if view.Loaded > 0 {
 		view.SeqLoadedMax = view.Offset + view.Loaded
 		if view.HasMore {
@@ -340,6 +404,46 @@ func (h *Handler) fillTranscript(r *http.Request, view *sessionView) error {
 			next.Set("limit", strconv.Itoa(view.Limit))
 			view.MoreURL = "/admin/ui/session?" + next.Encode()
 		}
+	}
+
+	return nil
+}
+
+// fillTranscriptBefore is fillTranscript's backward twin (#73): it loads the
+// window immediately before a position already on the page — the "load
+// older" append — rather than the page containing a given offset. Totals are
+// re-read for the same reason fillTranscript reads them: the header
+// describes the whole conversation, not just what is loaded, and totals can
+// have grown since the page first rendered.
+func (h *Handler) fillTranscriptBefore(r *http.Request, view *sessionView, before int) error {
+	ctx := r.Context()
+
+	totals, err := h.reader.SessionTotals(ctx, view.Key)
+	if err != nil {
+		h.logger.LogError(ctx, "warn", err,
+			map[string]interface{}{"phase": "admin_ui_transcript_totals", "session": view.Key})
+	}
+	view.Totals = totals
+	view.Total = totals.Turns
+
+	rows, offset, err := h.reader.SessionClientPageBefore(ctx, view.Key, view.Limit, before)
+	if err != nil {
+		h.logger.LogError(ctx, "error", err,
+			map[string]interface{}{"phase": "admin_ui_transcript_older", "session": view.Key})
+		return err
+	}
+
+	view.Offset = offset
+	view.Turns = h.buildTurns(r, rows, offset)
+	view.Found = true
+	view.Loaded = len(rows)
+	view.HasOlder = offset > 0
+	if view.HasOlder {
+		older := url.Values{}
+		older.Set("key", view.Key)
+		older.Set("before", strconv.Itoa(offset))
+		older.Set("limit", strconv.Itoa(view.Limit))
+		view.OlderURL = "/admin/ui/session?" + older.Encode()
 	}
 
 	return nil

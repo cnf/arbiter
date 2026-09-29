@@ -18,13 +18,22 @@
   var shelf = document.getElementById("inspector-src");
   if (!list || !pane || !shelf) return;
 
-  /* byId caches the shelf's inspectors by turn id. Built once, from the DOM,
-   * rather than queried per click: a conversation is small enough to index. */
+  /* byId caches every loaded turn's inspector by turn id, keyed off whatever
+   * ".inspector" markup is currently in the document — not just the shelf's
+   * own children. A lazy-loaded window (#73) ships its inspectors in a
+   * throwaway ".inspector-src" wrapper next to its rows inside #list, not in
+   * the page's original shelf, so a document-wide query is what makes a row
+   * loaded by "load more"/"load older" selectable at all; rebuildIndex is
+   * re-run after every such swap (see the htmx:afterSwap listener below). */
   var byId = {};
-  var inspectors = shelf.querySelectorAll(".inspector");
-  for (var i = 0; i < inspectors.length; i++) {
-    byId[inspectors[i].getAttribute("data-id")] = inspectors[i];
+  function rebuildIndex() {
+    byId = {};
+    var inspectors = document.querySelectorAll(".inspector");
+    for (var i = 0; i < inspectors.length; i++) {
+      byId[inspectors[i].getAttribute("data-id")] = inspectors[i];
+    }
   }
+  rebuildIndex();
 
   var currentId = null;
 
@@ -350,4 +359,84 @@
     var row = list.querySelector('.row[data-id="' + wanted + '"], .child-row[data-id="' + wanted + '"]');
     if (row) row.scrollIntoView({ block: "center" });
   }
+
+  /* ---- lazy-load pagination (#73): "load more"/"load older" each swap in a
+   * window of turns plus that window's own inspector markup. Three things
+   * have to happen that a plain htmx append/prepend does not do on its own:
+   *
+   *   1. byId has to be rebuilt, or a row loaded by this swap has nothing to
+   *      select (the bug this whole change exists to fix).
+   *   2. A prepend ("load older") changes what is above the scroll position
+   *      the reader was already looking at; without compensating, the newly
+   *      inserted content pushes their place in the list down and the list
+   *      visibly jumps.
+   *   3. Scrolling near either edge should load the next window on its own,
+   *      not wait for a click — including the case where a window does not
+   *      even fill the pane, so there is nothing to scroll in the first
+   *      place. */
+
+  /* The list itself never scrolls — .list-pane does (app.css's #list is an
+   * unconstrained block; overflow-y: auto lives one level up). Every height/
+   * scrollTop below has to act on that ancestor, not on #list, or the load
+   * triggers below fire against a box that can never register a visible
+   * intersection. */
+  var listPane = list.closest(".list-pane") || list.parentElement;
+
+  /* Older-prepend scroll compensation: htmx:beforeSwap/afterSwap bracket the
+   * DOM mutation for a given request, so scrollHeight taken in each is a
+   * before/after pair for that one swap — not a global before/after that a
+   * second, unrelated swap could smuggle a value across. */
+  var olderSwapHeight = null;
+  list.addEventListener("htmx:beforeSwap", function (ev) {
+    var btn = ev.detail && ev.detail.requestConfig && ev.detail.requestConfig.elt;
+    if (btn && btn.getAttribute && btn.getAttribute("data-load") === "older") {
+      olderSwapHeight = listPane.scrollHeight;
+    }
+  });
+
+  list.addEventListener("htmx:afterSwap", function (ev) {
+    rebuildIndex();
+    var btn = ev.detail && ev.detail.requestConfig && ev.detail.requestConfig.elt;
+    if (btn && btn.getAttribute && btn.getAttribute("data-load") === "older" && olderSwapHeight !== null) {
+      listPane.scrollTop += listPane.scrollHeight - olderSwapHeight;
+      olderSwapHeight = null;
+    }
+    observeLoadButtons();
+  });
+
+  /* observeLoadButtons watches whichever "load more"/"load older" buttons
+   * are currently in the list and clicks one the moment it becomes visible
+   * inside .list-pane — the standard infinite-scroll pattern, and what
+   * covers both directions at once: a button revealed by scrolling near
+   * either edge, and a button that is already visible right after a swap
+   * because the loaded window didn't fill the pane (an explicit fixed
+   * window size, #73, trades that possibility for not teaching the server
+   * about viewport height). A fresh observer per swap is simplest here — the
+   * button elements themselves are replaced on every swap, so there is
+   * nothing long-lived to reuse.
+   *
+   * root: listPane, not the viewport — rootMargin only expands the given
+   * root's own box; it does not reach into an intermediate scrollable
+   * ancestor's clip the way a viewport root's margin might suggest, so a
+   * button sitting just past .list-pane's visible edge reports as not
+   * intersecting until root is .list-pane itself (verified empirically:
+   * root: null keeps isIntersecting false for a button 30-40px below the
+   * pane's bottom edge, well inside the 200px rootMargin, because the
+   * observer's clip step uses the pane's unexpanded bounds — rootMargin
+   * only applies to the outermost root). */
+  var loadObserver = null;
+  function observeLoadButtons() {
+    if (loadObserver) loadObserver.disconnect();
+    var targets = list.querySelectorAll('[data-load="more"], [data-load="older"]');
+    if (!targets.length) return;
+    loadObserver = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        loadObserver.unobserve(entry.target);
+        window.htmx.trigger(entry.target, "click");
+      });
+    }, { root: listPane, rootMargin: "200px 0px", threshold: 0 });
+    for (var i = 0; i < targets.length; i++) loadObserver.observe(targets[i]);
+  }
+  observeLoadButtons();
 })();

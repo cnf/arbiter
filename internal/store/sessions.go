@@ -142,6 +142,48 @@ LIMIT ? OFFSET ?`
 	return out, rows.Err()
 }
 
+// SessionClientPageBefore returns up to limit client requests immediately
+// before beforeOffset in conversation order — oldest first, same shape as
+// SessionClientPage — for the transcript's "load older" direction (#73). It
+// also returns the offset the returned rows start at, since the caller (the
+// transcript handler) needs it to number turns the same way SessionClientPage's
+// own offset argument does — the two must never number rows differently for
+// the same underlying query.
+//
+// beforeOffset is a position in the conversation's client-ordered sequence
+// (0-based, the same unit SessionClientPage's offset already uses), not a
+// row id: the caller always has "how far into the conversation am I" at
+// hand (the lowest Seq currently on the page) and never needs a second way
+// to name a position.
+//
+// This is deliberately just SessionClientPage with an earlier offset and a
+// shorter limit, not a new query: the doc comment on SessionClientPage
+// already establishes that a plain offset is stable here (a conversation
+// only ever grows at its tail), and that holds just as well counting
+// backward from an already-known position as it does counting forward from
+// the start — the position itself does not move, only what may exist beyond
+// it. A DESC-ordered query anchored at the *table's* end and OFFSET back
+// from there would not have this property (the offset would shift as the
+// conversation grows); computing an earlier ASC window sidesteps that
+// entirely.
+func (r *Reader) SessionClientPageBefore(ctx context.Context, key string, limit, beforeOffset int) (rows []RequestRow, offset int, err error) {
+	if limit <= 0 {
+		limit = maxRequestListLimit
+	}
+	if limit > maxRequestListLimit {
+		limit = maxRequestListLimit
+	}
+	if beforeOffset <= 0 {
+		return []RequestRow{}, 0, nil
+	}
+	offset = beforeOffset - limit
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err = r.SessionClientPage(ctx, key, beforeOffset-offset, offset)
+	return rows, offset, err
+}
+
 // SessionChildren returns the non-client rows (a classifier call today,
 // title-gen/subagent later) whose trace_id is one of traceIDs — the internal
 // calls that ran inside the given client requests.

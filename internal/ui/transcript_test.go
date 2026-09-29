@@ -243,6 +243,158 @@ func TestTranscriptJumpResolvesTurnToItsPage(t *testing.T) {
 	}
 }
 
+// TestTranscriptJumpCentersTheWindow is #73's fix for a deep link that could
+// not scroll upward: ?seq=N used to load the page-aligned window starting at
+// N's own page boundary, so landing near the start of a later window left
+// nothing above it to load "older" into. A centered window gives the reader
+// room to scroll toward either edge.
+func TestTranscriptJumpCentersTheWindow(t *testing.T) {
+	now := time.Now().UTC()
+	key := "sess-center"
+	var events []store.Event
+	for i := 0; i < 20; i++ {
+		events = append(events, store.Event{
+			TraceID: fmt.Sprintf("tr-%d", i), SessionKey: key, Kind: "client",
+			Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now.Add(time.Duration(i) * time.Second), LatencyMs: 10,
+		})
+	}
+	h, _ := newSeededHandler(t, events...)
+
+	// Turn 10 of 20, a window of 4: a page-aligned window would start at
+	// offset 8 (turn 9) and run to turn 12, all forward of turn 10. A
+	// centered window starts at n-1-limit/2 = 7 (turn 8) and both has turn
+	// 10 near its middle and offers a "load older" control, since offset 7
+	// is not the start of the conversation.
+	body := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=4&seq=10", false).Body.String()
+	if !strings.Contains(body, "#8<") {
+		t.Errorf("a centered jump to turn 10 (window 4) should include turn 8, the window's start:\n%s", body)
+	}
+	if !strings.Contains(body, "#10<") {
+		t.Errorf("a centered jump to turn 10 did not land on a window containing it:\n%s", body)
+	}
+	if !strings.Contains(body, `id="older-row"`) {
+		t.Errorf("a jump into the middle of a long conversation offers no load-older control:\n%s", body)
+	}
+
+	// A jump near the very start still clamps to offset 0 rather than a
+	// negative offset, and offers no "load older" control since there is
+	// nothing before turn 1.
+	early := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=4&seq=2", false).Body.String()
+	if !strings.Contains(early, "#1<") {
+		t.Errorf("a jump near the start should still include turn 1:\n%s", early)
+	}
+	if strings.Contains(early, `id="older-row"`) {
+		t.Errorf("a jump landing at the start of the conversation should offer no load-older control:\n%s", early)
+	}
+}
+
+// TestTranscriptLoadMoreShipsInspectors is #73's fix for bug 1: a turn loaded
+// by "load more" used to append only its list row, never the paired
+// .inspector markup — only page 1 shipped inspectors, via #inspector-src — so
+// clicking a later-loaded row had nothing to select.
+func TestTranscriptLoadMoreShipsInspectors(t *testing.T) {
+	now := time.Now().UTC()
+	key := "sess-more-inspectors"
+	var events []store.Event
+	for i := 0; i < 4; i++ {
+		events = append(events, store.Event{
+			TraceID: fmt.Sprintf("tr-%d", i), SessionKey: key, Kind: "client",
+			Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now.Add(time.Duration(i) * time.Second), LatencyMs: 10,
+		})
+	}
+	h, _ := newSeededHandler(t, events...)
+
+	frag := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=2&offset=2", true).Body.String()
+	if !strings.Contains(frag, `class="inspector"`) {
+		t.Errorf("a load-more fragment must ship its own turns' inspector markup, or later rows are not selectable:\n%s", frag)
+	}
+}
+
+// TestTranscriptLoadOlderPrependsWithInspectors is #73's fix for bug 2: there
+// was no "load older" path at all, so a deep link into the middle of a long
+// conversation could scroll forward but never see what came before it. The
+// fragment must also ship inspector markup, for the same reason
+// TestTranscriptLoadMoreShipsInspectors does.
+func TestTranscriptLoadOlderPrependsWithInspectors(t *testing.T) {
+	now := time.Now().UTC()
+	key := "sess-older"
+	var events []store.Event
+	for i := 0; i < 6; i++ {
+		events = append(events, store.Event{
+			TraceID: fmt.Sprintf("tr-%d", i), SessionKey: key, Kind: "client",
+			Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now.Add(time.Duration(i) * time.Second), LatencyMs: 10,
+		})
+	}
+	h, _ := newSeededHandler(t, events...)
+
+	// A reader sitting at offset 4 (having jumped or scrolled there) asks
+	// for what came before.
+	frag := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=2&before=4", true).Body.String()
+	if !strings.Contains(frag, "#3<") || !strings.Contains(frag, "#4<") {
+		t.Errorf("load-older did not return the window immediately before position 4:\n%s", frag)
+	}
+	if !strings.Contains(frag, `class="inspector"`) {
+		t.Errorf("a load-older fragment must ship its own turns' inspector markup:\n%s", frag)
+	}
+	// Offset 2 is not the start of a 6-turn conversation, so there is still
+	// more to load older.
+	if !strings.Contains(frag, `id="older-row"`) {
+		t.Errorf("load-older landing short of the conversation's start should still offer another load-older control:\n%s", frag)
+	}
+
+	// Asking for what came before position 0 returns nothing more to load.
+	atStart := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=2&before=2", true).Body.String()
+	if strings.Contains(atStart, `id="older-row"`) {
+		t.Errorf("load-older reaching the start of the conversation should offer no further control:\n%s", atStart)
+	}
+}
+
+// TestTranscriptLoadMoreControlReplacesItself guards against a regression
+// where the auto-fill in transcript.js loops forever: session.html used to
+// carry its own hand-copied "load more" button (hx-target="#list",
+// hx-swap="beforeend") that drifted from transcriptList.html's, which had
+// since moved to replacing the control in place. Two divergent copies meant
+// every append left the previous #more-row behind instead of replacing it,
+// so the observer kept re-discovering the same, never-advancing offset —
+// confirmed against a live page with Playwright, where the request never
+// advanced past offset=30. The control must always point at itself, not at
+// #list, and use outerHTML, not beforeend/afterbegin, in both the page's
+// initial render and every load-more/load-older fragment thereafter.
+func TestTranscriptLoadMoreControlReplacesItself(t *testing.T) {
+	now := time.Now().UTC()
+	key := "sess-more-self-target"
+	var events []store.Event
+	for i := 0; i < 6; i++ {
+		events = append(events, store.Event{
+			TraceID: fmt.Sprintf("tr-%d", i), SessionKey: key, Kind: "client",
+			Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now.Add(time.Duration(i) * time.Second), LatencyMs: 10,
+		})
+	}
+	h, _ := newSeededHandler(t, events...)
+
+	initial := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=2", false).Body.String()
+	if !strings.Contains(initial, `hx-target="#more-row" hx-swap="outerHTML"`) {
+		t.Errorf("the page's own initial \"load more\" control must target itself with outerHTML, not #list/beforeend:\n%s", initial)
+	}
+	if strings.Contains(initial, `hx-target="#list"`) {
+		t.Errorf("the initial page must not carry a hand-copied load-more control that targets #list:\n%s", initial)
+	}
+
+	frag := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=2&offset=2", true).Body.String()
+	if !strings.Contains(frag, `hx-target="#more-row" hx-swap="outerHTML"`) {
+		t.Errorf("a load-more fragment's own \"load more\" control must also target itself with outerHTML:\n%s", frag)
+	}
+
+	older := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=2&before=4", true).Body.String()
+	if !strings.Contains(older, `hx-target="#older-row" hx-swap="outerHTML"`) {
+		t.Errorf("a load-older fragment's own \"load older\" control must target itself with outerHTML:\n%s", older)
+	}
+}
+
 // TestTranscriptIDOpensTheOwningTurn covers the Sessions lane list's "open"
 // link (sessionNodeHref): unlike ?seq=N (a turn number, resolved once inside
 // SessionHandler already), ?id=<request id> is what a lane node actually

@@ -730,7 +730,7 @@ SELECT length(cast(body AS TEXT)), cast(body AS TEXT)
 ```
 
 `internal/config/title_signature_test.go` pins this down: it loads the shipped
-`arbiter.yaml` through the real parser, compares the patterns to the intended
+`arbiter.example.yaml` through the real parser, compares the patterns to the intended
 regexes (a single backslash inside YAML double quotes loads without error and
 only fails as a pattern that never matches), and runs them against the three
 prompts plus the Hermes agent prompt they must not match.

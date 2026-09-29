@@ -197,9 +197,11 @@ classifiers:
   #
   # Declared first and decisive, so an identified title call skips every
   # model-backed classifier behind it and pays for no classification call at all.
-  # That is the whole cost win: a title call never pins to a session (its session
-  # key hashes the conversation being titled, which differs every call), so
-  # without this it would classify on every single call.
+  # That is the whole cost win: without it, an unidentified title call would
+  # classify on every single call. A title call DOES get its own real
+  # affinity-pin slot (keyed on session_key + a hash of its own prompt — see
+  # PromptHash / session_affinity below), but that pin never collides with the
+  # main thread's, since each prompt family gets its own slot regardless.
   #
   # The three patterns below are written against the clients' REAL prompts, read
   # out of the live store (79 distinct system prompts, all three verified to hit
@@ -499,10 +501,13 @@ guardrails:
 # The same header is also the primary (and cheapest) way Arbiter ties a
 # title-generation request back to the session it named: a client that sends
 # this header on every call — Hermes does, by design, on its title-gen calls
-# specifically — makes the title row's own session_key equal to its parent's,
-# an exact indexed lookup with no need for capture_content at all. Without the
-# header, linking falls back to a content-hash join that DOES need
-# capture_content — see that setting above.
+# specifically — makes the title row's own session_key equal to its parent's
+# in the requests table, an exact indexed lookup with no need for
+# capture_content at all. The affinity_pins table additionally keys on
+# prompt_hash (a hash of the request's own system prompt — see PromptHash),
+# so the title call's pin and the main thread's pin never collide even though
+# they share a session_key. Without the header, linking falls back to a
+# content-hash join that DOES need capture_content — see that setting above.
 #
 # session_affinity:
 #   header: "X-Session-Id"

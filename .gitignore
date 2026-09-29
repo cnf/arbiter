@@ -16,6 +16,7 @@
 # Go workspace file
 go.work
 go.work.sum
+/.go*
 
 # Dependency directories
 vendor/
@@ -69,3 +70,5 @@ support/design/
 # never commit. `keyring://` (the previous provider) kept them in a daemon
 # outside the tree; the file provider has to put them somewhere.
 .secrets/
+.cache/
+.local/

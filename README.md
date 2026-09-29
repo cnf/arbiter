@@ -198,7 +198,9 @@ last being OpenAI-compatible transport, preserving provider identity).
 `arbiter.yaml` (path configurable via `--config`), hot-reloaded, strict on
 unknown fields, and documented in full — every key, the complete loadable
 example, and where each subsystem's docs pick up from there — in
-**[docs/configuration.md](docs/configuration.md)**.
+**[docs/configuration.md](docs/configuration.md)**. The repository root ships
+`arbiter.example.yaml`, a fuller annotated worked example — copy it to
+`arbiter.yaml` (or pass `--config`) to use it as a starting point.
 
 ## Testing
 

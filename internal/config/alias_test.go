@@ -249,12 +249,12 @@ aliases:
 	}
 }
 
-// TestShippedArbiterYAMLLoads keeps the committed arbiter.yaml honest against the
-// code that parses it — a rename or validation change that breaks the shipped
-// example should fail here rather than only at process start.
+// TestShippedArbiterYAMLLoads keeps the committed arbiter.example.yaml honest
+// against the code that parses it — a rename or validation change that breaks
+// the shipped example should fail here rather than only at process start.
 func TestShippedArbiterYAMLLoads(t *testing.T) {
-	if _, err := Load("../../arbiter.yaml"); err != nil {
-		t.Fatalf("Load(../../arbiter.yaml): %v", err)
+	if _, err := Load("../../arbiter.example.yaml"); err != nil {
+		t.Fatalf("Load(../../arbiter.example.yaml): %v", err)
 	}
 }
 

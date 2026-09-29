@@ -74,8 +74,9 @@ you send in the `model` field picks the *entry point*, not necessarily the
 destination.
 
 The complete surface is [Configuration](../README.md#configuration) in the
-README. The config in the repository root (`arbiter.yaml`) is a fuller worked
-example with every section filled in and annotated.
+README. The config in the repository root (`arbiter.example.yaml`) is a
+fuller worked example with every section filled in and annotated — copy it to
+`arbiter.yaml` to use it directly.
 
 ---
 
@@ -305,4 +306,4 @@ upstream error — not at load time. Set the variable, or write the literal valu
   the `model` precedence, group selection, capability-aware rules, and the
   three ways a request gets classified.
 - **Every config key** — [Configuration](../README.md#configuration) in the
-  README, and the annotated `arbiter.yaml` at the repository root.
+  README, and the annotated `arbiter.example.yaml` at the repository root.

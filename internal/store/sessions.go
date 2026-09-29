@@ -288,32 +288,6 @@ WHERE r2.session_key = ? AND r2.kind = 'client'
 	return key, n, true, nil
 }
 
-// SessionFirstClient returns the session's opening client request — the turn
-// that introduced the conversation, and therefore the one whose system
-// preamble the page's preamble modal inspects. ok is false for a session with
-// no client row at all.
-func (r *Reader) SessionFirstClient(ctx context.Context, key string) (RequestRow, bool, error) {
-	const q = `SELECT` + requestRowColumns + `
-FROM requests WHERE session_key = ? AND kind = 'client'
-ORDER BY arrival_ts ASC, id ASC
-LIMIT 1`
-
-	rows, err := r.db.QueryContext(ctx, q, key)
-	if err != nil {
-		return RequestRow{}, false, fmt.Errorf("session first client: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	if !rows.Next() {
-		return RequestRow{}, false, rows.Err()
-	}
-	s, err := scanRequestRow(rows)
-	if err != nil {
-		return RequestRow{}, false, err
-	}
-	return s, true, rows.Err()
-}
-
 // SessionTotals is a session's headline numbers: how many turns, how many of
 // them failed, what the whole conversation cost, and how many tokens it moved.
 //

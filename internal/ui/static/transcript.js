@@ -171,16 +171,49 @@
     });
   }
 
-  /* ---- the preamble modal: three tabs over server-rendered panels ---- */
-  var preambleBtn = document.getElementById("preamble-btn");
+  /* ---- the preamble modal: one shared shell, filled by moving the clicked
+   * turn's own preamble markup into it (transcriptInspector.html renders one
+   * hidden .preamble-src per turn that has one) — never fetched, never
+   * rebuilt, so opening it costs no request no matter which turn it's for.
+   * The node is moved back to its home inspector on close, the same
+   * shelf-and-restore pattern select() uses, so it is still there next time
+   * that turn's button is clicked or the turn is revisited. */
   var preambleModal = document.getElementById("preamble-modal");
-  if (preambleBtn && preambleModal) {
-    preambleBtn.addEventListener("click", function () {
-      preambleModal.classList.add("open");
-    });
+  var preambleModalBody = document.getElementById("preamble-modal-body");
+  var preambleHome = null; // the .preamble-src's own parent, to restore it to
+
+  function openPreamble(src) {
+    if (!preambleModal || !preambleModalBody) return;
+    preambleHome = src.parentNode;
+    preambleModalBody.appendChild(src);
+    src.hidden = false;
+    preambleModal.classList.add("open");
+  }
+
+  function closePreamble() {
+    if (!preambleModal) return;
+    var src = preambleModalBody ? preambleModalBody.firstElementChild : null;
+    if (src && preambleHome) {
+      src.hidden = true;
+      preambleHome.appendChild(src);
+    }
+    preambleHome = null;
+    preambleModal.classList.remove("open");
+  }
+
+  pane.addEventListener("click", function (ev) {
+    var trigger = ev.target.closest("[data-preamble-trigger]");
+    if (!trigger) return;
+    var inspector = trigger.closest(".inspector");
+    var src = inspector ? inspector.querySelector(".preamble-src") : null;
+    if (src) openPreamble(src);
+  });
+
+  if (preambleModal) {
     preambleModal.addEventListener("click", function (ev) {
-      if (ev.target === preambleModal || ev.target.id === "preamble-modal-close") {
-        preambleModal.classList.remove("open");
+      if (ev.target === preambleModal || ev.target.hasAttribute("data-preamble-close")) {
+        closePreamble();
+        return;
       }
       var tab = ev.target.closest(".tab");
       if (!tab) return;
@@ -214,6 +247,7 @@
       var block = expand.previousElementSibling;
       if (block) block.classList.remove("clamped");
       expand.remove();
+      return;
     }
   });
 

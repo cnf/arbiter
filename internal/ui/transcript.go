@@ -65,11 +65,6 @@ type sessionView struct {
 	// when there is nothing more to load.
 	MoreURL string
 
-	// Preamble is the session's system preamble, rendered into the page so
-	// the modal needs no fetch. Absent (Present false) when the opening turn
-	// captured no system-role block.
-	Preamble transcriptPreamble
-
 	// Set only by a jump (?seq=N): the turn the page should open with.
 	SelectedID int64
 
@@ -140,6 +135,12 @@ type transcriptInspector struct {
 	// Headers is the inbound request's captured headers, nil when none were
 	// recorded (an internal call never has any).
 	Headers map[string]string
+
+	// SystemPrompt is this request's own system prompt, in both forms when a
+	// pre-guardrail touched it — the same shape transcriptPreamble builds for
+	// the session opener (see systemPromptFor), but scoped to this request
+	// rather than assuming the opener's preamble applies to every turn.
+	SystemPrompt transcriptPreamble
 
 	// CaptureOff is true when nothing was captured for this request at all —
 	// rendered as its own note, because "nothing captured" and "nothing to
@@ -341,12 +342,17 @@ func (h *Handler) fillTranscript(r *http.Request, view *sessionView) error {
 		}
 	}
 
-	view.Preamble = h.transcriptPreamble(ctx, view.Key)
 	return nil
 }
 
 // buildTurns turns a page's client rows into turn views, numbering them by the
 // conversation's order and attaching each turn's internal calls.
+//
+// Every DB read below is batched once for the whole page — content blocks,
+// request extras (confidence/headers) and children — rather than once per
+// turn. A transcript page used to run two queries per turn (one contentFor,
+// one GetRequest) on top of the children query, which was the dominant cost
+// once pages stopped being a handful of rows; see #59.
 func (h *Handler) buildTurns(r *http.Request, rows []store.RequestRow, offset int) []transcriptTurnView {
 	ctx := r.Context()
 
@@ -371,14 +377,43 @@ func (h *Handler) buildTurns(r *http.Request, rows []store.RequestRow, offset in
 		}
 	}
 
+	// One id list covering every row that will need a buildTurn call —
+	// parents and children alike — so the content and extras reads below are
+	// each a single query for the whole page, not one per turn.
+	ids := make([]int64, 0, len(rows)*2)
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	for _, kids := range children {
+		for _, kid := range kids {
+			ids = append(ids, kid.ID)
+		}
+	}
+
+	page := transcriptPageContent{}
+	if blocks, hasGuardrailed, err := h.reader.ContentForRequests(ctx, ids); err != nil {
+		h.logger.LogError(ctx, "warn", err,
+			map[string]interface{}{"phase": "admin_ui_transcript_content"})
+	} else {
+		page.blocks = blocks
+		page.hasGuardrailed = hasGuardrailed
+		page.contentLoaded = true
+	}
+	if extras, err := h.reader.RequestExtras(ctx, ids); err != nil {
+		h.logger.LogError(ctx, "warn", err,
+			map[string]interface{}{"phase": "admin_ui_transcript_extras"})
+	} else {
+		page.extras = extras
+	}
+
 	// The parent's turn number is needed by each child's "back to parent"
 	// link, so numbering happens before the children are built.
 	out := make([]transcriptTurnView, 0, len(rows))
 
 	for i, row := range rows {
-		turn := h.buildTurn(r, row, offset+i+1)
+		turn := h.buildTurn(r, row, offset+i+1, page)
 		for _, kid := range children[i] {
-			child := h.buildTurn(r, kid, 0)
+			child := h.buildTurn(r, kid, 0, page)
 			child.Inspector.ParentSeq = turn.Seq
 			child.Inspector.ParentID = turn.ID
 			turn.Children = append(turn.Children, child)
@@ -388,9 +423,23 @@ func (h *Handler) buildTurns(r *http.Request, rows []store.RequestRow, offset in
 	return out
 }
 
-// buildTurn reads one request's content and derives both its list row and its
-// inspector.
-func (h *Handler) buildTurn(r *http.Request, row store.RequestRow, seq int) transcriptTurnView {
+// transcriptPageContent is one page's worth of per-request reads, fetched
+// once in buildTurns and looked up by buildTurn — see buildTurns' doc
+// comment. A row missing from blocks/extras just means that id had none
+// (capture off, or no matching requests row); contentLoaded distinguishes
+// "the batch read failed" from "this id legitimately has zero blocks", the
+// same distinction buildTurn's own ContentErr already made per-request.
+type transcriptPageContent struct {
+	blocks         map[int64][]store.ContentBlock
+	hasGuardrailed map[int64]bool
+	extras         map[int64]store.RequestExtra
+	contentLoaded  bool
+}
+
+// buildTurn derives one request's list row and inspector from data already
+// read for the whole page (see transcriptPageContent) — it makes no DB calls
+// of its own.
+func (h *Handler) buildTurn(r *http.Request, row store.RequestRow, seq int, page transcriptPageContent) transcriptTurnView {
 	ctx := r.Context()
 
 	turn := transcriptTurnView{
@@ -409,23 +458,22 @@ func (h *Handler) buildTurn(r *http.Request, row store.RequestRow, seq int) tran
 		turn.Badge = row.Kind
 	}
 
-	blocks, _, err := h.reader.ContentForRequest(ctx, row.ID, false)
-	if err != nil {
-		h.logger.LogError(ctx, "warn", err,
-			map[string]interface{}{"phase": "admin_ui_transcript_content", "request_id": row.ID})
-		turn.Inspector.ContentErr = true
-	} else {
+	if page.contentLoaded {
+		blocks := page.blocks[row.ID]
+		hasGuardrailed := page.hasGuardrailed[row.ID]
 		turn.Inspector.ContentLoaded = true
 		turn.Inspector.CaptureOff = len(blocks) == 0
 		h.splitBlocks(&turn, blocks)
+		turn.Inspector.SystemPrompt = h.buildPreamble(ctx, row.ID, blocks, hasGuardrailed)
+	} else {
+		turn.Inspector.ContentErr = true
 	}
 
-	if detail, ok, err := h.reader.GetRequest(ctx, row.ID); err == nil && ok {
-		turn.Inspector.Confidence = detail.Confidence
-		turn.Inspector.Headers = detail.Headers
-		turn.Inspector.HasVerdict = detail.Domain != "" || detail.Effort != "" ||
-			detail.CostClass != "" || detail.Confidence > 0
-	}
+	extra := page.extras[row.ID]
+	turn.Inspector.Confidence = extra.Confidence
+	turn.Inspector.Headers = extra.Headers
+	turn.Inspector.HasVerdict = row.Domain != "" || row.Effort != "" ||
+		row.CostClass != "" || extra.Confidence > 0
 	if row.StatusCode >= 400 {
 		turn.Dot = "err"
 	}
@@ -616,38 +664,30 @@ func oneLine(s string, max int) string {
 	return cut + "…"
 }
 
-// transcriptPreamble reads the session's opening request in both directions so
-// the preamble modal can show what was sent, what the client originally sent,
-// and the difference — all server-rendered, so opening the modal costs no
-// request. An unreadable preamble yields an absent one rather than failing the
-// page: it is a convenience, not the transcript.
-func (h *Handler) transcriptPreamble(ctx context.Context, key string) transcriptPreamble {
-	first, ok, err := h.reader.SessionFirstClient(ctx, key)
-	if err != nil || !ok {
-		if err != nil {
-			h.logger.LogError(ctx, "warn", err,
-				map[string]interface{}{"phase": "admin_ui_transcript_preamble", "session": key})
-		}
-		return transcriptPreamble{}
+// buildPreamble derives one request's system prompt in both forms: the form
+// that actually went upstream (asSentBlocks, which the caller already has from
+// its own content read) and, only when a pre-guardrail actually produced a
+// distinct capture (hasGuardrailed), the client's original — fetched with a
+// second query only in that case. The common case (no guardrail touched this
+// request) costs zero extra queries: AsSent and Original are identical, so
+// there is nothing a second read could add.
+func (h *Handler) buildPreamble(ctx context.Context, requestID int64, asSentBlocks []store.ContentBlock, hasGuardrailed bool) transcriptPreamble {
+	asSent := systemText(asSentBlocks)
+	if !hasGuardrailed {
+		p := transcriptPreamble{AsSent: asSent, Original: asSent}
+		p.Present = asSent != ""
+		return p
 	}
 
-	// Two reads of the same request, one per direction: the guardrailed form
-	// (the default) is "as sent", and showAsSent gives the client's original.
-	asSentBlocks, _, err := h.reader.ContentForRequest(ctx, first.ID, false)
+	originalBlocks, _, err := h.reader.ContentForRequest(ctx, requestID, true)
 	if err != nil {
 		h.logger.LogError(ctx, "warn", err,
-			map[string]interface{}{"phase": "admin_ui_transcript_preamble_sent", "request_id": first.ID})
-		return transcriptPreamble{}
-	}
-	originalBlocks, _, err := h.reader.ContentForRequest(ctx, first.ID, true)
-	if err != nil {
-		h.logger.LogError(ctx, "warn", err,
-			map[string]interface{}{"phase": "admin_ui_transcript_preamble_orig", "request_id": first.ID})
+			map[string]interface{}{"phase": "admin_ui_transcript_preamble_orig", "request_id": requestID})
 		return transcriptPreamble{}
 	}
 
 	p := transcriptPreamble{
-		AsSent:   systemText(asSentBlocks),
+		AsSent:   asSent,
 		Original: systemText(originalBlocks),
 	}
 	p.Present = p.AsSent != "" || p.Original != ""

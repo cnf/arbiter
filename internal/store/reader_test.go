@@ -427,6 +427,54 @@ func TestGetRequestReturnsFullRowAndMissingIsNotAnError(t *testing.T) {
 	}
 }
 
+// TestRequestExtrasMatchesGetRequest is #59's other batching fix: a
+// transcript page now fetches confidence+headers for a whole page of ids in
+// one RequestExtras call instead of one GetRequest per turn. Its result for
+// each id must match what GetRequest returns for confidence and headers, and
+// an id with no matching row must simply be absent rather than erroring the
+// whole batch.
+func TestRequestExtrasMatchesGetRequest(t *testing.T) {
+	r, q := newTestReader(t)
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+
+	insertRow(t, q, Event{Ts: now, Provider: "a", Model: "m1", SessionKey: "s1",
+		Domain: "code_generation", Confidence: 0.83,
+		Headers: map[string]string{"x-client": "hermes"}})
+	insertRow(t, q, Event{Ts: now.Add(time.Second), Provider: "a", Model: "m2", SessionKey: "s1"})
+
+	rows, err := r.ListRequests(context.Background(), RequestFilter{})
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("ListRequests = %v, %v; want two rows", rows, err)
+	}
+	ids := []int64{rows[0].ID, rows[1].ID, 424242}
+
+	extras, err := r.RequestExtras(context.Background(), ids)
+	if err != nil {
+		t.Fatalf("RequestExtras: %v", err)
+	}
+	if _, ok := extras[424242]; ok {
+		t.Error("unknown id present in RequestExtras result, want absent")
+	}
+	for _, id := range ids[:2] {
+		want, ok, err := r.GetRequest(context.Background(), id)
+		if err != nil || !ok {
+			t.Fatalf("GetRequest(%d) = ok %v, err %v", id, ok, err)
+		}
+		got := extras[id]
+		if got.Confidence != want.Confidence {
+			t.Errorf("id %d: Confidence = %v, want %v", id, got.Confidence, want.Confidence)
+		}
+		if len(got.Headers) != len(want.Headers) {
+			t.Errorf("id %d: Headers = %+v, want %+v", id, got.Headers, want.Headers)
+		}
+		for k, v := range want.Headers {
+			if got.Headers[k] != v {
+				t.Errorf("id %d: Headers[%q] = %q, want %q", id, k, got.Headers[k], v)
+			}
+		}
+	}
+}
+
 func TestReaderCoexistsWithActiveWriter(t *testing.T) {
 	w, path := newTestWriter(t)
 

@@ -335,6 +335,63 @@ func (r *Reader) ListRequests(ctx context.Context, f RequestFilter) ([]RequestRo
 	return out, rows.Err()
 }
 
+// RequestExtra is the subset of a request's detail row that is not already on
+// RequestRow: only what buildTurn actually reads out of GetRequest today
+// (confidence, headers). It exists so a transcript page can fetch this for
+// every turn in one round trip instead of one GetRequest call per turn — see
+// RequestExtras.
+type RequestExtra struct {
+	Confidence float64
+	Headers    map[string]string
+}
+
+// RequestExtras batches RequestExtra lookups for a whole page of ids in one
+// round trip — the same "one query for everyone on the page" shape
+// SessionChildren and ContentForRequests already use, and the other half of
+// #59's per-turn N+1 (GetRequest was previously called once per turn just for
+// these two columns). An id absent from requests, or with no headers, is
+// simply missing/zero-valued in the result — the caller already treats a
+// zero RequestExtra as "no verdict, no headers".
+func (r *Reader) RequestExtras(ctx context.Context, ids []int64) (map[int64]RequestExtra, error) {
+	out := make(map[int64]RequestExtra, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, 0, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	q := `SELECT id, confidence, headers_json FROM requests WHERE id IN (` +
+		strings.Join(placeholders, ", ") + `)`
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("request extras: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var (
+			id      int64
+			conf    sql.NullFloat64
+			headers sql.NullString
+		)
+		if err := rows.Scan(&id, &conf, &headers); err != nil {
+			return nil, fmt.Errorf("scan request extra: %w", err)
+		}
+		e := RequestExtra{Confidence: conf.Float64}
+		if headers.Valid {
+			// Same degrade-on-malformed-JSON behavior as GetRequest: never
+			// fails the whole page over one bad headers_json.
+			_ = json.Unmarshal([]byte(headers.String), &e.Headers)
+		}
+		out[id] = e
+	}
+	return out, rows.Err()
+}
+
 // GetRequest returns one request by id. ok=false means no such row, which the
 // caller reports as 404 — an unknown id is a normal outcome, not an error.
 func (r *Reader) GetRequest(ctx context.Context, id int64) (RequestDetail, bool, error) {

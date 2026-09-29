@@ -633,9 +633,6 @@ footer.appfoot .spacer {
 }
 .preamble-btn:hover { color: var(--text-dim); border-color: var(--text-faint); }
 .preamble-btn:disabled { opacity: 0.45; cursor: default; }
-.preamble-btn .touched-dot {
-  width: 6px; height: 6px; border-radius: 50%; background: var(--warn); display: none;
-}
 .preamble-btn.touched .touched-dot { display: inline-block; }
 
 /* jump-trigger is the mockup's one deliberately loud control on this page —
@@ -907,8 +904,15 @@ footer.appfoot .spacer {
 .content-modal.open, .preamble-modal.open, .jump-modal.open { display: flex; }
 .content-modal .box, .preamble-modal .box, .jump-modal .box {
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg);
-  display: flex; flex-direction: column;
+  display: flex; flex-direction: column; overflow: hidden;
 }
+/* The preamble modal's box-head/box-body live inside .preamble-src, moved in
+ * from the turn's own hidden markup rather than rendered here directly (see
+ * transcript.js). As a flex child of .box it needs the same column+shrink
+ * rules .box itself has, or its default min-height:auto refuses to shrink
+ * below its content size — .box's overflow:hidden then just clips it instead
+ * of letting .box-body's own overflow-y:auto scroll. */
+.preamble-src { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .content-modal .box { width: min(880px, 92vw); max-height: 84vh; }
 .preamble-modal .box { width: min(900px, 92vw); max-height: 86vh; }
 .jump-modal { align-items: flex-start; padding-top: 14vh; }
@@ -922,16 +926,19 @@ footer.appfoot .spacer {
 .box-head .x:hover { color: var(--text); }
 .box-body {
   padding: 14px 16px; overflow-y: auto; font-family: var(--mono); font-size: 12px;
-  color: var(--text-dim); white-space: pre-wrap; overflow-wrap: anywhere;
+  color: var(--text-dim); white-space: pre-wrap; overflow-wrap: anywhere; min-height: 0;
 }
 
-.preamble-modal .tabs { display: flex; gap: 6px; }
-.preamble-modal .tab {
+.tabs { display: flex; gap: 6px; }
+.tab {
   background: transparent; border: 1px solid var(--border); border-radius: 5px;
   padding: 4px 10px; font-family: var(--sans); font-size: 11.5px; color: var(--text-dim); cursor: pointer;
 }
-.preamble-modal .tab.active { background: var(--accent-dim); border-color: var(--accent); color: var(--tab-active-ink); }
+.tab.active { background: var(--accent-dim); border-color: var(--accent); color: var(--tab-active-ink); }
 .preamble-untouched { color: var(--text-faint); font-style: italic; }
+
+.touched-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); display: none; }
+.touched-dot.inline { display: inline-block; }
 
 /* diff rendering — the preamble modal's inline diff, fed by the store's own
  * LineDiff (diff.go), so these three classes mirror DiffOp.Kind exactly:

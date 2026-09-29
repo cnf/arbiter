@@ -29,11 +29,6 @@ it is defined here and rendered as the whole content region. */}}
 <div class="transcript">
   <div class="toolbar">
     <span class="crumb"><a href="/admin/ui/sessions">sessions</a> / <span class="mono" title="{{.Key}}">{{.ShortKey}}</span></span>
-    <button class="preamble-btn{{if .Preamble.Guardrailed}} touched{{end}}" id="preamble-btn" type="button"
-            title="{{if .Preamble.Guardrailed}}a pre-guardrail rewrote this before it went upstream{{else}}sent unmodified{{end}}{{if not .Preamble.Present}} — none captured{{end}}"
-            {{if not .Preamble.Present}}disabled{{end}}>
-      <span class="touched-dot"></span>system preamble
-    </button>
     <button class="jump-trigger" id="jump-trigger" type="button">jump to # <kbd>/</kbd></button>
     <div class="stats">
       <span><b>{{.Totals.Turns}}</b> requests</span>
@@ -105,32 +100,15 @@ layout while hidden. Children are included because they are selectable too. */}}
   </div>
 </div>
 
-{{if .Preamble.Present}}
+{{/* The preamble modal is a shared shell: each turn's own tabs+panels are
+already server-rendered inside its inspector (hidden), and get MOVED in, not
+copied or fetched, when that turn's preamble button is clicked — the same
+"move a node, don't rebuild it" pattern select() uses for the inspector pane
+itself (see transcript.js). This is what keeps a per-request preamble at
+zero extra DB queries beyond what buildTurn already reads. */}}
 <div class="preamble-modal" id="preamble-modal">
-  <div class="box">
-    <div class="box-head">
-      <span>system preamble</span>
-      <div class="tabs">
-        <button class="tab active" type="button" data-tab="sent">as sent{{if .Preamble.Guardrailed}} (guardrailed){{end}}</button>
-        <button class="tab" type="button" data-tab="original">client original</button>
-        <button class="tab" type="button" data-tab="diff">diff</button>
-      </div>
-      <span class="x" id="preamble-modal-close">✕</span>
-    </div>
-    <div class="box-body">
-      <div class="preamble-panel" data-panel="sent">{{.Preamble.AsSent}}</div>
-      <div class="preamble-panel" data-panel="original" hidden>{{.Preamble.Original}}</div>
-      <div class="preamble-panel" data-panel="diff" hidden>
-        {{if .Preamble.Guardrailed}}
-          {{range .Preamble.Diff}}<span class="diff-{{.Kind}}">{{.Text}}</span>{{end}}
-        {{else}}
-          <span class="preamble-untouched">no pre-guardrail touched this preamble — it was sent as the client wrote it.</span>
-        {{end}}
-      </div>
-    </div>
-  </div>
+  <div class="box" id="preamble-modal-body"></div>
 </div>
-{{end}}
 
 <div class="jump-modal" id="jump-modal">
   <div class="box">

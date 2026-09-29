@@ -52,6 +52,36 @@ type toolResultCanonical struct {
 	IsError bool   `json:"is_error"`
 }
 
+// toolDefView is a content-first rendering of one tool_def block: the name
+// and description are what a reader scans (#63's "12 tools offered, name +
+// description" shape), the schema is available behind the same raw-JSON
+// toggle a tool call's input gets.
+type toolDefView struct {
+	Name        string
+	Description string
+	SchemaJSON  string
+}
+
+// toolDefCanonical mirrors store.captureTools' encoding
+// (internal/store/content.go).
+type toolDefCanonical struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	InputSchema map[string]interface{} `json:"input_schema,omitempty"`
+}
+
+// parseToolDef decodes a captured tool_def block. A decode failure (captured
+// before this UI existed, or a format this UI doesn't know) degrades to a
+// named-less entry carrying the raw body, the same "still renders, just
+// without a summary" rule parseToolCall follows.
+func parseToolDef(body string) toolDefView {
+	var c toolDefCanonical
+	if err := json.Unmarshal([]byte(body), &c); err != nil {
+		return toolDefView{SchemaJSON: body}
+	}
+	return toolDefView{Name: c.Name, Description: c.Description, SchemaJSON: prettyJSON(c.InputSchema)}
+}
+
 // parseToolCall decodes a captured tool_use block into its content-first
 // view. A decode failure (the body isn't the canonical shape — captured
 // before this UI existed, or from a format this UI doesn't know) degrades to

@@ -137,6 +137,19 @@ type transcriptInspector struct {
 	Reasoning    []blockView
 	Calls        []toolCallPairView
 
+	// ToolDefs is the toolset the client offered for the whole conversation
+	// (msg_index = toolDefsMsgIndex, so it belongs to no single message) —
+	// rendered as its own request-scoped section, like Headers, rather than
+	// folded into a turn's message flow (#63).
+	ToolDefs []toolDefView
+
+	// ToolDefsBytes is the summed size of ToolDefs' captured JSON bodies —
+	// shown next to the section toggle so a reader can tell "12 tools" apart
+	// from "12 tools, 40KB of schema" without expanding it. Bytes, not
+	// tokens: Arbiter has no real tokenizer, only a char/4 routing estimate
+	// (internal/classifier.estimateTokens) never meant to be shown as fact.
+	ToolDefsBytes int
+
 	// Headers is the inbound request's captured headers, nil when none were
 	// recorded (an internal call never has any).
 	Headers map[string]string
@@ -629,6 +642,9 @@ func (h *Handler) splitBlocks(turn *transcriptTurnView, blocks []store.ContentBl
 			// conversation re-sends results without the calls): render it on
 			// its own rather than dropping it.
 			calls = append(calls, toolCallPairView{Result: &v})
+		case b.BlockType == "tool_def":
+			turn.Inspector.ToolDefs = append(turn.Inspector.ToolDefs, parseToolDef(b.Body))
+			turn.Inspector.ToolDefsBytes += len(b.Body)
 		case b.Direction == "request" && b.Role == "user":
 			turn.Inspector.UserMessages = append(turn.Inspector.UserMessages, bv)
 			if turn.UserPreview == "" {
@@ -737,16 +753,21 @@ func isReasoning(blockType string) bool {
 // page, which would wrongly clip a classifier child's own low indices when
 // mixed with its much-further-along parent's; keeping this per-request and
 // stateless was the safer trade.
+//
+// Tool definitions (BlockType "tool_def", MsgIndex toolDefsMsgIndex) are a
+// different kind of exception: they belong to no message at all, so
+// "newest" has no meaning for them — they survive this filter unconditionally
+// rather than competing with message indices for it.
 func newestRequestMessage(blocks []store.ContentBlock) []store.ContentBlock {
 	newest := int64(-1)
 	for _, b := range blocks {
-		if b.Direction == "request" && b.MsgIndex > newest {
+		if b.Direction == "request" && b.BlockType != "tool_def" && b.MsgIndex > newest {
 			newest = b.MsgIndex
 		}
 	}
 	out := make([]store.ContentBlock, 0, len(blocks))
 	for _, b := range blocks {
-		if b.Direction == "request" && b.MsgIndex != newest {
+		if b.Direction == "request" && b.BlockType != "tool_def" && b.MsgIndex != newest {
 			continue
 		}
 		out = append(out, b)

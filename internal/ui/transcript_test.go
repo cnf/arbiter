@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -152,6 +153,71 @@ func TestTranscriptShowsOnlyEachTurnsOwnContent(t *testing.T) {
 	// body) but must not additionally appear inside turn 2's inspector.
 	if n := strings.Count(body, `<div class="user-message">what files are in the repo</div>`); n != 1 {
 		t.Errorf("turn 1's user message appears in %d inspector(s), want 1 (turn 2 re-rendered resent history)\n%s", n, body)
+	}
+}
+
+// TestTranscriptShowsToolDefinitions is #63: tool definitions are captured
+// (#60) but nothing rendered them. A tool_def block belongs to no message
+// (msg_index = toolDefsMsgIndex) and must survive newestRequestMessage's
+// per-turn narrowing on every turn that captured it, unlike a resent user
+// message — the point isn't "this turn's own", it's "the toolset offered for
+// the whole conversation".
+func TestTranscriptShowsToolDefinitions(t *testing.T) {
+	now := time.Now().UTC()
+	key := "sess-tooldefs"
+
+	toolDefBlock := func(pos int, name, desc string) store.Block {
+		body, err := json.Marshal(struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description,omitempty"`
+			InputSchema map[string]interface{} `json:"input_schema,omitempty"`
+		}{name, desc, map[string]interface{}{"type": "object"}})
+		if err != nil {
+			t.Fatalf("marshal tool def fixture: %v", err)
+		}
+		return store.Block{MsgIndex: -1, Position: pos, Role: "tool_def", Kind: "tool_def", Body: body}
+	}
+
+	events := []store.Event{
+		{TraceID: "tr-1", SessionKey: key, Kind: "client",
+			Provider: "anthropic", Model: "claude-sonnet", StatusCode: 200,
+			Ts: now, LatencyMs: 100,
+			Content: &store.CapturedContent{
+				Request: []store.Block{
+					toolDefBlock(0, "read_file", "Read a file from disk"),
+					toolDefBlock(1, "write_file", ""),
+					{MsgIndex: 0, Position: 0, Role: "system", Kind: "text", Body: []byte("you are a helpful assistant")},
+					{MsgIndex: 1, Position: 0, Role: "user", Kind: "text", Body: []byte("read main.go")},
+				},
+			}},
+	}
+
+	h, _ := newSeededHandler(t, events...)
+	body := serve(t, h, "GET", "/admin/ui/session?key="+key, false).Body.String()
+
+	for _, want := range []string{
+		"tools offered (2, ",
+		"read_file",
+		"Read a file from disk",
+		"write_file",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("transcript page missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+	// The toggle's byte count is the two captured tool_def bodies' combined
+	// size — small in this fixture, so it must render in plain "N B" form,
+	// not spuriously scaled to kB.
+	if !strings.Contains(body, " B)</button>") {
+		t.Errorf("tool-defs toggle missing a plain-byte size suffix:\n%s", body)
+	}
+	// Both fixture tools have names, so the "(unnamed tool)" placeholder
+	// (for a definition captured with no name) must not appear.
+	if strings.Contains(body, "(unnamed tool)") {
+		t.Errorf("named tool defs rendered as unnamed:\n%s", body)
+	}
+	if n := strings.Count(body, `class="tooldef-row"`); n != 2 {
+		t.Errorf("got %d tool-def rows, want 2 (one per captured tool)\n%s", n, body)
 	}
 }
 

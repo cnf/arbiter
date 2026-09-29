@@ -890,6 +890,15 @@ footer.appfoot .spacer {
 .headers-box .h-row { display: flex; gap: 8px; padding: 2px 0; }
 .headers-box .h-row .hk { color: var(--text-dim); min-width: 200px; }
 
+/* tool definitions offered by the client (#63): same collapsed-toggle shell
+ * as client headers, but each row is a name/description/schema stack rather
+ * than a flat key-value line. */
+.tooldefs-box .tooldef-row { margin-bottom: 10px; }
+.tooldefs-box .tooldef-row:last-child { margin-bottom: 0; }
+.tooldefs-box .tooldef-head .name { color: var(--tool); font-weight: 600; }
+.tooldefs-box .tooldef-desc { color: var(--text-dim); margin: 2px 0 6px; }
+.tooldefs-box .snippet-block { font-size: 10.5px; }
+
 .jump-link { font-size: 12px; color: var(--accent); cursor: pointer; font-weight: 600; }
 .jump-link:hover { text-decoration: underline; }
 

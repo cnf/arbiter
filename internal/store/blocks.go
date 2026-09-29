@@ -242,7 +242,7 @@ filtered AS (
   FROM content_refs cr
   LEFT JOIN bounds b ON b.owner_id = cr.owner_id AND b.direction = cr.direction
   WHERE cr.owner_kind = 'request' AND cr.owner_id IN (` + idList + `)
-    AND (cr.direction = 'response' OR cr.role = 'system' OR cr.msg_index = b.max_idx)
+    AND (cr.direction = 'response' OR cr.role = 'system' OR cr.block_type = 'tool_def' OR cr.msg_index = b.max_idx)
 )
 SELECT f.owner_id, f.hash, f.direction, f.msg_index, f.position, COALESCE(f.role, ''), f.block_type, c.body
 FROM filtered f

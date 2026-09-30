@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPolicyRulesRejectsBothTargetAndProvider(t *testing.T) {
 	cfg := map[string]interface{}{
@@ -326,5 +329,200 @@ func TestPolicyRulesParsesRequestKind(t *testing.T) {
 	}
 	if rules[0].When.RequestKind != "title" {
 		t.Fatalf("When.RequestKind = %q, want title", rules[0].When.RequestKind)
+	}
+}
+
+// The bug: the singular `capability` is not a key the parser reads, so a rule
+// whose only condition it was parsed to an all-zero PolicyCondition, which
+// Matches treats as a wildcard. The rule silently became a catch-all and
+// swallowed every request behind it. An unrecognised key must be a load error
+// instead, named so the typo is obvious.
+func TestPolicyRulesRejectsSingularCapabilityKey(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"target": "imageparse",
+				"when":   map[string]interface{}{"capability": "vision"},
+			},
+		},
+	}
+	_, err := policyRules(cfg)
+	if err == nil {
+		t.Fatal("expected an error: `capability` is not a recognised `when` key")
+	}
+	if !strings.Contains(err.Error(), "capability") {
+		t.Errorf("error = %q, want it to name the offending key", err)
+	}
+}
+
+// Every unrecognised key is reported, not just the first one met: map
+// iteration order is random, so a single-key error would be non-deterministic
+// whenever a rule carries several typos.
+func TestPolicyRulesRejectsEveryUnknownWhenKey(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"target": "imageparse",
+				"when": map[string]interface{}{
+					"domain":     "chat",
+					"capability": "vision",
+					"efort":      "hard",
+				},
+			},
+		},
+	}
+	_, err := policyRules(cfg)
+	if err == nil {
+		t.Fatal("expected an error for two unknown keys")
+	}
+	for _, want := range []string{"capability", "efort"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), `"domain"`) {
+		t.Errorf("error = %q, names the valid key `domain` as unknown", err)
+	}
+}
+
+// A `when` that parses to no predicates is a catch-all by accident unless the
+// operator wrote it that way. An explicitly empty map is the legal spelling of
+// "match everything"; a non-empty map that yields nothing (a typo'd key, or a
+// value of the wrong shape) is not.
+func TestPolicyRulesRejectsWhenThatYieldsNoPredicates(t *testing.T) {
+	for name, when := range map[string]interface{}{
+		// A scalar where a list belongs: the parser only accepts a list for
+		// `capabilities`, so this silently produced an empty condition.
+		"capabilities as a scalar": map[string]interface{}{"capabilities": "vision"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := map[string]interface{}{
+				"rules": []interface{}{
+					map[string]interface{}{"target": "imageparse", "when": when},
+				},
+			}
+			if _, err := policyRules(cfg); err == nil {
+				t.Fatal("expected an error: `when` yields no predicates, so the rule would match everything")
+			}
+		})
+	}
+}
+
+// The deliberate catch-all must keep working — it is a documented shape, both
+// as `when: {}` and as a rule with no `when` at all.
+func TestPolicyRulesStillAcceptsDeliberateCatchAll(t *testing.T) {
+	for name, rule := range map[string]map[string]interface{}{
+		"explicitly empty when": {"target": "free-fast", "when": map[string]interface{}{}},
+		"no when key at all":    {"target": "free-fast"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := map[string]interface{}{"rules": []interface{}{rule}}
+			rules, err := policyRules(cfg)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(rules) != 1 || rules[0].Target != "free-fast" {
+				t.Fatalf("rules = %+v, want one rule targeting free-fast", rules)
+			}
+		})
+	}
+}
+
+// An empty list on its own constrains nothing, so the rule would still match
+// every request — the same silent catch-all in a different costume. It is an
+// error like any other non-empty `when` that sets no predicate. Written
+// alongside a real predicate it is fine; see the test below.
+func TestPolicyRulesRejectsLoneEmptyCapabilityList(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"target": "free-fast",
+				"when":   map[string]interface{}{"capabilities": []interface{}{}},
+			},
+		},
+	}
+	if _, err := policyRules(cfg); err == nil {
+		t.Fatal("expected an error: a lone `capabilities: []` constrains nothing, so the rule matches everything")
+	}
+}
+
+// …but the same empty list next to a real predicate is harmless: the predicate
+// is what the rule matches on, and the empty list is just an axis left
+// unconstrained.
+func TestPolicyRulesAcceptsEmptyCapabilityListAlongsidePredicate(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"target": "free-fast",
+				"when":   map[string]interface{}{"domain": "chat", "capabilities": []interface{}{}},
+			},
+		},
+	}
+	rules, err := policyRules(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rules[0].When.Domain != "chat" {
+		t.Fatalf("When.Domain = %q, want chat", rules[0].When.Domain)
+	}
+}
+
+// A wrong-shaped value next to a valid predicate is the case the catch-all
+// check CANNOT see, and the one that makes shape validation necessary: the
+// rule still matches on its real predicate, so it is not a catch-all, but the
+// mistyped field silently contributes nothing. `domain: chat` plus a scalar
+// `capabilities` would have routed every chat request while appearing to
+// require vision.
+func TestPolicyRulesRejectsWrongShapedValueAlongsidePredicate(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"target": "imageparse",
+				"when":   map[string]interface{}{"domain": "chat", "capabilities": "vision"},
+			},
+		},
+	}
+	_, err := policyRules(cfg)
+	if err == nil {
+		t.Fatal("expected an error: `capabilities` is a scalar where a list belongs, so it contributes no predicate")
+	}
+	if !strings.Contains(err.Error(), "capabilities") {
+		t.Errorf("error = %q, want it to name `capabilities`", err)
+	}
+}
+
+// Same class, other direction: a list where a string belongs.
+func TestPolicyRulesRejectsListWhereStringExpected(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"target": "free-fast",
+				"when":   map[string]interface{}{"domain": []interface{}{"chat"}},
+			},
+		},
+	}
+	if _, err := policyRules(cfg); err == nil {
+		t.Fatal("expected an error: `domain` is a list where a string belongs")
+	}
+}
+
+// A rule that carries both a real predicate and a typo'd key keeps the real
+// one: it is narrower than intended, not a catch-all. Only a rule whose every
+// key is unusable becomes one, so the two cases need distinguishing.
+func TestPolicyRulesKeepsRealPredicateAlongsideUnknownKey(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"target": "free-fast",
+				"when":   map[string]interface{}{"domain": "chat"},
+			},
+		},
+	}
+	rules, err := policyRules(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rules[0].When.Domain != "chat" {
+		t.Fatalf("When.Domain = %q, want chat", rules[0].When.Domain)
 	}
 }

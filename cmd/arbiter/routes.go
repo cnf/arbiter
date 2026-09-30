@@ -94,6 +94,11 @@ func newRouter(handler *arbiterhttp.Handler, admin *arbiterhttp.AdminHandler, st
 	r.HandleFunc("/admin/ui/overview/node", arbiterhttp.Gate(forwardAuthHeader, adminUI.OverviewNodeHandler)).Methods("GET")
 	r.HandleFunc("/admin/ui/overview/node/close", arbiterhttp.Gate(forwardAuthHeader, adminUI.OverviewNodeCloseHandler)).Methods("GET")
 
+	// Config (#77 phase 1): a read-only YAML dump of the live, resolved
+	// config. Does not depend on the event store, unlike every other page
+	// here, so it is reachable even with storage.path unset.
+	r.HandleFunc("/admin/ui/config", arbiterhttp.Gate(forwardAuthHeader, adminUI.ConfigHandler)).Methods("GET")
+
 	// Discovery: the blocks that recur across requests, and the drill-down from
 	// one block to the requests containing it. The block page takes ?hash= rather
 	// than a path segment because a content hash is hex and long, and a segment

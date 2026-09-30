@@ -38,6 +38,7 @@
   {{if .StoreDisabled}}<p class="banner">{{.StoreDisabledReason}}</p>{{end}}
   {{template "content" .}}
   <footer class="appfoot">
+    <a class="viewconfig" href="/admin/ui/config">view config</a>
     <form class="reload" hx-post="/admin/reload" hx-swap="none"
           hx-on::after-request="this.querySelector('.note').textContent =
             (event.detail.successful ? 'routing config reloaded' : 'reload rejected — see logs');

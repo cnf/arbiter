@@ -1,0 +1,11 @@
+{{/* config.html — the read-only config page (#77 phase 1): a YAML dump of
+the live, resolved config. The actual markup lives in
+partials/configBody.html's "config-body" definition — this file only
+supplies the page-level wrapper, so the full-page and htmx-fragment
+responses render from the exact same block (see block.html's own comment
+on why the split exists). */}}
+{{define "content"}}
+<div class="main config">
+  {{template "config-body" .}}
+</div>
+{{end}}

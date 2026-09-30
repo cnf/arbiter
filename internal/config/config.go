@@ -662,16 +662,9 @@ func (c *Config) mergeModelCatalogFile(configPath string) error {
 // accidental collisions across a hand-edited config are not a concern, short
 // enough to read in a log line or query filter.
 func (c *Config) Epoch() string {
-	redacted := *c
-	redacted.Providers = make(map[string]ProviderConfig, len(c.Providers))
-	for name, p := range c.Providers {
-		p.Key = ""
-		redacted.Providers[name] = p
-	}
-
 	// yaml.Marshal emits map keys in sorted order, so the same config always
 	// produces the same bytes regardless of map iteration order.
-	raw, err := yaml.Marshal(&redacted)
+	raw, err := yaml.Marshal(c.Redacted())
 	if err != nil {
 		// Marshaling a config that just decoded successfully cannot fail; if
 		// it somehow does, an empty epoch is better than panicking on the
@@ -680,6 +673,20 @@ func (c *Config) Epoch() string {
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+// Redacted returns a copy of c with every provider API key blanked, safe to
+// marshal, hash, or display. It is the single place that decides what counts
+// as secret in the config: Epoch hashes it, and the admin UI's config page
+// renders it, so the two can never disagree about what gets shown.
+func (c *Config) Redacted() *Config {
+	redacted := *c
+	redacted.Providers = make(map[string]ProviderConfig, len(c.Providers))
+	for name, p := range c.Providers {
+		p.Key = ""
+		redacted.Providers[name] = p
+	}
+	return &redacted
 }
 
 // normalizeEndpoints strips a trailing slash from each provider endpoint.

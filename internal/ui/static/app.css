@@ -1299,3 +1299,23 @@ footer.appfoot .spacer {
 .overview .tb-field input[type="datetime-local"]:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 1px;
 }
+
+/* ---- config page (#77 phase 1): a read-only YAML dump ---- */
+.main.config { display: block; overflow-y: auto; min-height: 0; }
+.config-body { padding: 1.2rem 1.6rem; max-width: 110ch; }
+.config-card { background: var(--panel); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg); padding: 20px 24px; }
+.config-card .flow-head { display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 14px; gap: 16px; }
+.config-card .flow-head h2 { font-size: 13px; margin: 0; font-weight: 600; color: var(--text); }
+.config-card .flow-head .hint { font-size: 11px; color: var(--text-faint); font-family: var(--mono); }
+.config-yaml {
+  white-space: pre-wrap; overflow-wrap: anywhere; margin: 0;
+  color: var(--text-dim); max-height: 75vh; overflow-y: auto;
+}
+
+footer.appfoot .viewconfig {
+  font: 700 11px var(--sans); color: var(--text-faint);
+  text-decoration: none; letter-spacing: 0.02em;
+}
+footer.appfoot .viewconfig:hover { color: var(--text-dim); text-decoration: underline; }

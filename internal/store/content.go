@@ -26,6 +26,12 @@ type Block struct {
 	// back to anything.
 	Role string
 
+	// Name is the attachment's filename (#22). Empty for every block type
+	// except "attachment", and empty there too for images — see
+	// content_refs.name in schema.sql for why it lives on the reference
+	// rather than in the hash-keyed content table.
+	Name string
+
 	// MsgIndex and Position locate the block in the conversation, so a request
 	// can be reassembled in order.
 	MsgIndex int
@@ -126,6 +132,7 @@ func CaptureRequest(req *types.NormalizedRequest) []Block {
 				Kind:     kind,
 				Body:     body,
 				Role:     m.Role,
+				Name:     cb.Name,
 				MsgIndex: msgIndex + i,
 				// The block's real index within its message, not a running
 				// counter over stored blocks: a rebuild then still knows where a
@@ -188,6 +195,7 @@ func CaptureResponse(resp *types.NormalizedResponse, role string) []Block {
 			Kind:     kind,
 			Body:     body,
 			Role:     role,
+			Name:     cb.Name,
 			MsgIndex: 0,
 			Position: position,
 		})
@@ -381,8 +389,8 @@ func writeContent(ctx context.Context, tx *sql.Tx, ownerKind string, ownerID int
 
 	insertRef, err := tx.PrepareContext(ctx, `
 INSERT INTO content_refs
-    (owner_kind, owner_id, direction, msg_index, position, role, block_type, hash)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    (owner_kind, owner_id, direction, msg_index, position, role, block_type, hash, name)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare content ref insert: %w", err)
 	}
@@ -395,7 +403,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 				return fmt.Errorf("insert content block (%s): %w", b.Kind, err)
 			}
 			if _, err := insertRef.ExecContext(ctx, ownerKind, ownerID, direction,
-				b.MsgIndex, b.Position, b.Role, b.Kind, hash); err != nil {
+				b.MsgIndex, b.Position, b.Role, b.Kind, hash, b.Name); err != nil {
 				return fmt.Errorf("insert content ref (%s): %w", b.Kind, err)
 			}
 		}

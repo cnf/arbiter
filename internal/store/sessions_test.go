@@ -114,6 +114,77 @@ func TestSessionsAreWindowed(t *testing.T) {
 	}
 }
 
+// SessionClientPageBefore is the backward twin of SessionClientPage (#73):
+// given a position already reached (the earliest turn currently loaded), it
+// returns the turns immediately before it, oldest-first, the same order and
+// shape a forward page returns — so the transcript's "load older" fragment
+// needs no special-casing to render a backward page differently from a
+// forward one.
+func TestSessionClientPageBefore(t *testing.T) {
+	base := time.Date(2026, 9, 16, 5, 0, 0, 0, time.UTC)
+	key := "sess-older"
+	var events []Event
+	for i := 0; i < 7; i++ {
+		ev := event(base.Add(time.Duration(i)*time.Second), "p", "m")
+		ev.SessionKey = key
+		events = append(events, ev)
+	}
+	r := openSeeded(t, events...)
+
+	// A reader already sitting at turn 4 (0-based offset 3, i.e. the 4th
+	// turn) asks for what came before it, in a window of 2.
+	got, gotOffset, err := r.SessionClientPageBefore(context.Background(), key, 2, 3)
+	if err != nil {
+		t.Fatalf("SessionClientPageBefore: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want 2", len(got))
+	}
+	if gotOffset != 1 {
+		t.Errorf("returned offset = %d, want 1 (the position the 2 rows start at)", gotOffset)
+	}
+	// Oldest-first, same as SessionClientPage: turns 2 and 3 (0-based
+	// offsets 1 and 2), the two immediately before offset 3.
+	if got[0].Model != "m" || got[0].Ts == "" {
+		t.Fatalf("unexpected first row: %+v", got[0])
+	}
+	want, err := r.SessionClientPage(context.Background(), key, 2, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range want {
+		if got[i].ID != want[i].ID {
+			t.Errorf("row %d: got id %d, want %d (SessionClientPage(2,1)'s own answer)", i, got[i].ID, want[i].ID)
+		}
+	}
+
+	// Asking for more than exists before the position clamps to the start of
+	// the conversation rather than erroring or wrapping around.
+	early, earlyOffset, err := r.SessionClientPageBefore(context.Background(), key, 10, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(early) != 2 {
+		t.Fatalf("got %d rows for a near-start position, want 2 (everything before offset 2)", len(early))
+	}
+	if earlyOffset != 0 {
+		t.Errorf("returned offset = %d, want 0 (clamped to the start of the conversation)", earlyOffset)
+	}
+
+	// A position at or before the start of the conversation has nothing
+	// before it.
+	none, noneOffset, err := r.SessionClientPageBefore(context.Background(), key, 5, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Errorf("got %d rows before offset 0, want 0", len(none))
+	}
+	if noneOffset != 0 {
+		t.Errorf("returned offset = %d, want 0", noneOffset)
+	}
+}
+
 // The index cap is a real bound, so a caller can tell a full page from a
 // truncated one.
 func TestSessionsLimitIsClamped(t *testing.T) {

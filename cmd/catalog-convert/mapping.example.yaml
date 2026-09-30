@@ -29,8 +29,11 @@
 #                     no cost, no provider dimension
 #
 # First source wins: a model already emitted is never overridden by a later
-# source, and there is no per-field merge. Precedence is this list's order and
-# nothing else — a rule you can predict without reading the implementation.
+# source, and there is no per-field merge. `source:` on a provider entry pins
+# it to one named source explicitly; leaving it unset searches sources: in
+# order for the first one that actually has a matching row for that provider
+# (using whichever provider key applies — see `provider:` below), so listing
+# order is a pure precedence list and never a hidden default binding.
 #
 # The cost unit differs per kind and is handled by each reader. It is the one
 # thing most worth getting right: models.dev figures run through the litellm
@@ -87,7 +90,14 @@ sources:
 
 providers:
   claude:
-    litellm_provider: anthropic
+    provider: anthropic          # matches both litellm_provider and
+                                  # models_dev_provider — the common case,
+                                  # since the two kinds usually agree on the
+                                  # provider slug. Use litellm_provider: /
+                                  # models_dev_provider: instead when a
+                                  # provider's slug actually differs between
+                                  # sources (either one, when set, wins over
+                                  # provider: for that kind).
     namespace: "claude/"        # emit claude/claude-sonnet-5
     latency_ms_p50: 900
 

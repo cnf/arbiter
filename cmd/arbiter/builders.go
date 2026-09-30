@@ -385,15 +385,17 @@ func modelCostEntries(entries []config.ModelCatalogEntry) []types.ModelCost {
 	out := make([]types.ModelCost, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, types.ModelCost{
-			Provider:          e.Provider,
-			Model:             e.Model,
-			InputCostPerMTok:  e.InputCostPerMTok,
-			OutputCostPerMTok: e.OutputCostPerMTok,
-			LatencyMsP50:      e.LatencyMsP50,
-			InputModalities:   e.InputModalities,
-			MaxInputTokens:    e.MaxInputTokens,
-			MaxOutputTokens:   e.MaxOutputTokens,
-			Metadata:          e.Metadata,
+			Provider:              e.Provider,
+			Model:                 e.Model,
+			InputCostPerMTok:      e.InputCostPerMTok,
+			OutputCostPerMTok:     e.OutputCostPerMTok,
+			LatencyMsP50:          e.LatencyMsP50,
+			CacheReadCostPerMTok:  e.CacheReadCostPerMTok,
+			CacheWriteCostPerMTok: e.CacheWriteCostPerMTok,
+			InputModalities:       e.InputModalities,
+			MaxInputTokens:        e.MaxInputTokens,
+			MaxOutputTokens:       e.MaxOutputTokens,
+			Metadata:              e.Metadata,
 		})
 	}
 	return out

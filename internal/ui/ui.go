@@ -332,11 +332,10 @@ type navItem struct {
 // shell mockups (transcript-D-merged.html, f3-overview-styled.html). Sessions
 // already covers what used to be a separate Requests page (#52).
 //
-// Both stats are real queries as of #54: Sessions' active count and Overview's
-// 24h spend. The mockup's "$18/24h" and "2 gaps" were placeholders, and the
-// user's rule for them is that a number on screen is either real or absent —
-// each degrades to a dash rather than showing an invented figure. Discovery's
-// stat is still absent for that reason: it has no query yet.
+// All three stats are real queries: Sessions' active count, Overview's 24h
+// spend, and Discovery's unseen-pattern count, following #54's "real or
+// absent" rule for the other two — the mockup's "$18/24h"/"2 gaps" were
+// placeholders that are no longer needed once every stat has a query.
 func (h *Handler) base(ctx context.Context, active string) viewBase {
 	sessionsStat := "—"
 	if h.reader != nil {
@@ -351,11 +350,21 @@ func (h *Handler) base(ctx context.Context, active string) viewBase {
 	if cost, ok := h.overviewCostFor24h(ctx); ok {
 		overviewStat, overviewUnit = cost, "/24h"
 	}
+	discoveryStat, discoveryErrVal := "—", false
+	if h.reader != nil {
+		n, err := h.reader.UnseenDiscoveryCount(ctx, discoveryDefaultMinSessions)
+		if err != nil {
+			h.logger.LogError(ctx, "warn", err, map[string]interface{}{"phase": "admin_ui_nav_discovery_unseen"})
+		} else {
+			discoveryStat = strconv.FormatInt(n, 10)
+			discoveryErrVal = n > 0
+		}
+	}
 	return viewBase{
 		Nav: []navItem{
 			{Name: "Overview", Href: "/admin/ui/overview", Stat: overviewStat, Unit: overviewUnit},
 			{Name: "Sessions", Href: "/admin/ui/sessions", Stat: sessionsStat, Unit: "active"},
-			{Name: "Discovery", Href: "/admin/ui/content/repeated", Stat: "", Unit: ""},
+			{Name: "Discovery", Href: "/admin/ui/content/repeated", Stat: discoveryStat, Unit: "new", ErrVal: discoveryErrVal},
 		},
 		Active:        active,
 		AssetVersion:  h.assetVersion,

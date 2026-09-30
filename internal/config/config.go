@@ -99,6 +99,14 @@ type ModelCatalogEntry struct {
 	OutputCostPerMTok float64 `yaml:"output_cost_per_mtok"`
 	LatencyMsP50      int     `yaml:"latency_ms_p50,omitempty"`
 
+	// CacheReadCostPerMTok / CacheWriteCostPerMTok price a prompt-cache hit
+	// and a cache-creation write respectively. Omitted (0) means the source
+	// stated no cache pricing for this model — cache tokens are then priced
+	// at 0, not at the plain input/output rate. See pkg/types.ModelCost for
+	// the same fields on the router-facing shape this converts to.
+	CacheReadCostPerMTok  float64 `yaml:"cache_read_cost_per_mtok,omitempty"`
+	CacheWriteCostPerMTok float64 `yaml:"cache_write_cost_per_mtok,omitempty"`
+
 	// InputModalities lists what the model accepts: "text", "image", "file".
 	//
 	// ABSENT MEANS UNKNOWN, and unknown is not the same as none. The upstream

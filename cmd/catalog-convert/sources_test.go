@@ -45,6 +45,12 @@ func TestModelsDevCostIsNotScaled(t *testing.T) {
 	if got.OutputCostPerMTok != 25 {
 		t.Errorf("OutputCostPerMTok = %v, want 25", got.OutputCostPerMTok)
 	}
+	if got.CacheReadCostPerMTok != 0.5 {
+		t.Errorf("CacheReadCostPerMTok = %v, want 0.5 — also already per million tokens, not scaled", got.CacheReadCostPerMTok)
+	}
+	if got.CacheWriteCostPerMTok != 6.25 {
+		t.Errorf("CacheWriteCostPerMTok = %v, want 6.25", got.CacheWriteCostPerMTok)
+	}
 	if !got.HasCost {
 		t.Error("HasCost = false, want true — a stated cost must be distinguishable from an unstated one")
 	}
@@ -245,6 +251,89 @@ func TestModelsDevProviderKeyIsSeparate(t *testing.T) {
 	}
 	if len(skips) != 1 || !strings.Contains(skips[0], "models_dev_provider") {
 		t.Errorf("skips = %v, want one naming the missing models_dev_provider", skips)
+	}
+}
+
+// TestDefaultSourceIsContentAwareNotJustFirst is the sidebug regression: a
+// provider mapping that only sets litellm_provider must resolve against the
+// litellm source regardless of where that source sits in sources: order. Before
+// content-aware default selection, an unset Source: always bound to order[0]
+// positionally, so listing models.dev first made a litellm-only provider
+// silently target the wrong source and fail downstream with a confusing "no
+// provider key" skip instead of finding its actual data.
+func TestDefaultSourceIsContentAwareNotJustFirst(t *testing.T) {
+	litellmRows := []modelRow{{Key: "claude-sonnet-5", Provider: "anthropic", InputCostPerMTok: 3}}
+	modelsDevRows := []modelRow{{Key: "big-pickle", Provider: "opencode", InputCostPerMTok: 1}}
+	sources := map[string][]modelRow{"litellm.json": litellmRows, "api.json": modelsDevRows}
+
+	// models.dev listed FIRST, litellm second — order[0] would be api.json.
+	m := mapping{
+		Sources: []sourceSpec{
+			{Path: "api.json", Kind: "modelsdev-api"},
+			{Path: "litellm.json", Kind: "litellm"},
+		},
+		Providers: map[string]providerMap{"claude": {LitellmProvider: "anthropic"}},
+	}
+
+	rows, skips := buildCatalog(sources, []string{"api.json", "litellm.json"}, testKinds(m), m, []string{"claude"})
+	if len(skips) != 0 {
+		t.Fatalf("unexpected skips: %v — provider should find its litellm source regardless of list order", skips)
+	}
+	if len(rows) != 1 || rows[0].InputCostPerMTok != 3 {
+		t.Fatalf("rows = %+v, want one row from litellm.json (cost 3)", rows)
+	}
+}
+
+// TestGenericProviderKeyCoversBothKinds proves provider: is consulted as a
+// fallback for whichever kind the resolved source turns out to be, covering
+// the common case where the litellm and models.dev provider slugs are the same
+// string and a mapping author shouldn't have to say it twice.
+func TestGenericProviderKeyCoversBothKinds(t *testing.T) {
+	litellmRows := []modelRow{{Key: "claude-sonnet-5", Provider: "anthropic", InputCostPerMTok: 3}}
+	modelsDevRows := []modelRow{{Key: "claude-sonnet-5", Provider: "anthropic", InputCostPerMTok: 5}}
+
+	for _, tc := range []struct {
+		name string
+		kind string
+		rows []modelRow
+		want float64
+	}{
+		{"litellm", "litellm", litellmRows, 3},
+		{"modelsdev-api", "modelsdev-api", modelsDevRows, 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sources := map[string][]modelRow{"src": tc.rows}
+			m := mapping{
+				Sources:   []sourceSpec{{Path: "src", Kind: tc.kind}},
+				Providers: map[string]providerMap{"claude": {Provider: "anthropic"}},
+			}
+			rows, skips := buildCatalog(sources, []string{"src"}, testKinds(m), m, []string{"claude"})
+			if len(skips) != 0 || len(rows) != 1 {
+				t.Fatalf("rows=%d skips=%v, want one row and no skips", len(rows), skips)
+			}
+			if rows[0].InputCostPerMTok != tc.want {
+				t.Errorf("InputCostPerMTok = %v, want %v", rows[0].InputCostPerMTok, tc.want)
+			}
+		})
+	}
+}
+
+// TestSpecificProviderKeyOverridesGeneric proves litellm_provider/
+// models_dev_provider still win over provider: when both are set — the
+// generic key is a fallback for the common case, not a replacement for the
+// escape hatch that lets the two kinds diverge.
+func TestSpecificProviderKeyOverridesGeneric(t *testing.T) {
+	rows := []modelRow{{Key: "m", Provider: "actual-slug"}}
+	sources := map[string][]modelRow{"src": rows}
+	m := mapping{
+		Sources: []sourceSpec{{Path: "src", Kind: "litellm"}},
+		Providers: map[string]providerMap{
+			"prov": {Provider: "wrong-slug", LitellmProvider: "actual-slug"},
+		},
+	}
+	got, skips := buildCatalog(sources, []string{"src"}, testKinds(m), m, []string{"prov"})
+	if len(skips) != 0 || len(got) != 1 {
+		t.Fatalf("rows=%d skips=%v, want one row and no skips — litellm_provider must win over provider:", len(got), skips)
 	}
 }
 

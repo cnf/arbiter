@@ -17,6 +17,16 @@ type ModelCost struct {
 	OutputCostPerMTok float64
 	LatencyMsP50      int
 
+	// CacheReadCostPerMTok / CacheWriteCostPerMTok price a cache-hit and a
+	// cache-creation token respectively, when the source states them (e.g. an
+	// Anthropic model served through a provider that reports prompt-cache
+	// pricing). Zero means "unstated", not "free" — computeCost only adds a
+	// cache term when the catalog carries a rate, so a model with no cache
+	// pricing data simply prices cache tokens at 0 today, same as before this
+	// field existed.
+	CacheReadCostPerMTok  float64
+	CacheWriteCostPerMTok float64
+
 	// InputModalities is what the model accepts ("text", "image", "file").
 	// nil means UNKNOWN — see config.ModelCatalogEntry.InputModalities; a
 	// nil must never be rendered as an empty or text-only capability set.

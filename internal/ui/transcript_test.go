@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -155,6 +156,71 @@ func TestTranscriptShowsOnlyEachTurnsOwnContent(t *testing.T) {
 	}
 }
 
+// TestTranscriptShowsToolDefinitions is #63: tool definitions are captured
+// (#60) but nothing rendered them. A tool_def block belongs to no message
+// (msg_index = toolDefsMsgIndex) and must survive newestRequestMessage's
+// per-turn narrowing on every turn that captured it, unlike a resent user
+// message — the point isn't "this turn's own", it's "the toolset offered for
+// the whole conversation".
+func TestTranscriptShowsToolDefinitions(t *testing.T) {
+	now := time.Now().UTC()
+	key := "sess-tooldefs"
+
+	toolDefBlock := func(pos int, name, desc string) store.Block {
+		body, err := json.Marshal(struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description,omitempty"`
+			InputSchema map[string]interface{} `json:"input_schema,omitempty"`
+		}{name, desc, map[string]interface{}{"type": "object"}})
+		if err != nil {
+			t.Fatalf("marshal tool def fixture: %v", err)
+		}
+		return store.Block{MsgIndex: -1, Position: pos, Role: "tool_def", Kind: "tool_def", Body: body}
+	}
+
+	events := []store.Event{
+		{TraceID: "tr-1", SessionKey: key, Kind: "client",
+			Provider: "anthropic", Model: "claude-sonnet", StatusCode: 200,
+			Ts: now, LatencyMs: 100,
+			Content: &store.CapturedContent{
+				Request: []store.Block{
+					toolDefBlock(0, "read_file", "Read a file from disk"),
+					toolDefBlock(1, "write_file", ""),
+					{MsgIndex: 0, Position: 0, Role: "system", Kind: "text", Body: []byte("you are a helpful assistant")},
+					{MsgIndex: 1, Position: 0, Role: "user", Kind: "text", Body: []byte("read main.go")},
+				},
+			}},
+	}
+
+	h, _ := newSeededHandler(t, events...)
+	body := serve(t, h, "GET", "/admin/ui/session?key="+key, false).Body.String()
+
+	for _, want := range []string{
+		"tools offered (2, ",
+		"read_file",
+		"Read a file from disk",
+		"write_file",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("transcript page missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+	// The toggle's byte count is the two captured tool_def bodies' combined
+	// size — small in this fixture, so it must render in plain "N B" form,
+	// not spuriously scaled to kB.
+	if !strings.Contains(body, " B)</button>") {
+		t.Errorf("tool-defs toggle missing a plain-byte size suffix:\n%s", body)
+	}
+	// Both fixture tools have names, so the "(unnamed tool)" placeholder
+	// (for a definition captured with no name) must not appear.
+	if strings.Contains(body, "(unnamed tool)") {
+		t.Errorf("named tool defs rendered as unnamed:\n%s", body)
+	}
+	if n := strings.Count(body, `class="tooldef-row"`); n != 2 {
+		t.Errorf("got %d tool-def rows, want 2 (one per captured tool)\n%s", n, body)
+	}
+}
+
 // Load-more is what makes the list pane usable on a long conversation, and it
 // is an htmx fragment: the appended page carries turns, not a second toolbar
 // or a second preamble modal.
@@ -240,6 +306,158 @@ func TestTranscriptJumpResolvesTurnToItsPage(t *testing.T) {
 	rec = serve(t, h, "GET", "/admin/ui/session?key="+key+"&seq=abc", false)
 	if rec.Code != 400 {
 		t.Errorf("jump with a non-numeric turn = %d, want 400", rec.Code)
+	}
+}
+
+// TestTranscriptJumpCentersTheWindow is #73's fix for a deep link that could
+// not scroll upward: ?seq=N used to load the page-aligned window starting at
+// N's own page boundary, so landing near the start of a later window left
+// nothing above it to load "older" into. A centered window gives the reader
+// room to scroll toward either edge.
+func TestTranscriptJumpCentersTheWindow(t *testing.T) {
+	now := time.Now().UTC()
+	key := "sess-center"
+	var events []store.Event
+	for i := 0; i < 20; i++ {
+		events = append(events, store.Event{
+			TraceID: fmt.Sprintf("tr-%d", i), SessionKey: key, Kind: "client",
+			Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now.Add(time.Duration(i) * time.Second), LatencyMs: 10,
+		})
+	}
+	h, _ := newSeededHandler(t, events...)
+
+	// Turn 10 of 20, a window of 4: a page-aligned window would start at
+	// offset 8 (turn 9) and run to turn 12, all forward of turn 10. A
+	// centered window starts at n-1-limit/2 = 7 (turn 8) and both has turn
+	// 10 near its middle and offers a "load older" control, since offset 7
+	// is not the start of the conversation.
+	body := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=4&seq=10", false).Body.String()
+	if !strings.Contains(body, "#8<") {
+		t.Errorf("a centered jump to turn 10 (window 4) should include turn 8, the window's start:\n%s", body)
+	}
+	if !strings.Contains(body, "#10<") {
+		t.Errorf("a centered jump to turn 10 did not land on a window containing it:\n%s", body)
+	}
+	if !strings.Contains(body, `id="older-row"`) {
+		t.Errorf("a jump into the middle of a long conversation offers no load-older control:\n%s", body)
+	}
+
+	// A jump near the very start still clamps to offset 0 rather than a
+	// negative offset, and offers no "load older" control since there is
+	// nothing before turn 1.
+	early := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=4&seq=2", false).Body.String()
+	if !strings.Contains(early, "#1<") {
+		t.Errorf("a jump near the start should still include turn 1:\n%s", early)
+	}
+	if strings.Contains(early, `id="older-row"`) {
+		t.Errorf("a jump landing at the start of the conversation should offer no load-older control:\n%s", early)
+	}
+}
+
+// TestTranscriptLoadMoreShipsInspectors is #73's fix for bug 1: a turn loaded
+// by "load more" used to append only its list row, never the paired
+// .inspector markup — only page 1 shipped inspectors, via #inspector-src — so
+// clicking a later-loaded row had nothing to select.
+func TestTranscriptLoadMoreShipsInspectors(t *testing.T) {
+	now := time.Now().UTC()
+	key := "sess-more-inspectors"
+	var events []store.Event
+	for i := 0; i < 4; i++ {
+		events = append(events, store.Event{
+			TraceID: fmt.Sprintf("tr-%d", i), SessionKey: key, Kind: "client",
+			Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now.Add(time.Duration(i) * time.Second), LatencyMs: 10,
+		})
+	}
+	h, _ := newSeededHandler(t, events...)
+
+	frag := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=2&offset=2", true).Body.String()
+	if !strings.Contains(frag, `class="inspector"`) {
+		t.Errorf("a load-more fragment must ship its own turns' inspector markup, or later rows are not selectable:\n%s", frag)
+	}
+}
+
+// TestTranscriptLoadOlderPrependsWithInspectors is #73's fix for bug 2: there
+// was no "load older" path at all, so a deep link into the middle of a long
+// conversation could scroll forward but never see what came before it. The
+// fragment must also ship inspector markup, for the same reason
+// TestTranscriptLoadMoreShipsInspectors does.
+func TestTranscriptLoadOlderPrependsWithInspectors(t *testing.T) {
+	now := time.Now().UTC()
+	key := "sess-older"
+	var events []store.Event
+	for i := 0; i < 6; i++ {
+		events = append(events, store.Event{
+			TraceID: fmt.Sprintf("tr-%d", i), SessionKey: key, Kind: "client",
+			Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now.Add(time.Duration(i) * time.Second), LatencyMs: 10,
+		})
+	}
+	h, _ := newSeededHandler(t, events...)
+
+	// A reader sitting at offset 4 (having jumped or scrolled there) asks
+	// for what came before.
+	frag := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=2&before=4", true).Body.String()
+	if !strings.Contains(frag, "#3<") || !strings.Contains(frag, "#4<") {
+		t.Errorf("load-older did not return the window immediately before position 4:\n%s", frag)
+	}
+	if !strings.Contains(frag, `class="inspector"`) {
+		t.Errorf("a load-older fragment must ship its own turns' inspector markup:\n%s", frag)
+	}
+	// Offset 2 is not the start of a 6-turn conversation, so there is still
+	// more to load older.
+	if !strings.Contains(frag, `id="older-row"`) {
+		t.Errorf("load-older landing short of the conversation's start should still offer another load-older control:\n%s", frag)
+	}
+
+	// Asking for what came before position 0 returns nothing more to load.
+	atStart := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=2&before=2", true).Body.String()
+	if strings.Contains(atStart, `id="older-row"`) {
+		t.Errorf("load-older reaching the start of the conversation should offer no further control:\n%s", atStart)
+	}
+}
+
+// TestTranscriptLoadMoreControlReplacesItself guards against a regression
+// where the auto-fill in transcript.js loops forever: session.html used to
+// carry its own hand-copied "load more" button (hx-target="#list",
+// hx-swap="beforeend") that drifted from transcriptList.html's, which had
+// since moved to replacing the control in place. Two divergent copies meant
+// every append left the previous #more-row behind instead of replacing it,
+// so the observer kept re-discovering the same, never-advancing offset —
+// confirmed against a live page with Playwright, where the request never
+// advanced past offset=30. The control must always point at itself, not at
+// #list, and use outerHTML, not beforeend/afterbegin, in both the page's
+// initial render and every load-more/load-older fragment thereafter.
+func TestTranscriptLoadMoreControlReplacesItself(t *testing.T) {
+	now := time.Now().UTC()
+	key := "sess-more-self-target"
+	var events []store.Event
+	for i := 0; i < 6; i++ {
+		events = append(events, store.Event{
+			TraceID: fmt.Sprintf("tr-%d", i), SessionKey: key, Kind: "client",
+			Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now.Add(time.Duration(i) * time.Second), LatencyMs: 10,
+		})
+	}
+	h, _ := newSeededHandler(t, events...)
+
+	initial := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=2", false).Body.String()
+	if !strings.Contains(initial, `hx-target="#more-row" hx-swap="outerHTML"`) {
+		t.Errorf("the page's own initial \"load more\" control must target itself with outerHTML, not #list/beforeend:\n%s", initial)
+	}
+	if strings.Contains(initial, `hx-target="#list"`) {
+		t.Errorf("the initial page must not carry a hand-copied load-more control that targets #list:\n%s", initial)
+	}
+
+	frag := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=2&offset=2", true).Body.String()
+	if !strings.Contains(frag, `hx-target="#more-row" hx-swap="outerHTML"`) {
+		t.Errorf("a load-more fragment's own \"load more\" control must also target itself with outerHTML:\n%s", frag)
+	}
+
+	older := serve(t, h, "GET", "/admin/ui/session?key="+key+"&limit=2&before=4", true).Body.String()
+	if !strings.Contains(older, `hx-target="#older-row" hx-swap="outerHTML"`) {
+		t.Errorf("a load-older fragment's own \"load older\" control must target itself with outerHTML:\n%s", older)
 	}
 }
 
@@ -368,6 +586,26 @@ func TestTranscriptUnknownSessionSaysSo(t *testing.T) {
 	rec = serve(t, h, "GET", "/admin/ui/session", false)
 	if rec.Code != 400 {
 		t.Errorf("a missing key = %d, want 400", rec.Code)
+	}
+}
+
+func TestPreambleHiddenAndEscapeRestoresIt(t *testing.T) {
+	css, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatalf("read embedded CSS: %v", err)
+	}
+	if !strings.Contains(string(css), ".preamble-src:not([hidden]) {") {
+		t.Error("preamble layout rule must not override the hidden attribute")
+	}
+
+	js, err := assets.ReadFile("static/transcript.js")
+	if err != nil {
+		t.Fatalf("read embedded transcript script: %v", err)
+	}
+	script := string(js)
+	escapeClose := "if (preambleModal && preambleModal.classList.contains(\"open\")) {\n      closePreamble();"
+	if !strings.Contains(script, escapeClose) {
+		t.Error("Escape must use closePreamble so the active prompt is restored and hidden")
 	}
 }
 

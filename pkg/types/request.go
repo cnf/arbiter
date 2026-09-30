@@ -3,6 +3,7 @@ package types
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -220,6 +221,53 @@ type AnthropicRequest struct {
 	OutputConfig *AnthropicOutputConfig `json:"output_config,omitempty"`
 }
 
+// UnmarshalJSON parses the request normally, then — only on a content-shape
+// failure — re-walks the raw `messages` array one element at a time to find
+// which index produced it. Mirrors OpenAIRequest.UnmarshalJSON for the same
+// reason: AnthropicMessage's own UnmarshalJSON has no way to see its
+// position in the array, so a per-message ContentShapeError comes back with
+// MessageIndex -1. A shape error on the top-level `system` field needs no
+// such re-walk — AnthropicSystem.UnmarshalJSON already knows it isn't part
+// of an array — so it passes through unchanged.
+func (r *AnthropicRequest) UnmarshalJSON(data []byte) error {
+	type requestAlias AnthropicRequest
+	var alias requestAlias
+	err := json.Unmarshal(data, &alias)
+	if err == nil {
+		*r = AnthropicRequest(alias)
+		return nil
+	}
+
+	var shapeErr *ContentShapeError
+	if !errors.As(err, &shapeErr) || !shapeErr.PerMessage {
+		return err
+	}
+
+	var probe struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if jsonErr := json.Unmarshal(data, &probe); jsonErr != nil {
+		// The messages array itself doesn't even parse — fall back to the
+		// original error rather than guessing.
+		return err
+	}
+	for i, raw := range probe.Messages {
+		var m AnthropicMessage
+		if msgErr := json.Unmarshal(raw, &m); msgErr != nil {
+			var innerShapeErr *ContentShapeError
+			if errors.As(msgErr, &innerShapeErr) {
+				innerShapeErr.MessageIndex = i
+				return innerShapeErr
+			}
+			return msgErr
+		}
+	}
+	// Every message parsed cleanly in isolation but the whole request didn't
+	// — retain the original error rather than claiming a location that
+	// isn't real.
+	return err
+}
+
 // AnthropicThinking is the request's extended-thinking block. Type is
 // "enabled" with an explicit BudgetTokens, or "adaptive" with neither — the
 // newer form, where the model decides. Both are carried verbatim: Arbiter
@@ -261,6 +309,15 @@ func (s *AnthropicSystem) UnmarshalJSON(data []byte) error {
 		}
 		*s = AnthropicSystem(plain)
 		return nil
+	}
+
+	if trimmed[0] != '[' {
+		// Neither the string form handled above nor the block-array form:
+		// an object, number, boolean, or other shape a client should never
+		// send for `system`. Report the observed JSON type rather than
+		// trying (and failing, unhelpfully) to unmarshal it as a block
+		// array.
+		return &ContentShapeError{PerMessage: false, Field: "system", GotType: jsonValueKind(trimmed)}
 	}
 
 	var blocks []AnthropicContent
@@ -348,6 +405,15 @@ func (m *AnthropicMessage) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
+	if trimmed[0] != '[' {
+		// Neither the string form handled above nor the block-array form.
+		// MessageIndex is unknown here — AnthropicMessage's own
+		// UnmarshalJSON has no visibility into its position in the
+		// request's messages array; AnthropicRequest.UnmarshalJSON fills
+		// it in on the failing path, mirroring OpenAIRequest's approach.
+		return &ContentShapeError{PerMessage: true, MessageIndex: -1, Field: "content", GotType: jsonValueKind(trimmed)}
+	}
+
 	var alias messageAlias
 	if err := json.Unmarshal(data, &alias); err != nil {
 		return err
@@ -411,12 +477,13 @@ type AnthropicContent struct {
 	IsError   bool        `json:"is_error,omitempty"`    // tool_result
 
 	// Source and Title belong to image/document blocks: Source carries either
-	// inline base64 or a URL (the two forms Anthropic accepts), and Title is
-	// the document's name. Held as a map/string rather than a typed struct
-	// because nothing on the inbound side reads them yet — Anthropic
-	// client-facing is deliberately out of scope for now — so a shape that
-	// only has to survive marshalling is better than one that pretends to
-	// validate a payload nothing consumes.
+	// inline base64 ({"type":"base64","media_type":...,"data":...}) or a URL
+	// ({"type":"url","url":...}) — the two forms Anthropic accepts — and
+	// Title is the document's name. Held as a map rather than a typed struct
+	// because the two shapes share no required fields beyond `type`; see
+	// anthropicSourceToParts (internal/translator/convert.go) for the inbound
+	// reader, which treats an unrecognized shape as an attachment with no
+	// data rather than failing the request (issue #23).
 	Source map[string]interface{} `json:"source,omitempty"`
 	Title  string                 `json:"title,omitempty"`
 }
@@ -449,6 +516,51 @@ type OpenAIRequest struct {
 	// tokens, zero cost, and no cache-read figure — which is also the only
 	// number that shows whether prompt-cache affinity is working.
 	StreamOptions *OpenAIStreamOptions `json:"stream_options,omitempty"`
+}
+
+// UnmarshalJSON parses the request normally, then — only on a content-shape
+// failure — re-walks the raw `messages` array one element at a time to find
+// which index produced it. OpenAIMessageContent's UnmarshalJSON has no way to
+// see its own position in the array, so ContentShapeError comes back with
+// MessageIndex -1; this is the one place that index is knowable, and it costs
+// a second pass only on the already-failing path.
+func (r *OpenAIRequest) UnmarshalJSON(data []byte) error {
+	type requestAlias OpenAIRequest
+	var alias requestAlias
+	err := json.Unmarshal(data, &alias)
+	if err == nil {
+		*r = OpenAIRequest(alias)
+		return nil
+	}
+
+	var shapeErr *ContentShapeError
+	if !errors.As(err, &shapeErr) {
+		return err
+	}
+
+	var probe struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if jsonErr := json.Unmarshal(data, &probe); jsonErr != nil {
+		// The messages array itself doesn't even parse — fall back to the
+		// original error rather than guessing.
+		return err
+	}
+	for i, raw := range probe.Messages {
+		var m OpenAIMessage
+		if msgErr := json.Unmarshal(raw, &m); msgErr != nil {
+			var innerShapeErr *ContentShapeError
+			if errors.As(msgErr, &innerShapeErr) {
+				innerShapeErr.MessageIndex = i
+				return innerShapeErr
+			}
+			return msgErr
+		}
+	}
+	// Every message parsed cleanly in isolation but the whole request didn't
+	// — retain the original error rather than claiming a location that
+	// isn't real.
+	return err
 }
 
 // OpenAIStreamOptions carries the streaming request options OpenRouter and
@@ -504,6 +616,14 @@ func (c *OpenAIMessageContent) UnmarshalJSON(data []byte) error {
 		}
 		*c = []ContentBlock{TextBlock(plain)}
 		return nil
+	}
+
+	if trimmed[0] != '[' {
+		// Neither the string form handled above nor the array form: an
+		// object, number, boolean, or other shape a client should never
+		// send here. Report the observed JSON type rather than trying (and
+		// failing, unhelpfully) to unmarshal it as a part array.
+		return &ContentShapeError{PerMessage: true, MessageIndex: -1, Field: "content", GotType: jsonValueKind(trimmed)}
 	}
 
 	var parts []openAIContentPart

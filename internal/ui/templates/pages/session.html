@@ -45,19 +45,9 @@ it is defined here and rendered as the whole content region. */}}
       </div>
       <div id="list">
         {{if .Turns}}
+          {{template "transcript-older-control" .}}
           {{range .Turns}}{{template "transcript-entry" .}}{{end}}
-          {{if .HasMore}}
-          <div class="more-row" id="more-row">
-            <button class="more-btn" type="button"
-                    hx-get="{{.MoreURL}}" hx-target="#list" hx-swap="beforeend"
-                    hx-indicator="#moreBusy">load {{.Limit}} more turns
-              <span class="count">({{.Loaded}} of {{.Total}})</span>
-            </button>
-            <span id="moreBusy" class="htmx-indicator">…</span>
-          </div>
-          {{else if gt .Total 0}}
-          <p class="list-end">{{.Total}} turn{{if ne .Total 1}}s{{end}} — end of conversation</p>
-          {{end}}
+          {{template "transcript-more-control" .}}
         {{else if .Found}}
           <p class="empty">This session has no turns in the store.</p>
         {{else}}
@@ -80,10 +70,7 @@ named template the pane would use, so a selected turn and this shelf can
 never describe a turn differently — and it sits outside .body so it costs no
 layout while hidden. Children are included because they are selectable too. */}}
 <div class="inspector-src" id="inspector-src" hidden>
-  {{range .Turns}}
-    {{template "transcript-inspector" .}}
-    {{range .Children}}{{template "transcript-inspector" .}}{{end}}
-  {{end}}
+  {{template "transcript-turn-inspectors" .Turns}}
 </div>
 
 <script>

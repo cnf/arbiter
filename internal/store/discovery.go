@@ -307,6 +307,63 @@ func (r *Reader) ClearDiscoveryState(ctx context.Context, hexHash string) error 
 	return nil
 }
 
+// UnseenDiscoveryCount reports how many content_hash_stats rows meet
+// minSessions and are currently "unseen" — the same three-state derivation
+// DiscoveryHandler applies per row (see its own comment in internal/ui):
+// a hash is unseen when it carries no discovery_state row, or carries a
+// 'seen' mark whose marked_at_last_seen has been overtaken by a newer
+// last_ts (the pattern reappeared since the operator looked at it). An
+// 'ignored' mark is never unseen, regardless of last_ts.
+//
+// Requests are deliberately not part of this gate: only minSessions bounds
+// it. content_hash_stats.sessions >= 2 already implies requests >= 2 (each
+// session contributes at least one request), so a separate request floor
+// would filter nothing further here — it would just be a second knob for
+// the same idea the session count already covers.
+//
+// Backs the nav bar's Discovery stat (Handler.base): a glanceable "how many
+// patterns need a look" count, so this only counts rows — it never fetches
+// the preview/body columns the ledger page itself needs.
+func (r *Reader) UnseenDiscoveryCount(ctx context.Context, minSessions int) (int64, error) {
+	const q = `
+SELECT h.last_ts, d.state, d.marked_at_last_seen
+FROM content_hash_stats h
+LEFT JOIN discovery_state d ON d.hash = h.hash
+WHERE h.sessions >= ?`
+
+	rows, err := r.db.QueryContext(ctx, q, minSessions)
+	if err != nil {
+		return 0, fmt.Errorf("unseen discovery count: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var n int64
+	for rows.Next() {
+		var lastRaw interface{}
+		var state, marked sql.NullString
+		if err := rows.Scan(&lastRaw, &state, &marked); err != nil {
+			return 0, fmt.Errorf("scan unseen discovery count: %w", err)
+		}
+		if !state.Valid {
+			n++
+			continue
+		}
+		if state.String == DiscoveryIgnored {
+			continue
+		}
+		// state == DiscoverySeen: unseen again only if the pattern's own
+		// last-seen has moved past the moment it was marked seen — both
+		// sides are RFC3339 (formatTime's output, and marked_at_last_seen
+		// is always captured from a prior formatTime'd LastSeen — see
+		// SetDiscoveryState's caller), so a plain string compare orders
+		// the same as the timestamps themselves.
+		if marked.String < formatTime(lastRaw) {
+			n++
+		}
+	}
+	return n, rows.Err()
+}
+
 // BlockPosition is where one content hash sits inside one request: the
 // (msg_index, position) pair GuardrailDiff needs to find the block's
 // before/after text for that specific request.

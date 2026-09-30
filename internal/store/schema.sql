@@ -113,7 +113,17 @@ CREATE TABLE IF NOT EXISTS content_refs (
     position   INTEGER NOT NULL,   -- position of the block within the message
     role       TEXT,               -- the message's role, denormalized for grouping
     block_type TEXT    NOT NULL,   -- the block's own type, for filtering
-    hash       BLOB    NOT NULL
+    hash       BLOB    NOT NULL,
+    -- name is the attachment's filename (#22), denormalized here rather than
+    -- carried in the hash-keyed `content` table: the same bytes can arrive
+    -- under different names, and `content` is addressed by body hash alone.
+    -- It is required on the wire for an OpenAI document part
+    -- ({type:"file", file:{filename, file_data}}) and Arbiter rebuilds the
+    -- outbound body from NormalizedRequest, so a name lost here means the
+    -- attachment cannot be re-emitted correctly. Empty for every non-
+    -- attachment block, and empty for images (Anthropic/OpenAI images carry
+    -- no name).
+    name       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_content_refs_owner ON content_refs(owner_kind, owner_id, direction, msg_index, position);
 CREATE INDEX IF NOT EXISTS idx_content_refs_hash ON content_refs(hash);

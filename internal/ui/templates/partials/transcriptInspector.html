@@ -173,7 +173,7 @@ trip (transcript.js moves the full text into the content modal). */}}
   </div>
   {{end}}
 
-  {{if and .Inspector.ContentLoaded (not .Inspector.SystemPrompt.Present) (not .Inspector.UserMessages) (not .Inspector.Reasoning) (not .Inspector.Calls)}}
+  {{if and .Inspector.ContentLoaded (not .Inspector.SystemPrompt.Present) (not .Inspector.UserMessages) (not .Inspector.Reasoning) (not .Inspector.Calls) (not .Inspector.ToolDefs)}}
   <div class="f-section"><span class="f-note">no client-visible content on this turn</span></div>
   {{end}}
   {{if and .Inspector.ContentLoaded .Inspector.CaptureOff}}
@@ -181,6 +181,21 @@ trip (transcript.js moves the full text into the content modal). */}}
   {{end}}
   {{if .Inspector.ContentErr}}
   <div class="f-section"><span class="f-note">the stored content for this request could not be read — see the logs. Its metadata above is still correct.</span></div>
+  {{end}}
+
+  {{if .Inspector.ToolDefs}}
+  <div class="f-section">
+    <button class="headers-toggle" type="button" data-headers-toggle>tools offered ({{len .Inspector.ToolDefs}}, {{bytes .Inspector.ToolDefsBytes}})</button>
+    <div class="headers-box tooldefs-box">
+      {{range .Inspector.ToolDefs}}
+      <div class="tooldef-row">
+        <div class="tooldef-head"><span class="name">{{if .Name}}{{.Name}}{{else}}(unnamed tool){{end}}</span></div>
+        {{if .Description}}<div class="tooldef-desc">{{.Description}}</div>{{end}}
+        {{if .SchemaJSON}}{{template "transcript-snippet" .SchemaJSON}}{{end}}
+      </div>
+      {{end}}
+    </div>
+  </div>
   {{end}}
 
   {{if .Inspector.Headers}}

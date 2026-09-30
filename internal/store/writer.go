@@ -176,6 +176,12 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 			return nil, fmt.Errorf("migrate event store schema: %w", err)
 		}
 	}
+	// name (#22): an attachment's filename, added to content_refs after the
+	// table already existed in deployed databases.
+	if err := addColumnIfMissing(db, "content_refs", "name TEXT"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate event store schema: %w", err)
+	}
 	// affinity_pins predates prompt_hash and its composite primary key (see
 	// schema.sql): a database created before that change has session_key as
 	// its sole PRIMARY KEY, and CREATE TABLE IF NOT EXISTS above is a no-op

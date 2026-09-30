@@ -1,21 +1,43 @@
-{{/* transcriptList.html — the transcript's list entries (#53).
+{{/* transcriptList.html — the transcript's list entries (#53, extended for
+lazy-load pagination in #73).
 
-These live in a partial, not in pages/session.html, because the "load more"
-control is an htmx fragment: htmx responses are rendered from the partials set
-alone (see Handler.render), so a fragment template that only existed in a page
-set would be undefined exactly when the browser asks for it. The page and the
-fragment therefore share one definition of a turn's row, which is also what
-keeps an appended page of turns identical to the first page. */}}
+These live in a partial, not in pages/session.html, because the "load more"/
+"load older" controls are htmx fragments: htmx responses are rendered from the
+partials set alone (see Handler.render), so a fragment template that only
+existed in a page set would be undefined exactly when the browser asks for it.
+The page and the fragments therefore share one definition of a turn's row,
+which is also what keeps an appended or prepended window of turns identical to
+the first one. */}}
 
-{{/* transcript-more is a later page of turns, appended into #list. It carries
-the next load-more control with it — or, on the last page, the end-of-
-conversation note that replaces it. */}}
-{{define "transcript-more"}}
-{{range .Turns}}{{template "transcript-entry" .}}{{end}}
+{{/* transcript-turn-inspectors renders the hidden inspector markup for a set
+of turns and their children (#73). It is shared by the initial page's
+#inspector-src block and both lazy-load fragments below: a turn loaded by
+"load more" or "load older" is not selectable unless its inspector ships in
+the same response as its row — before this, only page 1 shipped inspectors at
+all, so every row past it had nothing for transcript.js to select. */}}
+{{define "transcript-turn-inspectors"}}
+{{range .}}
+  {{template "transcript-inspector" .}}
+  {{range .Children}}{{template "transcript-inspector" .}}{{end}}
+{{end}}
+{{end}}
+
+{{/* transcript-more-control is the "load more"/end-of-conversation footer
+alone — the part transcript-more wraps around a window of turns for the htmx
+fragment response, but that session.html's own initial render needs on its
+own, below its already-rendered .Turns range, without pulling those turns in
+a second time. Mirrors transcript-older-control (#73): before this split,
+session.html carried its own hand-copied version of this block that silently
+drifted from transcript-more's (still targeting #list/beforeend after
+transcript-more moved to replacing #more-row in place), which is what made
+every "load more" leave the old button behind and re-fetch the same page
+forever. One definition, used by both, is what rules that class of drift
+out. */}}
+{{define "transcript-more-control"}}
 {{if .HasMore}}
 <div class="more-row" id="more-row">
-  <button class="more-btn" type="button"
-          hx-get="{{.MoreURL}}" hx-target="#list" hx-swap="beforeend"
+  <button class="more-btn" type="button" data-load="more"
+          hx-get="{{.MoreURL}}" hx-target="#more-row" hx-swap="outerHTML"
           hx-indicator="#moreBusy">load {{.Limit}} more turns
     <span class="count">({{.Loaded}} of {{.Total}})</span>
   </button>
@@ -24,6 +46,46 @@ conversation note that replaces it. */}}
 {{else}}
 <p class="list-end">{{.Total}} turn{{if ne .Total 1}}s{{end}} — end of conversation</p>
 {{end}}
+{{end}}
+
+{{/* transcript-more is a later window of turns, appended into #list. It
+carries its own turns' inspectors and the next load-more control with it — or,
+on the last window, the end-of-conversation note that replaces it. */}}
+{{define "transcript-more"}}
+{{range .Turns}}{{template "transcript-entry" .}}{{end}}
+<div class="inspector-src" hidden>{{template "transcript-turn-inspectors" .Turns}}</div>
+{{template "transcript-more-control" .}}
+{{end}}
+
+{{/* transcript-older-control is the "load older" button alone — the part
+transcript-older wraps around a window of turns for the htmx fragment
+response, but that session.html's own initial render needs on its own, above
+its already-rendered .Turns range, without pulling those turns in a second
+time. */}}
+{{define "transcript-older-control"}}
+{{if .HasOlder}}
+<div class="more-row older-row" id="older-row">
+  <button class="more-btn older-btn" type="button" data-load="older"
+          hx-get="{{.OlderURL}}" hx-target="#older-row" hx-swap="outerHTML"
+          hx-indicator="#olderBusy">load {{.Limit}} older turns
+    <span class="count">({{.Loaded}} of {{.Total}})</span>
+  </button>
+  <span id="olderBusy" class="htmx-indicator">…</span>
+</div>
+{{end}}
+{{end}}
+
+{{/* transcript-older is transcript-more's backward twin (#73): the window
+immediately before whatever is already on the page, prepended into #list
+rather than appended. Older-still turns get their own "load older" control at
+the top; once the window reaches the start of the conversation, nothing
+replaces it — there is no "beginning of conversation" note symmetrical to
+list-end, because the toolbar's own turn count already says where the
+conversation starts. */}}
+{{define "transcript-older"}}
+{{template "transcript-older-control" .}}
+{{range .Turns}}{{template "transcript-entry" .}}{{end}}
+<div class="inspector-src" hidden>{{template "transcript-turn-inspectors" .Turns}}</div>
 {{end}}
 
 {{/* transcript-entry is one turn in the list: its row, plus a nested row for

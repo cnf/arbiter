@@ -34,6 +34,7 @@ var funcs = stdhtml.FuncMap{
 	"sessionsNav": func(raw string) string { return sessionsNavHref(raw) },
 	"sinceLabel":  sinceLabel,
 	"chars":       fmtChars,
+	"bytes":       fmtBytes,
 	"trace8":      fmtTrace,
 	// Overview (#54). cacheClass/pctWidth exist so the drawer's gauge can be
 	// coloured and sized without the template doing arithmetic or holding the
@@ -82,6 +83,26 @@ func fmtChars(n int) string {
 		return fmt.Sprintf("%.1fk chars", float64(n)/1000)
 	default:
 		return fmt.Sprintf("%.1fM chars", float64(n)/1_000_000)
+	}
+}
+
+// fmtBytes renders a byte count with SI (decimal, 1000-based) prefixes —
+// "1.2 kB", not the binary "1.2 KiB" — matching how the rest of this page
+// already sizes things (fmtChars, fmtTokens) in round human units rather
+// than power-of-two ones. Used where a real token count isn't available (see
+// toolDefsSize): Arbiter has no tokenizer, only a char/4 routing heuristic
+// (internal/classifier.estimateTokens) that was never meant to be shown as a
+// fact, so a captured body's byte size is the honest fallback.
+func fmtBytes(n int) string {
+	switch {
+	case n < 1000:
+		return fmt.Sprintf("%d B", n)
+	case n < 1000*1000:
+		return fmt.Sprintf("%.1f kB", float64(n)/1000)
+	case n < 1000*1000*1000:
+		return fmt.Sprintf("%.1f MB", float64(n)/1_000_000)
+	default:
+		return fmt.Sprintf("%.1f GB", float64(n)/1_000_000_000)
 	}
 }
 

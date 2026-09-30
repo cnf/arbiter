@@ -81,7 +81,15 @@ func (h *Handler) DiscoverySetStateHandler(w http.ResponseWriter, r *http.Reques
 		}
 		current := discoveryUnseen
 		if mark, ok := states[hash]; ok {
-			current = mark.State
+			// Mirror DiscoveryHandler's own re-derivation exactly (see its
+			// loop over view.Rows): a stored "seen" mark whose
+			// MarkedAtLastSeen predates this block's LastSeen means the
+			// pattern reappeared since the operator looked at it, so the
+			// page displays — and this cycle must start from — unseen,
+			// not the stale stored state. "ignored" has no such lapse.
+			if mark.State == store.DiscoveryIgnored || mark.MarkedAtLastSeen >= lastSeen {
+				current = mark.State
+			}
 		}
 		next := discoveryNextState(current)
 

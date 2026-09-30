@@ -2,20 +2,25 @@ package types
 
 import "fmt"
 
-// ContentShapeError reports a safe structural diagnostic for a message
-// `content` field that matched neither wire shape a client may send (a bare
-// string or an array of content parts). It deliberately carries no value or
-// message text — only the message's position, the field path, and the JSON
+// ContentShapeError reports a safe structural diagnostic for a content field
+// that matched neither wire shape a client may send (a bare string or an
+// array of content parts) — either a message's `content` or, on the
+// Anthropic side, the request's top-level `system`. It deliberately carries
+// no value or message text — only the location, the field name, and the JSON
 // type actually observed — so it can be logged and safely surfaced in
 // structured fields without leaking conversation content. See #75.
 type ContentShapeError struct {
+	// PerMessage is true for a per-message field (e.g. messages[i].content),
+	// false for a top-level request field (e.g. Anthropic's `system`, which
+	// has no message index at all).
+	PerMessage bool
 	// MessageIndex is the message's position within the request's messages
-	// array. It starts as -1 (unknown) when raised from inside a single
-	// message's UnmarshalJSON, which has no visibility into its own index;
-	// the request-level UnmarshalJSON is what fills it in, since only it
-	// iterates the array.
+	// array, meaningful only when PerMessage is true. It starts as -1
+	// (unknown) when raised from inside a single message's UnmarshalJSON,
+	// which has no visibility into its own index; the request-level
+	// UnmarshalJSON is what fills it in, since only it iterates the array.
 	MessageIndex int
-	// Field is the field path relative to the message, e.g. "content".
+	// Field is the field name, e.g. "content" or "system".
 	Field string
 	// GotType is the JSON type actually observed (e.g. "object", "number",
 	// "boolean", "null") — never the value itself.
@@ -23,7 +28,10 @@ type ContentShapeError struct {
 }
 
 func (e *ContentShapeError) Error() string {
-	return fmt.Sprintf("messages[%d].%s: got %s; expected string or array", e.MessageIndex, e.Field, e.GotType)
+	if e.PerMessage {
+		return fmt.Sprintf("messages[%d].%s: got %s; expected string or array", e.MessageIndex, e.Field, e.GotType)
+	}
+	return fmt.Sprintf("%s: got %s; expected string or array", e.Field, e.GotType)
 }
 
 // jsonValueKind reports the JSON type of a trimmed value from its leading

@@ -38,6 +38,11 @@ Updated again 2026-09-30 at `540c3cf` — see §5 (#75 landed in two commits,
 message index/field/JSON type only, never the value — for a request whose
 `content`/`system` field is neither the accepted string nor array shape),
 §6 (#75 CLOSED).
+Updated again 2026-09-30 at `5c8f68b` — see §6 (#40 landed: four new
+`types.MatchMode` values — `line_prefix`/`line_exact`/`paragraph_prefix`/
+`paragraph_exact` — fix prompt_rewrite's `prefix`/`exact` modes silently
+no-op'ing on a multi-source system prompt; #40 not yet closed on the
+tracker, pending your go-ahead).
 
 ---
 
@@ -202,6 +207,22 @@ undeployed as of last check; re-verify rather than assume either has
 landed live.
 
 ## 6. Open work — READ THIS BEFORE PICKING ANYTHING UP
+
+**#40 landed** (2026-09-30, `5c8f68b`) — `prompt_rewrite`'s `prefix`/`exact`
+match modes anchor to the WHOLE searched field (byte 0 / entire string), so
+they silently never match once anything precedes the target text, e.g. a
+multi-source system prompt (Arbiter's own framing followed by a client's
+injected preamble). Fixed by adding four new `types.MatchMode` values that
+anchor to a smaller unit instead: `line_prefix`/`line_exact` (per
+newline-delimited line) and `paragraph_prefix`/`paragraph_exact` (per
+blank-line-delimited paragraph). Both `prompt_rewrite` (guardrail) and
+`classifier.RequestMatcher` pick these up for free — both compile through
+`types.NewTextMatcher`/validate against `types.ValidMatchModes`, no
+per-consumer wiring needed. Existing `prefix`/`exact` behavior is
+unchanged (regression tests pin this). Docs updated
+(`docs/guardrails.md`'s mode table + a new explanatory paragraph). **Not
+yet closed on the GitHub tracker** — close it once you're satisfied, or
+say the word and I will.
 
 **#75 is CLOSED** (2026-09-30) — safe field diagnostics for a
 content-shape mismatch (object/number/boolean where a client should send a

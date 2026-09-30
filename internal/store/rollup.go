@@ -158,15 +158,28 @@ ON CONFLICT(name) DO UPDATE SET last_owner_id = excluded.last_owner_id`,
 // comment) so the two are interchangeable from the caller's point of view —
 // minRequests/minSessions/limit clamp the same way.
 //
+// offset pages through the ranked (sessions DESC) list past limit, the same
+// convention SessionClientPage uses — see its doc comment on why plain
+// offset paging is safe here too: content_hash_stats rows only accumulate
+// (a block's session/request counts only grow), and a block already past
+// the caller's offset cannot un-rank itself below a page boundary the way a
+// newest-first list could invalidate an offset. This is what makes the rest
+// of a session-ranked list reachable past whatever limit the caller chose,
+// rather than a hard, un-paginated cutoff that permanently hides every
+// block ranked below it regardless of any other filter.
+//
 // Deliberately no time window: content_hash_stats is all-time by design
 // (see schema.sql). A caller that still wants "since" for other numbers
 // (SessionlessRequestCount) queries that separately.
-func (r *Reader) ContentHashStats(ctx context.Context, minRequests, minSessions, limit int) ([]RepeatedContent, error) {
+func (r *Reader) ContentHashStats(ctx context.Context, minRequests, minSessions, limit, offset int) ([]RepeatedContent, error) {
 	if minRequests < 2 {
 		minRequests = 2
 	}
 	if limit <= 0 || limit > 200 {
 		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
 	}
 	const q = `
 SELECT h.hash, h.block_type, h.role,
@@ -177,11 +190,11 @@ FROM (
     FROM content_hash_stats
     WHERE requests >= ? AND sessions >= ?
     ORDER BY sessions DESC
-    LIMIT ?
+    LIMIT ? OFFSET ?
 ) h
 LEFT JOIN content c ON c.hash = h.hash`
 
-	rows, err := r.db.QueryContext(ctx, q, minRequests, minSessions, limit)
+	rows, err := r.db.QueryContext(ctx, q, minRequests, minSessions, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("content hash stats: %w", err)
 	}

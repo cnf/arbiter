@@ -57,14 +57,46 @@ just a preview. */}}
       </tbody>
     </table>
   </div>
+  {{template "discovery-more-control" .}}
   {{else}}
   <p class="empty">No block met the thresholds in this window — widen the
     window or lower the session minimum.</p>
   {{end}}
-  {{if .Capped}}<p class="capped">showing the {{.Limit}} most widespread patterns — {{.Bounds}}.</p>{{end}}
   {{if gt .Sessionless 0}}<p class="capped">{{.Sessionless}} request{{if ne .Sessionless 1}}s{{end}} in this
     window carry no session key and are excluded from the session-count filter.</p>{{end}}
 </div>
+{{end}}
+
+{{/* discovery-more-control is the "load more" button/row alone, the same
+split transcript-more-control uses (transcriptList.html): repeated-rows'
+initial render needs it below the table it already rendered, without
+appending those rows a second time, while discovery-more (below) wraps it
+around a page of freshly-fetched rows for the htmx append. Table-less (a
+<div>, not a <tr>) because it sits below </table>, not inside <tbody> — a
+page of extra rows appends into #discoveryBody directly, this control
+appends after the table itself. */}}
+{{define "discovery-more-control"}}
+{{if .HasMore}}
+<div class="more-row" id="discoveryMoreRow">
+  <button class="more-btn" type="button"
+          hx-get="{{.MoreURL}}" hx-target="#discoveryMoreRow" hx-swap="outerHTML"
+          hx-indicator="#discoveryMoreBusy">load {{.Limit}} more patterns
+    <span class="count">({{.Shown}} of {{.Matching}})</span>
+  </button>
+  <span id="discoveryMoreBusy" class="htmx-indicator">…</span>
+</div>
+{{end}}
+{{end}}
+
+{{/* discovery-more is a later page of rows, appended into #discoveryBody —
+htmx's response to a "load more" click. It carries only the new <tr>s plus
+the next load-more control (or nothing, once HasMore goes false), never the
+toolbar or the <table> wrapper those already exist on the page. $ is the
+same discoveryView the initial page renders, but with Offset > 0 (see
+DiscoveryHandler's own offset>0 branch). */}}
+{{define "repeated-more"}}
+{{range .Rows}}{{template "discovery-row" .}}{{end}}
+{{template "discovery-more-control" .}}
 {{end}}
 
 {{/* discovery-row is one repeated block: the state dot, the label (block

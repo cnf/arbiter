@@ -68,12 +68,12 @@ func newDiscoveryCache() *discoveryCache {
 	return &discoveryCache{entries: make(map[string]discoveryCacheEntry)}
 }
 
-// discoveryCacheKey turns the four query-shaping parameters into a cache
+// discoveryCacheKey turns the five query-shaping parameters into a cache
 // key. It does not need to be a hash — the string is short and the map
 // comparison is exact — so it is built directly from the values rather than
 // through a digest, which would only add cost for no benefit at this size.
-func discoveryCacheKey(since time.Duration, minRequests, minSessions, limit int) string {
-	return fmt.Sprintf("%d|%d|%d|%d", since, minRequests, minSessions, limit)
+func discoveryCacheKey(since time.Duration, minRequests, minSessions, limit, offset int) string {
+	return fmt.Sprintf("%d|%d|%d|%d|%d", since, minRequests, minSessions, limit, offset)
 }
 
 // get returns the cached result for key if one exists and is still within

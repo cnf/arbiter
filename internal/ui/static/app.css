@@ -996,7 +996,7 @@ footer.appfoot .spacer {
 .repeated-row .num-cell { font-family: var(--mono); text-align: right; color: var(--text-dim); }
 .repeated-row .time-cell { font-family: var(--mono); font-size: 11px; color: var(--text-faint); white-space: nowrap; }
 
-.row-inner { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.row-inner { display: flex; align-items: center; gap: 8px; min-width: 0; padding-left: 16px; }
 .lbl-wrap { min-width: 0; line-height: 1.3; }
 .lbl-top { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 172px; }
 .lbl-sub { font-size: 10.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 172px; }
@@ -1006,11 +1006,47 @@ footer.appfoot .spacer {
  * — ignored more, since it is a permanent dismissal rather than a to-do
  * crossed off. A row's own fade for ignored/seen keys off the dot's class
  * via :has(), since the fragment response only ever replaces the button
- * (see discoveryRow.html's own comment). */
-.state-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; cursor: pointer; border: none; padding: 0; }
-.state-dot.st-unseen { background: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent); }
-.state-dot.st-seen { background: var(--text-faint); opacity: 0.5; }
-.state-dot.st-ignored { background: var(--text-faint); opacity: 0.22; }
+ * (see discoveryRow.html's own comment).
+ *
+ * The button covers a left strip of label-cell, not the whole cell: an 8px
+ * circle was too small a target (hence a wider hit box at all), but the
+ * full cell was too wide — in workspace/rail mode (#discoveryTableWrap.rail)
+ * the extra columns hide and label-cell becomes the entire visible row, so
+ * "the whole cell" meant "the whole row" clicked toggle-state instead of
+ * select/open. 32px keeps a generous target around the dot's own left:10px
+ * offset below without reaching into the label text or the rest of the
+ * row. .label-cell is the positioned ancestor; the button stays invisible
+ * except for the dot drawn on ::before at its original visual offset, so
+ * nothing else moves. */
+.label-cell { position: relative; }
+.state-dot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 32px;
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  cursor: pointer;
+  border: none;
+  padding: 0;
+  z-index: 1;
+}
+.state-dot::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.state-dot.st-unseen::before { background: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent); }
+.state-dot.st-seen::before { opacity: 0.5; }
+.state-dot.st-ignored::before { opacity: 0.22; }
 .repeated-row:has(.state-dot.st-ignored) { opacity: 0.55; }
 
 /* ---- detail pane: default/selected/workspace states, ported from the

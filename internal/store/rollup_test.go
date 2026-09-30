@@ -52,7 +52,7 @@ func TestRollupContentHashStatsMatchesRepeatedContent(t *testing.T) {
 		t.Fatalf("RepeatedContent = %+v, want one block", repeated)
 	}
 
-	stats, err := r.ContentHashStats(ctx, 2, 0, 50)
+	stats, err := r.ContentHashStats(ctx, 2, 0, 50, 0)
 	if err != nil {
 		t.Fatalf("ContentHashStats: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestRollupContentHashStatsIsIncremental(t *testing.T) {
 		t.Errorf("watermark did not advance: %d -> %d", watermark2, watermark3)
 	}
 
-	stats, err := r.ContentHashStats(ctx, 2, 0, 50)
+	stats, err := r.ContentHashStats(ctx, 2, 0, 50, 0)
 	if err != nil {
 		t.Fatalf("ContentHashStats: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestRollupContentHashStatsSkipsSessionlessRequests(t *testing.T) {
 		t.Fatalf("RollupContentHashStats: %v", err)
 	}
 
-	stats, err := r.ContentHashStats(ctx, 2, 0, 50)
+	stats, err := r.ContentHashStats(ctx, 2, 0, 50, 0)
 	if err != nil {
 		t.Fatalf("ContentHashStats: %v", err)
 	}
@@ -199,5 +199,120 @@ func TestRollupContentHashStatsSkipsSessionlessRequests(t *testing.T) {
 	}
 	if stats[0].Sessions != 0 {
 		t.Errorf("sessions = %d, want 0 (sessionless requests never count)", stats[0].Sessions)
+	}
+}
+
+// TestUnseenDiscoveryCount covers the three-state gate UnseenDiscoveryCount
+// applies per hash: no mark counts, ignored never counts, and a seen mark
+// only stops counting until the block's last_ts moves past the moment it was
+// marked seen. Also checks minSessions actually filters (a block below the
+// threshold never counts, regardless of state).
+func TestUnseenDiscoveryCount(t *testing.T) {
+	w, r := captureFixture(t)
+	ctx := context.Background()
+
+	// widespread: 2 sessions, never marked -> counts as unseen.
+	const widespread = "an unmarked block sent across two different sessions"
+	w.Record(Event{
+		TraceID: "t1", SessionKey: "s1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: []Block{textBlock("system", 0, 0, widespread)}},
+	})
+	w.Record(Event{
+		TraceID: "t2", SessionKey: "s2", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: []Block{textBlock("system", 0, 0, widespread)}},
+	})
+
+	// ignoredBlock: 2 sessions, marked ignored -> never counts.
+	const ignoredBlock = "a block the operator has already marked as ignored boilerplate"
+	w.Record(Event{
+		TraceID: "t3", SessionKey: "s1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: []Block{textBlock("system", 0, 0, ignoredBlock)}},
+	})
+	w.Record(Event{
+		TraceID: "t4", SessionKey: "s2", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: []Block{textBlock("system", 0, 0, ignoredBlock)}},
+	})
+
+	// seenBlock: 2 sessions, marked seen and not reappeared since -> does not count.
+	const seenBlock = "a block the operator has already looked at and marked seen"
+	w.Record(Event{
+		TraceID: "t5", SessionKey: "s1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: []Block{textBlock("system", 0, 0, seenBlock)}},
+	})
+	w.Record(Event{
+		TraceID: "t6", SessionKey: "s2", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: []Block{textBlock("system", 0, 0, seenBlock)}},
+	})
+
+	// tooNarrow: only 1 session -> excluded by minSessions regardless of state.
+	const tooNarrow = "a block confined to a single session, below the threshold"
+	w.Record(Event{
+		TraceID: "t7", SessionKey: "s1", Format: "openai", Provider: "p", Model: "m", StatusCode: 200,
+		Content: &CapturedContent{Request: []Block{textBlock("system", 0, 0, tooNarrow)}},
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, _, err := r.RollupContentHashStats(ctx); err != nil {
+		t.Fatalf("RollupContentHashStats: %v", err)
+	}
+
+	repeated, err := r.ContentHashStats(ctx, 2, 0, 50, 0)
+	if err != nil {
+		t.Fatalf("ContentHashStats: %v", err)
+	}
+	hashFor := map[string]string{}
+	for _, rc := range repeated {
+		hashFor[rc.Preview] = rc.Hash
+	}
+
+	if err := r.SetDiscoveryState(ctx, hashFor[ignoredBlock], DiscoveryIgnored, ""); err != nil {
+		t.Fatalf("SetDiscoveryState (ignored): %v", err)
+	}
+	var seenLastSeen string
+	for _, rc := range repeated {
+		if rc.Preview == seenBlock {
+			seenLastSeen = rc.LastSeen
+		}
+	}
+	if err := r.SetDiscoveryState(ctx, hashFor[seenBlock], DiscoverySeen, seenLastSeen); err != nil {
+		t.Fatalf("SetDiscoveryState (seen): %v", err)
+	}
+
+	n, err := r.UnseenDiscoveryCount(ctx, 2)
+	if err != nil {
+		t.Fatalf("UnseenDiscoveryCount: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("UnseenDiscoveryCount = %d, want 1 (only the unmarked widespread block)", n)
+	}
+
+	// Now the seen block reappears (a fresh request advances its last_ts
+	// past the moment it was marked seen) -> it counts again.
+	rawHash, err := decodeHash(hashFor[seenBlock])
+	if err != nil {
+		t.Fatalf("decodeHash: %v", err)
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE content_hash_stats SET last_ts = ? WHERE hash = ?`,
+		time.Now().UTC().Add(time.Hour).Format(time.RFC3339), rawHash); err != nil {
+		t.Fatalf("bump last_ts: %v", err)
+	}
+	n, err = r.UnseenDiscoveryCount(ctx, 2)
+	if err != nil {
+		t.Fatalf("UnseenDiscoveryCount after reappearance: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("UnseenDiscoveryCount after reappearance = %d, want 2 (widespread + reappeared seenBlock)", n)
+	}
+
+	// minSessions=3 excludes everything (nothing has 3 sessions).
+	n, err = r.UnseenDiscoveryCount(ctx, 3)
+	if err != nil {
+		t.Fatalf("UnseenDiscoveryCount at min_sessions=3: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("UnseenDiscoveryCount at min_sessions=3 = %d, want 0", n)
 	}
 }

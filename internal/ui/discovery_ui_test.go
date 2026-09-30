@@ -12,8 +12,8 @@ import (
 	"github.com/cnf/arbiter/internal/store"
 )
 
-// discoverySeed returns events in which one system block appears in three
-// different sessions (so it clears the default min_sessions=2 threshold) and a
+// discoverySeed returns events in which one system block appears in five
+// different sessions (so it clears the default min_sessions=5 threshold) and a
 // second block appears in only one. The second is what proves the session-count
 // gate is doing something, rather than the page simply listing every hash.
 func discoverySeed() []store.Event {
@@ -23,7 +23,7 @@ func discoverySeed() []store.Event {
 	// clock moved past that date and the test would start passing vacuously.
 	now := time.Now().UTC().Add(-10 * time.Minute)
 	var events []store.Event
-	for s := 0; s < 3; s++ {
+	for s := 0; s < 5; s++ {
 		for turn := 0; turn < 2; turn++ {
 			events = append(events, store.Event{
 				TraceID:    fmt.Sprintf("t-%d-%d", s, turn),
@@ -74,7 +74,7 @@ func TestDiscoveryGatesOnSessionCount(t *testing.T) {
 		t.Errorf("the cross-session block is missing from the ledger; body = %s", firstLine(body))
 	}
 	if strings.Contains(body, "seen in exactly one session") {
-		t.Error("a block confined to one session was listed at the default min_sessions=2")
+		t.Error("a block confined to one session was listed at the default min_sessions=5")
 	}
 
 	// Lowering the gate must surface it — otherwise the gate is indistinguishable
@@ -82,6 +82,40 @@ func TestDiscoveryGatesOnSessionCount(t *testing.T) {
 	body = serve(t, h, "GET", "/admin/ui/content/repeated?min_sessions=0", false).Body.String()
 	if !strings.Contains(body, "seen in exactly one session") {
 		t.Error("min_sessions=0 did not surface the single-session block")
+	}
+}
+
+// The nav bar's Discovery stat (Handler.base) must count unseen patterns
+// gated on sessions alone (discoveryDefaultMinSessions, currently 5) —
+// discoverySeed() puts three distinct blocks (the system preamble plus each
+// of the two per-turn user blocks) across five sessions each, all initially
+// unseen, and one block confined to a single session that never counts.
+// Marking one of the three seen must drop the stat by exactly one.
+func TestNavDiscoveryStatCountsUnseenPatterns(t *testing.T) {
+	h, _ := newSeededHandler(t, discoverySeed()...)
+
+	body := serve(t, h, "GET", "/admin/ui/overview", false).Body.String()
+	if !strings.Contains(body, `>Discovery</span>`) || !strings.Contains(body, "3<span class=\"u\">new</span>") {
+		t.Errorf("nav bar's Discovery stat should read 3 new (three cross-session unseen patterns), got:\n%s", body)
+	}
+
+	hash := contentHashOf(t, h, "Always follow the user&#39;s instructions exactly")
+	if hash == "" {
+		t.Fatal("could not find the block's hash on the ledger")
+	}
+	// Cycle the state dot once (unseen -> seen): last_seen must be at or
+	// after the block's real LastSeen, or the mark is immediately
+	// re-derived as unseen again (see UnseenDiscoveryCount's doc comment)
+	// — a future timestamp is always safely past it.
+	lastSeen := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	req := "/admin/ui/content/repeated/state?hash=" + hash + "&last_seen=" + lastSeen
+	if resp := serve(t, h, "POST", req, false); resp.Code != http.StatusOK {
+		t.Fatalf("mark seen: status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+
+	body = serve(t, h, "GET", "/admin/ui/overview", false).Body.String()
+	if !strings.Contains(body, "2<span class=\"u\">new</span>") {
+		t.Errorf("nav bar's Discovery stat should read 2 new after marking one block seen, got:\n%s", body)
 	}
 }
 
@@ -223,6 +257,38 @@ func TestDiscoveryStateRejectsBadHash(t *testing.T) {
 	}
 }
 
+// A pattern that reappears after being marked seen must display — and cycle
+// from — unseen, not the stale stored "seen" mark. DiscoveryHandler already
+// re-derives this per row (a stored seen mark whose MarkedAtLastSeen predates
+// the block's current LastSeen is displayed as unseen again); the state-set
+// handler must apply the exact same rule when deciding what state a click
+// advances from, or a click on a reappeared (visibly unseen) block silently
+// advances the OLD state instead — landing on ignored instead of seen.
+func TestDiscoveryStateResetsOnReappearance(t *testing.T) {
+	h, _ := newSeededHandler(t, discoverySeed()...)
+	hash := contentHashOf(t, h, "Always follow the user&#39;s instructions exactly")
+	if hash == "" {
+		t.Fatal("could not find the block's hash on the ledger")
+	}
+
+	// Mark it seen as of an early last_seen.
+	earlySeen := time.Now().UTC().Add(-20 * time.Minute).Format(time.RFC3339)
+	rec := serve(t, h, "POST", "/admin/ui/content/repeated/state?hash="+hash+"&last_seen="+earlySeen, true)
+	if !strings.Contains(rec.Body.String(), "st-seen") {
+		t.Fatalf("first click did not mark it seen; body = %s", rec.Body.String())
+	}
+
+	// The pattern reappears: the page now carries a newer last_seen than the
+	// mark, so it would render as unseen (mirroring DiscoveryHandler's own
+	// re-derivation). A click must therefore behave like a click on an
+	// unseen row — landing on seen, not on ignored.
+	laterSeen := time.Now().UTC().Format(time.RFC3339)
+	rec = serve(t, h, "POST", "/admin/ui/content/repeated/state?hash="+hash+"&last_seen="+laterSeen, true)
+	if !strings.Contains(rec.Body.String(), "st-seen") {
+		t.Errorf("clicking a reappeared (visibly-unseen) block should advance unseen -> seen, got: %s", rec.Body.String())
+	}
+}
+
 // TestDiscoveryCacheServesStaleWithinTTL proves the ledger's expensive query
 // result is actually cached: a block written AFTER the first page load must
 // not appear on an immediate second load with the same parameters, because
@@ -308,19 +374,19 @@ func TestDiscoveryCacheServesStaleWithinTTL(t *testing.T) {
 }
 
 // TestDiscoveryCacheKeysOnParameters proves a different min_sessions value is
-// not served from the min_sessions=2 (default) cache entry — a shared key
+// not served from the min_sessions=5 (default) cache entry — a shared key
 // across different parameter combinations would silently mix results.
 func TestDiscoveryCacheKeysOnParameters(t *testing.T) {
 	h, _ := newSeededHandler(t, discoverySeed()...)
 
-	// Warm the default (min_sessions=2) entry first.
+	// Warm the default (min_sessions=5) entry first.
 	_ = serve(t, h, "GET", "/admin/ui/content/repeated", false)
 
 	// A different min_sessions must still see the single-session block, not
 	// whatever the default-params entry cached.
 	body := serve(t, h, "GET", "/admin/ui/content/repeated?min_sessions=0", false).Body.String()
 	if !strings.Contains(body, "seen in exactly one session") {
-		t.Error("min_sessions=0 was served the min_sessions=2 cache entry instead of its own result")
+		t.Error("min_sessions=0 was served the min_sessions=5 cache entry instead of its own result")
 	}
 }
 
@@ -470,5 +536,60 @@ func TestDiscoveryHideIgnoredDropsRows(t *testing.T) {
 	}
 	if !strings.Contains(shown, "checked") {
 		t.Error("show ignored checkbox did not render checked when the filter is active")
+	}
+}
+
+// TestDiscoveryPaginationReachesTrailingBlocks is the pagination fix itself
+// (#54 follow-up: "you can NEVER get to the trailing ones... which is a
+// bug"): discoverySeed() has exactly three blocks that clear the default
+// min_sessions=5 gate. A limit of 2 confines the first page to a
+// session-count-ranked slice — before pagination existed, the third block
+// was simply unreachable in any filter combination, because the fetch limit
+// truncated the ranked query itself with no offset to page past it. This
+// proves offset=2 (MoreURL's own query) surfaces exactly what the first
+// page could not.
+func TestDiscoveryPaginationReachesTrailingBlocks(t *testing.T) {
+	h, _ := newSeededHandler(t, discoverySeed()...)
+
+	first := serve(t, h, "GET", "/admin/ui/content/repeated?limit=2", false)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first page = %d, want 200", first.Code)
+	}
+	firstBody := first.Body.String()
+	if got := strings.Count(firstBody, "data-hash=\""); got != 2 {
+		t.Fatalf("first page rendered %d rows, want 2 (limit=2)", got)
+	}
+	if !strings.Contains(firstBody, "3</b> patterns") {
+		t.Errorf("first page's Matching count should still read the true total (3), got: %s", firstLine(firstBody))
+	}
+	if !strings.Contains(firstBody, "offset=2") {
+		t.Fatalf("first page has no load-more control pointing past its own limit; body = %s", firstLine(firstBody))
+	}
+
+	// Follow the load-more control exactly as the browser would: same
+	// query plus offset=2, as an htmx fragment request.
+	more := serve(t, h, "GET", "/admin/ui/content/repeated?limit=2&offset=2", true)
+	if more.Code != http.StatusOK {
+		t.Fatalf("second page = %d, want 200", more.Code)
+	}
+	moreBody := more.Body.String()
+	if got := strings.Count(moreBody, "data-hash=\""); got != 1 {
+		t.Fatalf("second page (offset=2) rendered %d rows, want 1 (the trailing block)", got)
+	}
+	// Exhausted: no further load-more control once every matching block
+	// has been reached.
+	if strings.Contains(moreBody, "load 2 more patterns") {
+		t.Error("the second page still offers \"load more\" after reaching every matching block")
+	}
+}
+
+// TestDiscoveryDefaultLimitIsOneHundred pins the raised first-page size
+// (#54 follow-up): a first page of 100 clears most operators' real pattern
+// count before pagination is ever needed, while still capping a
+// pathologically large result the way the JSON endpoint's own default (50)
+// always has.
+func TestDiscoveryDefaultLimitIsOneHundred(t *testing.T) {
+	if discoveryDefaultLimit != 100 {
+		t.Errorf("discoveryDefaultLimit = %d, want 100", discoveryDefaultLimit)
 	}
 }

@@ -1,4 +1,4 @@
-# Arbiter
+# <img src="internal/ui/static/favicon.svg" width="28" height="28" alt="" align="center"> Arbiter
 
 An LLM proxy/gateway with transparent routing decisions, composable classification axes, and independent observability.
 

@@ -97,7 +97,7 @@ guardrails:
       type: "prompt_rewrite"
       config:
         match: "You are opencode, the best coding agent"
-        mode: "prefix"          # exact | prefix | regex
+        mode: "prefix"          # exact | prefix | line_exact | line_prefix | paragraph_exact | paragraph_prefix | regex
         action: "strip"         # strip | replace | block | strip_paragraph
         where: ["system"]       # system | messages | all
 ```
@@ -111,9 +111,22 @@ needed here.
 
 | `mode` | Matches when |
 |---|---|
-| `exact` | the searched text **is** the pattern (ignoring case and surrounding whitespace) |
-| `prefix` | the searched text **starts with** the pattern (default) |
+| `exact` | the searched text **is** the pattern, anchored to the WHOLE field (ignoring case and surrounding whitespace) |
+| `prefix` | the searched text **starts with** the pattern, anchored to byte 0 of the WHOLE field (default) |
+| `line_exact` | some one **line** of the text, trimmed, equals the pattern |
+| `line_prefix` | some one **line** of the text starts with the pattern (after trimming its leading whitespace) |
+| `paragraph_exact` | some one **paragraph** (a blank-line-delimited chunk) equals the pattern |
+| `paragraph_prefix` | some one **paragraph** starts with the pattern |
 | `regex` | a Go regular expression matches anywhere |
+
+**`exact` and `prefix` anchor to the whole field, not to a line or paragraph
+within it.** The moment your system prompt is a concatenation of several
+sources — Arbiter's own framing followed by a client's injected preamble, say,
+or several stacked blocks — the target text is no longer at offset 0 / the
+entire field, so `exact`/`prefix` silently never match. Use `line_prefix` /
+`paragraph_prefix` (or their `_exact` counterparts) when the target text is a
+whole line or paragraph but not the first thing in the field; use `regex`
+(unanchored) for anything else.
 
 ### `action`
 

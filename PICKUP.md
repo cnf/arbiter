@@ -33,6 +33,11 @@ gains a `name` column for attachment filenames), §6 (#22 CLOSED).
 Updated again 2026-09-30 at `dde3912` — see §5 (#18 landed: cache-read/
 cache-write token pricing modeled end to end, plus a catalog-convert
 sidebug fix), §6 (#18 CLOSED).
+Updated again 2026-09-30 at `540c3cf` — see §5 (#75 landed in two commits,
+`acfbd69` OpenAI + `540c3cf` Anthropic: safe field diagnostics —
+message index/field/JSON type only, never the value — for a request whose
+`content`/`system` field is neither the accepted string nor array shape),
+§6 (#75 CLOSED).
 
 ---
 
@@ -141,12 +146,14 @@ container's mounted locations, toolchain wrapper, and scratch rules.
   actual thing never works end-to-end. When in doubt, ask what "done" means
   for the *real* problem, not the ticket text.
 
-## 5. Verified state as of `dde3912`
+## 5. Verified state as of `540c3cf`
 
 Landed most recently (all on `develop`):
 
 | commit | what |
 |---|---|
+| `540c3cf` | #75 (Anthropic half): the ticket was filed OpenAI-only because that's where the failure was noticed, not because Anthropic requests are exempt — `AnthropicMessage.Content` and `AnthropicSystem` have the identical bare-string-or-array wire ambiguity as the OpenAI side. `ContentShapeError` (added in `acfbd69` below) gains a `PerMessage` bool: true renders `messages[i].field: got <type>; expected string or array`, false (for the top-level `system` field, which has no message index) renders `field: got <type>; expected string or array`. New `AnthropicRequest.UnmarshalJSON` mirrors `OpenAIRequest`'s: on a per-message shape error it re-walks the raw `messages` array once to attach the correct index (the field-level unmarshaler can't see its own array position); a top-level `system` error or any unrelated error passes through unchanged. |
+| `acfbd69` | #75 (OpenAI half, as filed): `OpenAIMessageContent.UnmarshalJSON` returns a new `types.ContentShapeError` (`pkg/types/content_diagnostics.go`) — carrying only message index, field name, and the observed JSON type (`object`/`number`/`boolean`/...), never the value or message text — instead of the raw Go `json.UnmarshalTypeError` when `messages[i].content` is neither a string nor an array. `OpenAIRequest.UnmarshalJSON` catches that error and re-walks `messages` only on the failing path to fill in the index. `internal/http/handler.go`'s new `errorLogFields` surfaces `message_index`/`field`/`got_type` as structured log fields via `errors.As`, additively — the client-facing 400 status/body is unchanged. Malformed JSON and unrelated field mismatches (e.g. `max_tokens` as a string) keep the original generic error rather than guessing a location that isn't real. |
 | `dde3912` | #18: `cost_usd` priced plain input/output only; `cache_read_tokens`/`cache_write_tokens` were captured and stored but never priced in. `pkg/types.ModelCost`/`config.ModelCatalogEntry` gain `CacheReadCostPerMTok`/`CacheWriteCostPerMTok`; `cmd/catalog-convert` reads them from litellm (`cache_read_input_token_cost`/`cache_creation_input_token_cost`, scaled per-token→per-million like the existing fields) and models.dev (`cost.cache_read`/`cost.cache_write`, already per-million); `cmd/arbiter/builders.go` carries them into the runtime catalog; `Pipeline.computeCost` prices `usage.CacheRead`/`CacheWrite` at those rates, same formula as input/output, with an unstated rate pricing at 0 rather than being estimated from the plain rate. Sidebug fixed alongside: an unset provider `source:` bound positionally to `sources:`'s first entry regardless of kind, so listing models.dev before litellm made a litellm-only provider silently resolve against the wrong source and fail downstream with a confusing "no provider key" skip (`pickSource` in `cmd/catalog-convert/convert.go`); default source selection is now content-aware — it searches `sources:` in order for the first source that actually yields a match for that provider. Also added a generic `provider:` mapping key as a fallback for whichever kind-specific key (`litellm_provider`/`models_dev_provider`) is unset, covering the common case where the slug is the same across both source kinds; a kind-specific key still wins when set. New tests including `TestComputeCostPricesCacheTokens` (computeCost had no direct unit test before this) and `TestDefaultSourceIsContentAwareNotJustFirst` (the sidebug regression). No catalog YAML regenerated — none is checked into the repo. |
 | `40c4c1a` | #22: `content_refs` gains a `name TEXT` column (schema.sql + `addColumnIfMissing` migration, mirroring `request_kind`'s precedent) carrying an attachment's filename — required for re-emission fidelity on the OpenAI wire shape (`file.filename`/`input_file.filename` are mandatory there) but previously unrecoverable from storage (attachments are hash-only by the 2026-09-15 "save hash, don't save file" decision, and the filename was folded into the block hash but never stored as retrievable data). `types.ContentBlock.Name` and both translators already carried it end to end — only the storage layer had the gap. Lives on the reference row, not the hash-keyed `content` table, since the same bytes can arrive under different names (`role` already sets this precedent). `store.Block`/`store.ContentBlock` gain `Name`; `CaptureRequest`/`CaptureResponse`/`writeContent`/`contentFor`/`ContentForRequests` all touched. Empty for images on both wire formats, by design. No UI display added — out of scope per the ticket. |
 | `59a0b7d` | #63: tool definitions (captured since #60, never rendered) now show in the transcript inspector as a collapsed "tools offered (N, size)" section — name, optional description, raw schema behind the existing `transcript-snippet` toggle. Two places were silently dropping `tool_def` blocks (`msg_index = toolDefsMsgIndex = -1`, since a definition belongs to no single message): `ContentForRequests`' SQL only let a request-direction row through on `role='system'` or newest-`msg_index`, now also `block_type='tool_def'`; `newestRequestMessage` (`internal/ui/transcript.go`) exempted tool_def blocks the same way it already exempts nothing-per-turn narrowing for the system prompt. `splitBlocks` gained a `tool_def` case populating `Inspector.ToolDefs`/`ToolDefsBytes`. Sized in bytes (`fmtBytes`, SI/decimal: B/kB/MB/GB), not tokens — Arbiter has no real tokenizer, only a char/4 routing heuristic (`internal/classifier.estimateTokens`) never meant to be shown as fact, same reasoning `fmtChars` already documents. `TestTranscriptShowsToolDefinitions` confirmed to fail without the fix (no rendering at all, not a tautology) before the fix landed. Closes the last item on the pre-freeze UI backlog (#8 is the remaining open, still-frozen item). |
@@ -165,8 +172,8 @@ file), and further back `46114c5` (#38 closed), `db64885` (test gaps),
 The 11-item cleanup-pass list is exhausted.
 
 **Push state — run it, don't trust this file:** `git status -sb` / `git log
-origin/develop..develop`. At last write `develop` was **ahead 6 of
-`origin/develop`** (`...`, `dde3912`) — pushing is the user's step. `git
+origin/develop..develop`. At last write `develop` was **ahead 9 of
+`origin/develop`** (`...`, `540c3cf`) — pushing is the user's step. `git
 fetch` may fail in this container (`cannot run ssh: No such file or
 directory`); that's an environment limitation, not a signal the branches
 diverged further than shown.
@@ -195,6 +202,16 @@ undeployed as of last check; re-verify rather than assume either has
 landed live.
 
 ## 6. Open work — READ THIS BEFORE PICKING ANYTHING UP
+
+**#75 is CLOSED** (2026-09-30) — safe field diagnostics for a
+content-shape mismatch (object/number/boolean where a client should send a
+string or array) landed in two commits: `acfbd69` for OpenAI (as the ticket
+was originally filed) and `540c3cf` for Anthropic (added same-day once it
+was noticed the ticket's OpenAI-only scope was an oversight, not a
+decision — Anthropic's `messages[i].content`/`system` have the identical
+wire ambiguity). Verified by unit tests asserting the diagnostic never
+contains the submitted value/text; no live-deploy check needed, this is a
+pure parse/logging change with no behavior change for valid requests.
 
 **#18 is CLOSED** (2026-09-30) — cache-read/cache-write cost pricing
 landed as `dde3912`, verified by unit tests, no live-deploy check needed

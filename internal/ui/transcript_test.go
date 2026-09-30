@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -804,5 +805,220 @@ func TestTranscriptShowFullRevealsPastWireCap(t *testing.T) {
 
 	if !strings.Contains(page, marker) {
 		t.Errorf("a >8KB body was truncated before the marker at its end — \"show full\" can never reveal it:\n(body omitted, %d bytes)", len(page))
+	}
+}
+
+// The blue treatment for internal rows must not swallow the row states that
+// sit above it in the file. `.entry .row.internal` and the pre-existing
+// `.entry .row:hover` / `.row.selected` / `.row.error-row` rules all carry one
+// class beyond `.entry .row`, so specificity ties and layout order alone picks
+// the winner — meaning a colour rule here silently overrides hover, selection,
+// and the error colour.
+//
+// The colours are undecided for now (see the .internal block in app.css), so
+// this asserts the INVARIANT rather than a token: whichever colours internal
+// rows eventually get, if a base rule paints one, each state it would override
+// must be re-asserted after it. That keeps the guarantee live without pinning
+// a palette the design has not settled.
+func TestInternalRowKeepsRowStates(t *testing.T) {
+	css, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatalf("read embedded CSS: %v", err)
+	}
+	sheet := string(css)
+
+	// The treatment must hang off the transcript's own row, never a bare class
+	// name: .badge and .summary are shared with other pages, and an unscoped
+	// rule would repaint rows this change was never about.
+	for _, bare := range []string{"\n.badge.kind {", "\n.badge.kind\n", "\n.row.internal {"} {
+		if strings.Contains(sheet, bare) {
+			t.Errorf("internal-row styling is not scoped to .entry .row (%q): it would leak to other pages", bare)
+		}
+	}
+
+	// Every rule targeting an internal row, in source order. A "base" rule is
+	// one that is not already a state variant; those are the ones that can
+	// steal a state from the plain rules above them.
+	type rule struct {
+		sel string
+		at  int
+	}
+	var bases []rule
+	for _, m := range regexp.MustCompile(`\.entry \.row\.internal[^{]*\{`).FindAllStringIndex(sheet, -1) {
+		sel := strings.TrimSpace(sheet[m[0] : m[1]-1])
+		switch {
+		case strings.Contains(sel, ":hover"), strings.Contains(sel, ".selected"),
+			strings.Contains(sel, ".error-row"):
+			continue // a state re-assertion, not a base
+		}
+		bases = append(bases, rule{sel: sel, at: m[0]})
+	}
+
+	// No colour chosen yet: the class is present for the markup to hang off,
+	// and the rows correctly inherit the ordinary row treatment.
+	if len(bases) == 0 {
+		t.Log("internal rows carry no colour rule yet — nothing to re-assert; " +
+			"add the four state rules below when the palette is settled")
+		return
+	}
+
+	last := bases[len(bases)-1]
+	for _, state := range []string{
+		".entry .row.internal:hover {",
+		".entry .row.internal.selected {",
+		".entry .row.internal.error-row .dot {",
+		".entry .row.internal.error-row .main .summary {",
+	} {
+		at := strings.Index(sheet, state)
+		if at < 0 {
+			t.Errorf("%q paints internal rows on equal specificity to %q, overriding it; "+
+				"it needs a scoped re-assertion after the base rule", last.sel, state)
+			continue
+		}
+		if at < last.at {
+			t.Errorf("%q must come after the base %q (source order decides), or the base rule wins", state, last.sel)
+		}
+	}
+}
+
+// A title or subagent request is an internal call the client did not send
+// under its own prompt, and the list has to say so: #78 persisted the kind,
+// but summarizeTurn overwrote the badge with the turn's content label
+// ("reasoning"), so every internal row rendered exactly like an ordinary turn
+// and the kind never reached the page at all. These are the bytes the browser
+// gets, so this checks the rendered HTML, not the view model.
+func TestTranscriptListBadgesInternalRequestKinds(t *testing.T) {
+	now := time.Now().UTC()
+	key := "sess-kinds"
+
+	// Each internal kind gets a reasoning block, i.e. the shape that used to
+	// clobber the badge — the regression is only visible with content present.
+	internal := func(traceID, kind string, offset time.Duration) store.Event {
+		return store.Event{
+			TraceID: traceID, SessionKey: key, Kind: "client", RequestKind: kind,
+			Provider: "openrouter", Model: "openrouter/auto", StatusCode: 200,
+			Ts: now.Add(offset), LatencyMs: 2200,
+			Content: &store.CapturedContent{
+				Request:  []store.Block{{MsgIndex: 0, Position: 0, Role: "user", Kind: "text", Body: []byte("generate a title for this conversation")}},
+				Response: []store.Block{{MsgIndex: 0, Position: 0, Role: "assistant", Kind: "reasoning", Body: []byte("weighing the topic against the instructions")}},
+			},
+		}
+	}
+	userTurn := store.Event{
+		TraceID: "tr-user", SessionKey: key, Kind: "client",
+		Provider: "anthropic", Model: "claude-sonnet", StatusCode: 200,
+		Ts: now, LatencyMs: 900,
+		Content: &store.CapturedContent{
+			Request:  []store.Block{{MsgIndex: 0, Position: 0, Role: "user", Kind: "text", Body: []byte("what does the router do")}},
+			Response: []store.Block{{MsgIndex: 0, Position: 0, Role: "assistant", Kind: "text", Body: []byte("it picks a provider")}},
+		},
+	}
+
+	h, _ := newSeededHandler(t, userTurn, internal("tr-title", "title", time.Second), internal("tr-sub", "subagent", 2*time.Second))
+	body := serve(t, h, "GET", "/admin/ui/session?key="+key, false).Body.String()
+
+	// The kind reaches the list as a badge of its own, for each internal kind.
+	for _, want := range []string{
+		`<span class="badge kind">title</span>`,
+		`<span class="badge kind">subagent</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("transcript list missing %q — an internal request's kind must be listed\n--- body ---\n%s", want, body)
+		}
+	}
+
+	// The rows carry the class the blue treatment hangs off, and the ordinary
+	// user turn does not — the distinction is the whole point.
+	if n := strings.Count(body, `class="row internal"`); n != 2 {
+		t.Errorf("got %d rows marked internal, want 2 (title + subagent); a user turn must not be:\n--- body ---\n%s", n, body)
+	}
+	if !strings.Contains(body, `class="row" data-id=`) {
+		t.Errorf("the ordinary user turn lost its plain row class:\n--- body ---\n%s", body)
+	}
+
+	// The content label no longer replaces the kind — the exact regression.
+	// Scoped to the internal rows: an ordinary turn legitimately badges its own
+	// reasoning, so a page-wide Contains would fail on a correct page.
+	for _, m := range regexp.MustCompile(`<div class="row internal".*?</div>`).FindAllString(body, -1) {
+		if strings.Contains(m, `<span class="badge">reasoning</span>`) {
+			t.Errorf("an internal row still fell back to its content label instead of its kind:\n%s", m)
+		}
+	}
+
+	// An internal row keeps a content summary beside its kind, so the line
+	// reads "subagent — <what it did>" rather than a bare badge.
+	if !strings.Contains(body, "weighing the topic against the instructions") {
+		t.Errorf("an internal row lost its content summary:\n--- body ---\n%s", body)
+	}
+
+	// The inspector header's kind chip: the LABEL is the change (it names the
+	// internal call), and the class records the intent that it is a kind label
+	// rather than a warning. Its colour is a follow-up — see
+	// TestKindChipKeepsKindClassOnWarnColour for why it is still warn.
+	for _, want := range []string{
+		`<span class="chip kind">title</span>`,
+		`<span class="chip kind">subagent</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("inspector header missing %q — the kind must be labelled for a client turn\n--- body ---\n%s", want, body)
+		}
+	}
+}
+
+// Internal rows carry no colour of their own yet: DESIGN.md has drifted from
+// the intended look, so the palette is being settled before any token is
+// picked. This pins the neutral state so a stray rule cannot quietly reintroduce
+// a colour that then reads wrong against the rest of the UI, and so the point
+// where colours land is a deliberate, visible change rather than a drift.
+func TestInternalRowsCarryNoColourYet(t *testing.T) {
+	css, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatalf("read embedded CSS: %v", err)
+	}
+	sheet := string(css)
+
+	// Walk every rule whose selector targets an internal row and inspect its
+	// declarations, rather than searching for particular tokens: this stays
+	// honest whichever colour someone reaches for.
+	for _, m := range regexp.MustCompile(`\.entry \.row\.internal[^{]*\{[^}]*\}`).FindAllString(sheet, -1) {
+		brace := strings.Index(m, "{")
+		sel, decls := strings.TrimSpace(m[:brace]), m[brace:]
+		for _, colour := range []string{"color:", "background:", "border-color:", "box-shadow:"} {
+			if strings.Contains(decls, colour) {
+				t.Errorf("internal rows have a %s declaration again (%q) — the palette is\n"+
+					"undecided (DESIGN.md has drifted from the intended look). Either settle\n"+
+					"the token deliberately and re-assert :hover/.selected/.error-row, or\n"+
+					"leave these rows inheriting the ordinary treatment.", colour, sel)
+			}
+		}
+	}
+}
+
+// The kind chip's CLASS is what says "this is a kind label, not a warning".
+// Its colour is deliberately unchanged for now — it still resolves to the warn
+// token, which reads as a problem indicator on ordinary title/subagent traffic,
+// but repainting it means picking a palette token, and DESIGN.md's drift means
+// that choice has to be made with the rest of the colours, not ahead of it.
+// This pins the class so the intent is recorded; the colour is a follow-up.
+func TestKindChipKeepsKindClassOnWarnColour(t *testing.T) {
+	css, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatalf("read embedded CSS: %v", err)
+	}
+	sheet := string(css)
+
+	at := strings.Index(sheet, ".f-head .chip.kind {")
+	if at < 0 {
+		t.Fatal("the kind chip has no rule of its own")
+	}
+	rule := sheet[at : strings.Index(sheet[at:], "}")+at]
+	// Unchanged on purpose. When the palette is settled, this assertion and
+	// the rule change together — that pairing is the reminder.
+	if !strings.Contains(rule, "var(--warn)") {
+		t.Errorf("the kind chip's colour changed outside the palette decision; it should still\n"+
+			"resolve to the old token until a colour is chosen deliberately, got:\n%s", rule)
+	}
+	if strings.Contains(sheet, ".f-head .chip.warn {") {
+		t.Error("the chip rule kept a .warn selector while the markup uses .kind — the class would not apply")
 	}
 }

@@ -18,8 +18,8 @@ trip (transcript.js moves the full text into the content modal). */}}
     <h2>{{if .Seq}}#{{.Seq}} — {{end}}request {{.ID}}</h2>
     <span class="chip">{{.Provider}}/{{.Model}}</span>
     {{if ge .StatusCode 400}}<span class="chip err">HTTP {{.StatusCode}}</span>{{end}}
-    {{if eq .Kind "client"}}{{if .RequestKind}}<span class="chip warn">{{.RequestKind}}</span>{{end}}
-    {{else}}<span class="chip warn">{{.Kind}}</span>{{end}}
+    {{if eq .Kind "client"}}{{if .RequestKind}}<span class="chip kind">{{.RequestKind}}</span>{{end}}
+    {{else}}<span class="chip kind">{{.Kind}}</span>{{end}}
     {{if .Inspector.SystemPrompt.Present}}
     <button class="preamble-btn{{if .Inspector.SystemPrompt.Guardrailed}} touched{{end}}" type="button"
             data-preamble-trigger

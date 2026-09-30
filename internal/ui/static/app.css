@@ -721,6 +721,20 @@ footer.appfoot .spacer {
 .entry .row .side { display: flex; gap: 8px; justify-content: flex-end; color: var(--text-faint); font-size: 10.5px; align-self: center; }
 .entry .row.error-row .main .summary { color: var(--err); }
 .entry .row.error-row .dot { background: var(--err); }
+/* An internal request (title-generation, subagent) is NOT a user message, and
+ * the list marks them apart — the .internal class carries that distinction and
+ * the kind badge it hangs off.
+ *
+ * The COLOURS are deliberately not set yet. A first pass used the brand blue,
+ * but DESIGN.md has drifted from the intended look, so choosing a colour now
+ * risks one that reads wrong against the rest of the UI; the token and the
+ * accent's role are being settled first. Until then these rows inherit the
+ * ordinary row treatment above, so they render as plain rows that carry their
+ * kind badge — correct markup, neutral colours, and one place to change when
+ * the palette is decided. Deliberately NOT re-declared: :hover, .selected and
+ * .error-row already win here by source order, so nothing needs re-asserting
+ * while the base treatment paints nothing. Whoever adds a colour must
+ * re-assert those four states (see the test that guards this). */
 
 /* internal calls a turn spawned (classifier/title/subagent today), indented
  * under their parent — one row each, own selectable inspector. */
@@ -770,7 +784,7 @@ footer.appfoot .spacer {
   border: 1px solid var(--border); color: var(--text-dim);
 }
 .f-head .chip.err { border-color: var(--err); color: var(--err); }
-.f-head .chip.warn { border-color: var(--warn); color: var(--warn); }
+.f-head .chip.kind { border-color: var(--warn); color: var(--warn); }
 .f-sub { color: var(--text-faint); font-size: 11.5px; font-family: var(--mono); margin-bottom: 16px; }
 .f-sub .mono { color: var(--text-dim); }
 

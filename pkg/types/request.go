@@ -477,12 +477,13 @@ type AnthropicContent struct {
 	IsError   bool        `json:"is_error,omitempty"`    // tool_result
 
 	// Source and Title belong to image/document blocks: Source carries either
-	// inline base64 or a URL (the two forms Anthropic accepts), and Title is
-	// the document's name. Held as a map/string rather than a typed struct
-	// because nothing on the inbound side reads them yet — Anthropic
-	// client-facing is deliberately out of scope for now — so a shape that
-	// only has to survive marshalling is better than one that pretends to
-	// validate a payload nothing consumes.
+	// inline base64 ({"type":"base64","media_type":...,"data":...}) or a URL
+	// ({"type":"url","url":...}) — the two forms Anthropic accepts — and
+	// Title is the document's name. Held as a map rather than a typed struct
+	// because the two shapes share no required fields beyond `type`; see
+	// anthropicSourceToParts (internal/translator/convert.go) for the inbound
+	// reader, which treats an unrecognized shape as an attachment with no
+	// data rather than failing the request (issue #23).
 	Source map[string]interface{} `json:"source,omitempty"`
 	Title  string                 `json:"title,omitempty"`
 }

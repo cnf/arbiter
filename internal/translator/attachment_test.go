@@ -331,3 +331,96 @@ func TestAttachmentNeverFoldsIntoTheSystemPrompt(t *testing.T) {
 		t.Error("base64 image data leaked into the system prompt")
 	}
 }
+
+// TestAnthropicInboundImageBlockParses proves the Anthropic client-facing side
+// of #23: a client sending Anthropic's own `image` block with an inline
+// base64 source must produce an attachment block, not a silently-dropped
+// empty text block.
+func TestAnthropicInboundImageBlockParses(t *testing.T) {
+	payload := `{
+		"model": "claude-3-haiku",
+		"max_tokens": 100,
+		"messages": [{"role": "user", "content": [
+			{"type": "text", "text": "what is this?"},
+			{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo"}}
+		]}]
+	}`
+
+	tr := NewDefaultTranslator()
+	norm, err := tr.ToNormalized([]byte(payload), "anthropic")
+	if err != nil {
+		t.Fatalf("anthropic image block must parse, got: %v", err)
+	}
+	blocks := norm.Messages[0].Content
+	if len(blocks) != 2 {
+		t.Fatalf("blocks = %d, want 2 (text + attachment): %+v", len(blocks), blocks)
+	}
+	att := blocks[1]
+	if att.Type != "attachment" || !att.IsImage() {
+		t.Fatalf("block 1 = %+v, want an image attachment", att)
+	}
+	if att.MediaType != "image/png" {
+		t.Errorf("media type = %q, want image/png", att.MediaType)
+	}
+	if att.Data != "iVBORw0KGgo" {
+		t.Errorf("data = %q, want the base64 payload", att.Data)
+	}
+	if att.IsURL {
+		t.Error("IsURL = true for a base64 source, want false")
+	}
+}
+
+// TestAnthropicInboundDocumentBlockCarriesTitle proves a document block's
+// `title` becomes the attachment's Name, mirroring OpenAI's `filename` — the
+// shape #23 called out explicitly.
+func TestAnthropicInboundDocumentBlockCarriesTitle(t *testing.T) {
+	payload := `{
+		"model": "claude-3-haiku",
+		"max_tokens": 100,
+		"messages": [{"role": "user", "content": [
+			{"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0"}, "title": "report.pdf"}
+		]}]
+	}`
+
+	tr := NewDefaultTranslator()
+	norm, err := tr.ToNormalized([]byte(payload), "anthropic")
+	if err != nil {
+		t.Fatalf("anthropic document block must parse, got: %v", err)
+	}
+	att := norm.Messages[0].Content[0]
+	if att.Type != "attachment" || att.IsImage() {
+		t.Fatalf("block = %+v, want a non-image attachment", att)
+	}
+	if att.MediaType != "application/pdf" {
+		t.Errorf("media type = %q, want application/pdf", att.MediaType)
+	}
+	if att.Name != "report.pdf" {
+		t.Errorf("name = %q, want report.pdf carried from title", att.Name)
+	}
+}
+
+// TestAnthropicInboundURLSourcePassesThrough proves the second source shape
+// — a URL rather than inline base64 — is recognized and forwarded as a URL
+// attachment rather than being treated as (empty) base64 data.
+func TestAnthropicInboundURLSourcePassesThrough(t *testing.T) {
+	payload := `{
+		"model": "claude-3-haiku",
+		"max_tokens": 100,
+		"messages": [{"role": "user", "content": [
+			{"type": "image", "source": {"type": "url", "url": "https://example.com/cat.png"}}
+		]}]
+	}`
+
+	tr := NewDefaultTranslator()
+	norm, err := tr.ToNormalized([]byte(payload), "anthropic")
+	if err != nil {
+		t.Fatalf("anthropic url source must parse, got: %v", err)
+	}
+	att := norm.Messages[0].Content[0]
+	if !att.IsURL {
+		t.Fatalf("att = %+v, want IsURL = true", att)
+	}
+	if att.Data != "https://example.com/cat.png" {
+		t.Errorf("data = %q, want the URL verbatim", att.Data)
+	}
+}

@@ -47,11 +47,14 @@ func normalizedToOpenAIFinishReason(reason string) string {
 
 // --- content block conversion ---
 //
-// NOTE: image/document blocks aren't translated yet (v1 scope is text +
-// tools only, per the project's deferred-features list). Unknown Anthropic
-// content types fall back to their raw text field, which is empty for pure
-// image blocks — they're silently dropped rather than erroring, so a
-// vision-capable request degrades to text-only instead of failing outright.
+// Anthropic client-facing attachment parsing is intentionally minimal (small
+// market; see issue #23): `source` is read for both its wire shapes — inline
+// base64 ({"type":"base64","media_type":...,"data":...}) and a URL
+// ({"type":"url","url":...}) — and `title` becomes the attachment's Name,
+// mirroring OpenAI's `filename`. Anything else in `source` (an unrecognized
+// source `type`, or one missing its payload) degrades to an attachment with
+// no data rather than erroring, matching the OpenAI side's "skip, don't
+// fail" behavior for content Arbiter doesn't fully understand.
 
 func anthropicContentToBlock(c types.AnthropicContent) types.ContentBlock {
 	switch c.Type {
@@ -71,9 +74,33 @@ func anthropicContentToBlock(c types.AnthropicContent) types.ContentBlock {
 			ToolResult:      toolResultContentToText(c.Content),
 			ToolIsError:     c.IsError,
 		}
+	case "image", "document":
+		mediaType, data, isURL := anthropicSourceToParts(c.Source)
+		if c.Type == "image" {
+			return types.AttachmentImageBlock(mediaType, data, "", isURL)
+		}
+		return types.AttachmentBlock(mediaType, data, c.Title, isURL)
 	default:
 		return types.ContentBlock{Type: "text", Text: c.Text}
 	}
+}
+
+// anthropicSourceToParts reads an Anthropic content block's `source` map,
+// which comes in exactly two shapes on the wire: base64 (media_type + data)
+// or a url. Source is untyped (map[string]interface{}) because nothing
+// inbound validated it before this — see AnthropicContent.Source — so every
+// field read here is defensive against a missing or wrong-typed key.
+func anthropicSourceToParts(source map[string]interface{}) (mediaType, data string, isURL bool) {
+	if source == nil {
+		return "", "", false
+	}
+	if t, _ := source["type"].(string); t == "url" {
+		url, _ := source["url"].(string)
+		return "", url, true
+	}
+	mediaType, _ = source["media_type"].(string)
+	data, _ = source["data"].(string)
+	return mediaType, data, false
 }
 
 // toolResultContentToText flattens a tool_result's Content field, which per

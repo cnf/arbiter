@@ -398,3 +398,97 @@ func TestEmptyStringsBecomeNull(t *testing.T) {
 		}
 	}
 }
+
+// TestCapabilitiesRoundTrip is the store half of the classified-signals work:
+// required_capabilities_json has three meaningful states and all three must
+// survive a write and a read. NULL means classification never ran; [] means it
+// ran and no classifier named a capability; a populated list is what matched.
+// Collapsing [] into NULL is exactly the defect this column exists to fix — a
+// request that WAS classified then looked identical to one that was not.
+func TestCapabilitiesRoundTrip(t *testing.T) {
+	db := openMemory(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		trace string
+		caps  []string
+		raw   string // stored JSON text; "NULL" means SQL NULL
+	}{
+		{"caps-nil", nil, "NULL"},
+		{"caps-empty", []string{}, "[]"},
+		{"caps-present", []string{"vision", "tool_use"}, `["vision","tool_use"]`},
+	}
+	for _, tc := range cases {
+		ev := Event{
+			TraceID: tc.trace, Format: "openai", Provider: "p", Model: "m",
+			StatusCode: 200, RequiredCapabilities: tc.caps,
+		}
+		if err := insertRequest(ctx, db, ev); err != nil {
+			t.Fatalf("insert %s: %v", tc.trace, err)
+		}
+		var raw sql.NullString
+		if err := db.QueryRowContext(ctx,
+			`SELECT required_capabilities_json FROM requests WHERE trace_id = ?`, tc.trace).Scan(&raw); err != nil {
+			t.Fatalf("read %s: %v", tc.trace, err)
+		}
+		if tc.raw == "NULL" {
+			if raw.Valid {
+				t.Errorf("%s stored %q, want SQL NULL", tc.trace, raw.String)
+			}
+			continue
+		}
+		if !raw.Valid || raw.String != tc.raw {
+			t.Errorf("%s stored %q (valid %v), want %s", tc.trace, raw.String, raw.Valid, tc.raw)
+		}
+	}
+
+	// Read back through both projections: the list row and the detail row are
+	// separate scans with separate column lists, so a column dropped from
+	// either would silently flatten the distinction the write side keeps.
+	r := &Reader{db: db}
+	rows, err := r.ListRequests(ctx, RequestFilter{})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	byTrace := make(map[string]RequestRow, len(rows))
+	for _, row := range rows {
+		byTrace[row.TraceID] = row
+	}
+	for _, tc := range cases {
+		if _, ok := byTrace[tc.trace]; !ok {
+			t.Fatalf("ListRequests did not return %s", tc.trace)
+		}
+	}
+
+	if got := byTrace["caps-nil"].RequiredCapabilities; got != nil {
+		t.Errorf("list: NULL capabilities read back as %v, want nil", got)
+	}
+	if got := byTrace["caps-empty"].RequiredCapabilities; got == nil || len(got) != 0 {
+		t.Errorf("list: [] capabilities read back as %v (nil %v), want empty non-nil", got, got == nil)
+	}
+	if got := byTrace["caps-present"].RequiredCapabilities; len(got) != 2 || got[0] != "vision" || got[1] != "tool_use" {
+		t.Errorf("list: capabilities = %v, want [vision tool_use]", got)
+	}
+
+	detail, ok, err := r.GetRequest(ctx, byTrace["caps-empty"].ID)
+	if err != nil || !ok {
+		t.Fatalf("GetRequest(empty) = ok %v, err %v", ok, err)
+	}
+	if detail.RequiredCapabilities == nil {
+		t.Error("detail: [] capabilities read back as nil, want empty non-nil")
+	}
+	detail, ok, err = r.GetRequest(ctx, byTrace["caps-present"].ID)
+	if err != nil || !ok {
+		t.Fatalf("GetRequest(present) = ok %v, err %v", ok, err)
+	}
+	if len(detail.RequiredCapabilities) != 2 {
+		t.Errorf("detail: capabilities = %v, want 2 entries", detail.RequiredCapabilities)
+	}
+	detail, ok, err = r.GetRequest(ctx, byTrace["caps-nil"].ID)
+	if err != nil || !ok {
+		t.Fatalf("GetRequest(nil) = ok %v, err %v", ok, err)
+	}
+	if detail.RequiredCapabilities != nil {
+		t.Errorf("detail: NULL capabilities read back as %v, want nil", detail.RequiredCapabilities)
+	}
+}

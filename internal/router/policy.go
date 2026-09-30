@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	arbitererrors "github.com/cnf/arbiter/pkg/errors"
 	"github.com/cnf/arbiter/pkg/types"
@@ -70,9 +71,32 @@ func (c PolicyCondition) Matches(sig types.Signals) bool {
 	return true
 }
 
-// String renders the condition for log lines and error messages.
+// String renders only the configured predicates that participated in a match.
+// A condition with no predicates is an explicit catch-all.
 func (c PolicyCondition) String() string {
-	return fmt.Sprintf("domain=%q effort=%q capabilities=%v cost_class=%q", c.Domain, c.Effort, c.Capabilities, c.CostClass)
+	parts := make([]string, 0, 6)
+	if c.Domain != "" {
+		parts = append(parts, fmt.Sprintf("domain=%q", c.Domain))
+	}
+	if c.Effort != "" {
+		parts = append(parts, fmt.Sprintf("effort=%q", c.Effort))
+	}
+	if len(c.Capabilities) > 0 {
+		parts = append(parts, fmt.Sprintf("capabilities=%v", c.Capabilities))
+	}
+	if c.CostClass != "" {
+		parts = append(parts, fmt.Sprintf("cost_class=%q", c.CostClass))
+	}
+	if c.RequestKind != "" {
+		parts = append(parts, fmt.Sprintf("request_kind=%q", c.RequestKind))
+	}
+	if len(c.RequiresInputModalities) > 0 {
+		parts = append(parts, fmt.Sprintf("requires_input_modalities=%v", c.RequiresInputModalities))
+	}
+	if len(parts) == 0 {
+		return "match all"
+	}
+	return strings.Join(parts, " ")
 }
 
 // PolicyRule maps a condition to a routing target. Exactly one of Target

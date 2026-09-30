@@ -38,19 +38,25 @@ trip (transcript.js moves the full text into the content modal). */}}
 
   {{if .Error}}<div class="error-block"><b>request-level error</b><br>{{.Error}}</div>{{end}}
 
-  {{if .Inspector.IsClassifier}}
+  {{/* ShowSignals and Signals are both derived once in buildTurn (see
+  signalStateFor) rather than re-derived here from the row's fields. */}}
+  {{if .Inspector.ShowSignals}}
   <div class="f-section">
-    <div class="label">classifier verdict</div>
+    <div class="label">{{if .Inspector.IsClassifier}}classifier verdict{{else}}classified signals{{end}}</div>
     <div class="classifier-verdict">
       <div class="axes">
-        {{if .Inspector.HasVerdict}}
+        {{if .Inspector.Signals.HasValues}}
           {{if .Domain}}<span class="axis">domain={{.Domain}}</span>{{end}}
           {{if .Effort}}<span class="axis">effort={{.Effort}}</span>{{end}}
           {{if .CostClass}}<span class="axis">cost_class={{.CostClass}}</span>{{end}}
-          {{if gt .Inspector.Confidence 0.0}}<span class="axis">confidence={{pct .Inspector.Confidence}}</span>{{end}}
+          {{if .RequiredCapabilities}}<span class="axis">capabilities={{range $i, $cap := .RequiredCapabilities}}{{if $i}}, {{end}}{{$cap}}{{end}}</span>{{end}}
         {{else}}
-          <span class="axis none">no axis reported</span>
+          <span class="axis none">{{.Inspector.Signals.Label}}</span>
         {{end}}
+        {{/* Confidence is not one of the axes: a call can be sure and still
+        name nothing, so it is shown beside whichever of the two states this
+        is rather than folded into the value list. */}}
+        {{if gt .Inspector.Confidence 0.0}}<span class="axis">confidence={{pct .Inspector.Confidence}}</span>{{end}}
       </div>
       <div class="rationale">{{if .RoutingRationale}}{{.RoutingRationale}}{{else}}(no rationale captured){{end}}</div>
     </div>
@@ -68,7 +74,7 @@ trip (transcript.js moves the full text into the content modal). */}}
     </div>
   </div>
 
-  {{if and .RoutingRationale (not .Inspector.IsClassifier)}}
+  {{if and .RoutingRationale (not .Inspector.ShowSignals)}}
   <div class="f-section">
     <div class="label">routing rationale</div>
     <div class="rationale-box">{{.RoutingRationale}}</div>

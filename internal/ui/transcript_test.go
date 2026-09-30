@@ -640,7 +640,45 @@ func TestTranscriptPreambleModalShowsBothForms(t *testing.T) {
 	}
 }
 
-// #59: each turn's own inspector shows the system prompt that request
+func TestTranscriptShowsClassifierSignals(t *testing.T) {
+	now := time.Now().UTC()
+	events := []store.Event{
+		{TraceID: "classified", SessionKey: "classifier-signals", Kind: "client", Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now, RoutingRationale: `policy router "test": domain=discovery -> provider "p"`,
+			Domain: "discovery", Effort: "hard", CostClass: "free", Confidence: 0.91,
+			RequiredCapabilities: []string{"vision", "tool_use"}},
+		{TraceID: "no-match", SessionKey: "classifier-signals", Kind: "client", Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now.Add(time.Second), RequiredCapabilities: []string{}},
+		// A classification that named only a capability, no axis. This is the
+		// case the signalState enum exists to get right: reading the axes
+		// alone would call it "no signals matched" and hide the capability
+		// that was actually detected.
+		{TraceID: "capability-only", SessionKey: "classifier-signals", Kind: "client", Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now.Add(2 * time.Second), RequiredCapabilities: []string{"vision"}},
+		{TraceID: "unavailable", SessionKey: "classifier-signals", Kind: "client", Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now.Add(3 * time.Second)},
+	}
+	h, _ := newSeededHandler(t, events...)
+	body := serve(t, h, "GET", "/admin/ui/session?key=classifier-signals", false).Body.String()
+	if !strings.Contains(body, `policy router &#34;test&#34;: domain=discovery -&gt; provider &#34;p&#34;`) {
+		t.Error("matched routing predicate not found in rationale")
+	}
+	for _, empty := range []string{`effort=""`, `cost_class=""`, "capabilities=[]", "request_kind=\"\""} {
+		if strings.Contains(body, empty) {
+			t.Errorf("rationale contains unused predicate %q", empty)
+		}
+	}
+	if !strings.Contains(body, "classified signals") || !strings.Contains(body, "capabilities=vision, tool_use") {
+		t.Error("separately rendered classified signals were not present")
+	}
+	if strings.Count(body, "classified; no signals matched") != 1 {
+		t.Errorf("no-match label count = %d, want one (the empty case only; the capability-only turn must render its value instead)", strings.Count(body, "classified; no signals matched"))
+	}
+	if !strings.Contains(body, `<span class="axis">capabilities=vision</span>`) {
+		t.Error("capability-only classification did not render its capability as a standalone value")
+	}
+}
+
 // actually ran with, not just the session opener's — and a classifier child
 // exposes its own system prompt too. newestRequestMessage narrows splitBlocks
 // to the request's newest message index, which would otherwise silently

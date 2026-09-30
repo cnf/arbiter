@@ -83,9 +83,9 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 		// event-store status mapping below can both see the real type.
 		var stopErr *arbitererrors.StopError
 		if errors.As(err, &stopErr) {
-			return types.Route{}, types.Signals{}, err
+			return types.Route{}, sig, err
 		}
-		return types.Route{}, types.Signals{}, arbitererrors.NewRoutingError("route request", err)
+		return types.Route{}, sig, arbitererrors.NewRoutingError("route request", err)
 	}
 	p.logger.LogRouting(ctx, route, sig, time.Since(routeStart))
 	return route, sig, nil
@@ -230,7 +230,7 @@ func (p *Pipeline) applyForceAlias(req *types.NormalizedRequest, sig types.Signa
 		case classifier.AxisCostClass, "cost_sensitivity":
 			sig.CostClass = values[0]
 		case classifier.AxisCapabilities:
-			sig.RequiredCapabilities = values
+			sig.RequiredCapabilities = append([]string{}, values...)
 		}
 	}
 	// An alias-declared request kind OVERRIDES what classification produced:

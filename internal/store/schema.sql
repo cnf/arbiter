@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS requests (
     effort                TEXT,
     cost_class            TEXT,
     confidence            REAL,
+    required_capabilities_json TEXT,
     input_tokens          INTEGER NOT NULL DEFAULT 0,
     output_tokens         INTEGER NOT NULL DEFAULT 0,
     cache_read_tokens     INTEGER NOT NULL DEFAULT 0,

@@ -109,10 +109,9 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 
 	route, sig, err := p.resolveRoute(ctx, req, hasKey, promptHash, start)
 	if err != nil {
-		// Routing failed (no rule matched and no fallback router, a config
-		// the request can't be routed under, or a deliberate `stop` rule).
-		// Same reasoning as a guardrail rejection (#5): give it a real row.
-		p.recordFailed(ctx, traceID, sessionKey, format, req.Model, start, err, content)
+		// The classifier ran before route selection, so retain its merged
+		// signals on a routing refusal as well as a successful route.
+		p.recordFailed(ctx, traceID, sessionKey, format, req.Model, start, err, content, sig)
 		return nil, err
 	}
 
@@ -129,24 +128,25 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 			provider = route.Provider
 		}
 		p.record(store.Event{
-			TraceID:          traceID,
-			SessionKey:       sessionKey,
-			Format:           format,
-			Provider:         provider,
-			Model:            req.Model,
-			AliasUsed:        p.aliasName(req.Model),
-			RoutingRationale: route.Rationale,
-			Domain:           sig.Domain,
-			RequestKind:      sig.RequestKind,
-			Effort:           sig.Effort,
-			CostClass:        sig.CostClass,
-			Confidence:       sig.Confidence,
-			ArrivalTs:        start,
-			LatencyMs:        time.Since(start).Milliseconds(),
-			StatusCode:       status,
-			Error:            err.Error(),
-			Content:          contentOrNil(content),
-			Headers:          headers,
+			TraceID:              traceID,
+			SessionKey:           sessionKey,
+			Format:               format,
+			Provider:             provider,
+			Model:                req.Model,
+			AliasUsed:            p.aliasName(req.Model),
+			RoutingRationale:     route.Rationale,
+			Domain:               sig.Domain,
+			RequestKind:          sig.RequestKind,
+			Effort:               sig.Effort,
+			CostClass:            sig.CostClass,
+			Confidence:           sig.Confidence,
+			RequiredCapabilities: sig.RequiredCapabilities,
+			ArrivalTs:            start,
+			LatencyMs:            time.Since(start).Milliseconds(),
+			StatusCode:           status,
+			Error:                err.Error(),
+			Content:              contentOrNil(content),
+			Headers:              headers,
 		})
 		return nil, err
 	}
@@ -189,26 +189,27 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		content.Response = store.CaptureResponse(resp, "assistant")
 	}
 	p.record(store.Event{
-		TraceID:          traceID,
-		SessionKey:       sessionKey,
-		Format:           format,
-		Provider:         served.Provider,
-		Model:            served.Model,
-		ActualModel:      actualModel,
-		AliasUsed:        p.aliasName(req.Model),
-		RoutingRationale: served.Rationale,
-		Domain:           sig.Domain,
-		RequestKind:      sig.RequestKind,
-		Effort:           sig.Effort,
-		CostClass:        sig.CostClass,
-		Confidence:       sig.Confidence,
-		Usage:            usage,
-		Content:          contentOrNil(content),
-		ArrivalTs:        start,
-		LatencyMs:        time.Since(start).Milliseconds(),
-		StatusCode:       http.StatusOK,
-		ToolCalls:        toolCallNames(resp.Content),
-		Headers:          headers,
+		TraceID:              traceID,
+		SessionKey:           sessionKey,
+		Format:               format,
+		Provider:             served.Provider,
+		Model:                served.Model,
+		ActualModel:          actualModel,
+		AliasUsed:            p.aliasName(req.Model),
+		RoutingRationale:     served.Rationale,
+		Domain:               sig.Domain,
+		RequestKind:          sig.RequestKind,
+		Effort:               sig.Effort,
+		CostClass:            sig.CostClass,
+		Confidence:           sig.Confidence,
+		RequiredCapabilities: sig.RequiredCapabilities,
+		Usage:                usage,
+		Content:              contentOrNil(content),
+		ArrivalTs:            start,
+		LatencyMs:            time.Since(start).Milliseconds(),
+		StatusCode:           http.StatusOK,
+		ToolCalls:            toolCallNames(resp.Content),
+		Headers:              headers,
 	})
 	return out, nil
 }

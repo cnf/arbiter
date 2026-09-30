@@ -480,6 +480,14 @@ func axesAllSet(axes []string, merged *types.Signals, axisConfidence map[string]
 // the priority order, which buildClassifiers already preserves.
 func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedRequest) (types.Signals, error) {
 	var merged types.Signals
+	// RequiredCapabilities is initialized to a non-nil empty slice so that
+	// "the merge ran and no classifier named a capability" is distinguishable
+	// on the recorded row from "classification never ran" — the latter leaves
+	// this nil (see pipeline.classify with no classifiers configured, and the
+	// signals-less short-circuits in resolveRoute). Without this, a real
+	// request that matched nothing persisted exactly the same NULL as a row
+	// that was never classified, and no reader could tell the two apart.
+	merged.RequiredCapabilities = []string{}
 	axisConfidence := make(map[string]float64)
 	capSeen := make(map[string]bool)
 	sawAxisConfidence := false

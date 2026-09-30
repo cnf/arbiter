@@ -78,6 +78,25 @@ func TestMergedClassifierUnionsCapabilities(t *testing.T) {
 	}
 }
 
+// An initialized-but-empty capability set is the merge's way of saying
+// "classification ran and nothing matched". Keeping it non-nil is what lets a
+// stored row distinguish that from a request classification never touched.
+func TestMergedClassifierNoCapabilitiesIsEmptyNotNil(t *testing.T) {
+	hc := NewHeuristicClassifier("domain", AxisDomain, map[string][]string{"chat": {"hello"}})
+	merged := NewMergedClassifier("merged", []Classifier{hc})
+
+	sig, err := merged.Classify(context.Background(), req("what is the capital of France"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.RequiredCapabilities == nil {
+		t.Fatal("RequiredCapabilities is nil, want an empty non-nil slice: a merge that ran must not record the same value as one that never did")
+	}
+	if len(sig.RequiredCapabilities) != 0 {
+		t.Fatalf("RequiredCapabilities = %v, want empty", sig.RequiredCapabilities)
+	}
+}
+
 // TestMergedClassifierPerAxisConfidence guards against a merge bug where a
 // single global "highest confidence wins" would let a high-confidence domain
 // classifier's result also block a lower-confidence effort classifier from

@@ -16,6 +16,22 @@ func testProviders() map[string]types.ProviderConfig {
 	}
 }
 
+func TestPolicyConditionStringShowsOnlyUsedPredicates(t *testing.T) {
+	condition := PolicyCondition{
+		Domain:                  "discovery",
+		Capabilities:            []string{"vision", "tool_use"},
+		RequestKind:             "title",
+		RequiresInputModalities: []string{"image"},
+	}
+	if got, want := condition.String(), `domain="discovery" capabilities=[vision tool_use] request_kind="title" requires_input_modalities=[image]`; got != want {
+		t.Fatalf("PolicyCondition.String() = %q, want %q", got, want)
+	}
+
+	if got, want := (PolicyCondition{}).String(), "match all"; got != want {
+		t.Fatalf("empty PolicyCondition.String() = %q, want %q", got, want)
+	}
+}
+
 func TestPolicyRouterFirstMatchWins(t *testing.T) {
 	rules := []PolicyRule{
 		{When: PolicyCondition{Domain: "code_generation"}, Provider: "claude"},

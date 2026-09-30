@@ -30,6 +30,9 @@ Updated again 2026-09-29 at `4bb797b` (PICKUP-only commit, no code change) —
 this file itself now reflects the #63 landing above; nothing new to verify.
 Updated again 2026-09-30 at `40c4c1a` — see §5 (#22 landed: content_refs
 gains a `name` column for attachment filenames), §6 (#22 CLOSED).
+Updated again 2026-09-30 at `dde3912` — see §5 (#18 landed: cache-read/
+cache-write token pricing modeled end to end, plus a catalog-convert
+sidebug fix), §6 (#18 CLOSED).
 
 ---
 
@@ -138,12 +141,13 @@ container's mounted locations, toolchain wrapper, and scratch rules.
   actual thing never works end-to-end. When in doubt, ask what "done" means
   for the *real* problem, not the ticket text.
 
-## 5. Verified state as of `59a0b7d`
+## 5. Verified state as of `dde3912`
 
 Landed most recently (all on `develop`):
 
 | commit | what |
 |---|---|
+| `dde3912` | #18: `cost_usd` priced plain input/output only; `cache_read_tokens`/`cache_write_tokens` were captured and stored but never priced in. `pkg/types.ModelCost`/`config.ModelCatalogEntry` gain `CacheReadCostPerMTok`/`CacheWriteCostPerMTok`; `cmd/catalog-convert` reads them from litellm (`cache_read_input_token_cost`/`cache_creation_input_token_cost`, scaled per-token→per-million like the existing fields) and models.dev (`cost.cache_read`/`cost.cache_write`, already per-million); `cmd/arbiter/builders.go` carries them into the runtime catalog; `Pipeline.computeCost` prices `usage.CacheRead`/`CacheWrite` at those rates, same formula as input/output, with an unstated rate pricing at 0 rather than being estimated from the plain rate. Sidebug fixed alongside: an unset provider `source:` bound positionally to `sources:`'s first entry regardless of kind, so listing models.dev before litellm made a litellm-only provider silently resolve against the wrong source and fail downstream with a confusing "no provider key" skip (`pickSource` in `cmd/catalog-convert/convert.go`); default source selection is now content-aware — it searches `sources:` in order for the first source that actually yields a match for that provider. Also added a generic `provider:` mapping key as a fallback for whichever kind-specific key (`litellm_provider`/`models_dev_provider`) is unset, covering the common case where the slug is the same across both source kinds; a kind-specific key still wins when set. New tests including `TestComputeCostPricesCacheTokens` (computeCost had no direct unit test before this) and `TestDefaultSourceIsContentAwareNotJustFirst` (the sidebug regression). No catalog YAML regenerated — none is checked into the repo. |
 | `40c4c1a` | #22: `content_refs` gains a `name TEXT` column (schema.sql + `addColumnIfMissing` migration, mirroring `request_kind`'s precedent) carrying an attachment's filename — required for re-emission fidelity on the OpenAI wire shape (`file.filename`/`input_file.filename` are mandatory there) but previously unrecoverable from storage (attachments are hash-only by the 2026-09-15 "save hash, don't save file" decision, and the filename was folded into the block hash but never stored as retrievable data). `types.ContentBlock.Name` and both translators already carried it end to end — only the storage layer had the gap. Lives on the reference row, not the hash-keyed `content` table, since the same bytes can arrive under different names (`role` already sets this precedent). `store.Block`/`store.ContentBlock` gain `Name`; `CaptureRequest`/`CaptureResponse`/`writeContent`/`contentFor`/`ContentForRequests` all touched. Empty for images on both wire formats, by design. No UI display added — out of scope per the ticket. |
 | `59a0b7d` | #63: tool definitions (captured since #60, never rendered) now show in the transcript inspector as a collapsed "tools offered (N, size)" section — name, optional description, raw schema behind the existing `transcript-snippet` toggle. Two places were silently dropping `tool_def` blocks (`msg_index = toolDefsMsgIndex = -1`, since a definition belongs to no single message): `ContentForRequests`' SQL only let a request-direction row through on `role='system'` or newest-`msg_index`, now also `block_type='tool_def'`; `newestRequestMessage` (`internal/ui/transcript.go`) exempted tool_def blocks the same way it already exempts nothing-per-turn narrowing for the system prompt. `splitBlocks` gained a `tool_def` case populating `Inspector.ToolDefs`/`ToolDefsBytes`. Sized in bytes (`fmtBytes`, SI/decimal: B/kB/MB/GB), not tokens — Arbiter has no real tokenizer, only a char/4 routing heuristic (`internal/classifier.estimateTokens`) never meant to be shown as fact, same reasoning `fmtChars` already documents. `TestTranscriptShowsToolDefinitions` confirmed to fail without the fix (no rendering at all, not a tautology) before the fix landed. Closes the last item on the pre-freeze UI backlog (#8 is the remaining open, still-frozen item). |
 | `b603b74` | #73: bidirectional lazy-load pagination for the transcript admin UI. `SessionClientPageBefore` (`internal/store/sessions.go`) backs "load older" by reusing the existing ASC offset-paging with a computed earlier `(offset, limit)` — no new SQL; a `DESC LIMIT/OFFSET` attempt was tried first and is wrong (OFFSET counts from the table end, not from a position). `transcriptPageSize` 100→30 (fixed constant, not viewport-tuned — user explicitly rejected teaching the server about viewport height). `?seq=N` now centers the window (`centeredOffset`) instead of page-aligning forward, so a deep link has room to scroll either direction. `transcript-turn-inspectors` is now a shared template block included by both `transcript-more` and `transcript-older` fragments, so a lazy-loaded row always ships its own inspector (was bug 1: rows loaded via "load more" had no paired inspector markup). Client-side: an `IntersectionObserver` in `transcript.js` watches the load-more/load-older buttons and auto-clicks one when visible — root MUST be `.list-pane` (the actual scrolling ancestor), not the viewport, see §7. Both load controls now self-replace (`hx-target=self, hx-swap=outerHTML`) via a shared `transcript-more-control`/`transcript-older-control` template, fixing a real bug where `session.html`'s own hand-copied button never got the self-replacing update and caused an infinite re-fetch loop at a fixed offset. Verified live against the repo's own `support/preview/bigpreview` (and a throwaway larger seeder, since deleted) via Playwright in a headless Chromium, not just `go test` — see §7 for the devenv Playwright recipe if needed again. Item 3 from the original scoping (search/filter over a partially-loaded window) was explicitly NOT done — user wants to rethink search as its own piece; do not start it without a fresh scoping conversation. Full detail: `/data/memory/-home-cnf-Documents-Projects-Arbiter/memory/project_73_lazy_load_pagination_2026-09-29.md`. |
@@ -161,8 +165,8 @@ file), and further back `46114c5` (#38 closed), `db64885` (test gaps),
 The 11-item cleanup-pass list is exhausted.
 
 **Push state — run it, don't trust this file:** `git status -sb` / `git log
-origin/develop..develop`. At last write `develop` was **ahead 2 of
-`origin/develop`** (`b603b74`, `59a0b7d`) — pushing is the user's step. `git
+origin/develop..develop`. At last write `develop` was **ahead 6 of
+`origin/develop`** (`...`, `dde3912`) — pushing is the user's step. `git
 fetch` may fail in this container (`cannot run ssh: No such file or
 directory`); that's an environment limitation, not a signal the branches
 diverged further than shown.
@@ -191,6 +195,10 @@ undeployed as of last check; re-verify rather than assume either has
 landed live.
 
 ## 6. Open work — READ THIS BEFORE PICKING ANYTHING UP
+
+**#18 is CLOSED** (2026-09-30) — cache-read/cache-write cost pricing
+landed as `dde3912`, verified by unit tests, no live-deploy check needed
+per the issue's own acceptance bar (see the closing comment on GitHub).
 
 **#70, #71, #72 are CLOSED** (2026-09-29, this session). **#69 (the parent)
 is still OPEN** — it was retitled/rewritten mid-investigation to hold the
@@ -332,7 +340,9 @@ too):**
   relationship to #69 unresolved (see above).
 - **#22** (attachment filename on content_refs) — CLOSED, landed as
   `40c4c1a`: see §5. Storage-layer only, no UI display.
-- **#66, #67, #51, #41, #40, #36, #24, #23, #21, #20, #18, #17, #14, #4**
+- **#18** (cache-read/cache-write cost pricing) — CLOSED, landed as
+  `dde3912`: see §5.
+- **#66, #67, #51, #41, #40, #36, #24, #23, #21, #20, #17, #14, #4**
   — feature/deferred, bug, or `priority:low`/meta items, untouched this
   session. Run `gh issue list` for the live state, don't trust this list's
   staleness.

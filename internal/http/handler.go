@@ -22,6 +22,7 @@ import (
 	"github.com/cnf/arbiter/internal/translator"
 	"github.com/cnf/arbiter/internal/upstream"
 	arbitererrors "github.com/cnf/arbiter/pkg/errors"
+	"github.com/cnf/arbiter/pkg/types"
 )
 
 // Handler handles incoming HTTP requests.
@@ -138,11 +139,7 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request, format string) 
 	sessionHint := r.Header.Get(rt.sessionHeader)
 	out, err := rt.pipeline.Execute(ctx, body, format, traceID, sessionHint)
 	if err != nil {
-		h.logger.LogError(h.logger.WithTraceID(ctx, traceID), "error", err, map[string]interface{}{
-			"path":      requestPath(r),
-			"client_ip": clientIP(r),
-			"format":    format,
-		})
+		h.logger.LogError(h.logger.WithTraceID(ctx, traceID), "error", err, errorLogFields(r, format, err))
 		writeArbiterError(w, err)
 		return
 	}
@@ -286,6 +283,27 @@ func requestPath(r *http.Request) string {
 		return r.URL.Path
 	}
 	return strings.TrimRight(prefix, "/") + r.URL.Path
+}
+
+// errorLogFields builds the structured context for a failed request. Beyond
+// the fields every failure gets, a request-normalization failure whose root
+// cause is a types.ContentShapeError (an object-valued message content, an
+// unexpected JSON type in an array part, ...) also gets the safe structural
+// details — message index, field path, observed JSON type — so the log names
+// what went wrong without ever including the value or message text (#75).
+func errorLogFields(r *http.Request, format string, err error) map[string]interface{} {
+	fields := map[string]interface{}{
+		"path":      requestPath(r),
+		"client_ip": clientIP(r),
+		"format":    format,
+	}
+	var shapeErr *types.ContentShapeError
+	if errors.As(err, &shapeErr) {
+		fields["message_index"] = shapeErr.MessageIndex
+		fields["field"] = shapeErr.Field
+		fields["got_type"] = shapeErr.GotType
+	}
+	return fields
 }
 
 // sensitiveHeaderSubstrings marks a header for redaction if its lowercased

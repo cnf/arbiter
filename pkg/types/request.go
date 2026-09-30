@@ -3,6 +3,7 @@ package types
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -451,6 +452,51 @@ type OpenAIRequest struct {
 	StreamOptions *OpenAIStreamOptions `json:"stream_options,omitempty"`
 }
 
+// UnmarshalJSON parses the request normally, then — only on a content-shape
+// failure — re-walks the raw `messages` array one element at a time to find
+// which index produced it. OpenAIMessageContent's UnmarshalJSON has no way to
+// see its own position in the array, so ContentShapeError comes back with
+// MessageIndex -1; this is the one place that index is knowable, and it costs
+// a second pass only on the already-failing path.
+func (r *OpenAIRequest) UnmarshalJSON(data []byte) error {
+	type requestAlias OpenAIRequest
+	var alias requestAlias
+	err := json.Unmarshal(data, &alias)
+	if err == nil {
+		*r = OpenAIRequest(alias)
+		return nil
+	}
+
+	var shapeErr *ContentShapeError
+	if !errors.As(err, &shapeErr) {
+		return err
+	}
+
+	var probe struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if jsonErr := json.Unmarshal(data, &probe); jsonErr != nil {
+		// The messages array itself doesn't even parse — fall back to the
+		// original error rather than guessing.
+		return err
+	}
+	for i, raw := range probe.Messages {
+		var m OpenAIMessage
+		if msgErr := json.Unmarshal(raw, &m); msgErr != nil {
+			var innerShapeErr *ContentShapeError
+			if errors.As(msgErr, &innerShapeErr) {
+				innerShapeErr.MessageIndex = i
+				return innerShapeErr
+			}
+			return msgErr
+		}
+	}
+	// Every message parsed cleanly in isolation but the whole request didn't
+	// — retain the original error rather than claiming a location that
+	// isn't real.
+	return err
+}
+
 // OpenAIStreamOptions carries the streaming request options OpenRouter and
 // OpenAI both accept.
 type OpenAIStreamOptions struct {
@@ -504,6 +550,14 @@ func (c *OpenAIMessageContent) UnmarshalJSON(data []byte) error {
 		}
 		*c = []ContentBlock{TextBlock(plain)}
 		return nil
+	}
+
+	if trimmed[0] != '[' {
+		// Neither the string form handled above nor the array form: an
+		// object, number, boolean, or other shape a client should never
+		// send here. Report the observed JSON type rather than trying (and
+		// failing, unhelpfully) to unmarshal it as a part array.
+		return &ContentShapeError{MessageIndex: -1, Field: "content", GotType: jsonValueKind(trimmed)}
 	}
 
 	var parts []openAIContentPart

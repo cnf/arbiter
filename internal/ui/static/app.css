@@ -444,11 +444,15 @@ footer.appfoot .spacer {
  * this is a courtesy annotation on top of the lane's own stats, not a
  * fact worth competing with them for attention. The soft pulse is slow and
  * low-amplitude on purpose — meant to read as "still alive" at a glance,
- * not to flicker or demand the eye the way an alert would. */
+ * not to flicker or demand the eye the way an alert would. --primary (the
+ * theme's orange) rather than --ok (green): green reads as "healthy/done",
+ * which is backwards for something that's still in flight; orange is
+ * already the theme's own "active/attention" color (state-dot.st-unseen
+ * uses it the same way). */
 .hot {
   display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-  background: var(--ok); flex: 0 0 auto;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 20%, transparent);
+  background: var(--primary); flex: 0 0 auto;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 20%, transparent);
   animation: lane-hot-pulse 2.4s ease-in-out infinite;
 }
 @keyframes lane-hot-pulse {

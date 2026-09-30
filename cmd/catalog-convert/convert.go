@@ -27,6 +27,14 @@ type litellmEntry struct {
 	LitellmProvider    string  `json:"litellm_provider"`
 	Mode               string  `json:"mode"`
 
+	// CacheReadInputTokenCost / CacheCreationInputTokenCost are LiteLLM's own
+	// field names (see docs.litellm.ai/docs/proxy/custom_pricing) for a
+	// cache-hit read and a cache-creation write respectively, in the same
+	// USD-per-token unit as the two costs above. Absent (0) means the
+	// upstream states no cache pricing for this model.
+	CacheReadInputTokenCost     float64 `json:"cache_read_input_token_cost"`
+	CacheCreationInputTokenCost float64 `json:"cache_creation_input_token_cost"`
+
 	SupportsVision            *bool `json:"supports_vision"`
 	SupportsImageInput        *bool `json:"supports_image_input"`
 	SupportsPDFInput          *bool `json:"supports_pdf_input"`
@@ -56,16 +64,28 @@ type litellmEntry struct {
 // not a config error) — see the "catalog is a superset" note in README.md.
 type providerMap struct {
 	// Source names which entry in the mapping file's sources: list this
-	// provider's models come from. Empty means the first source, so every
-	// mapping file written before sources existed keeps working unchanged.
+	// provider's models come from. Empty means: pick the first source in
+	// sources: order that actually yields a match for this provider (see
+	// pickSource) — not simply the first source listed, so sources: order
+	// stops being a hidden default-binding order and stays what its own docs
+	// promise: precedence for a model that appears in more than one source.
 	Source string `yaml:"source,omitempty"`
+	// Provider is the provider key this provider's models are filed under,
+	// used for whichever source kind is picked unless overridden below. Most
+	// mappings only ever need this one field: a provider's litellm_provider
+	// and models.dev provider key are the same string often enough (e.g.
+	// "anthropic", "openai") that naming it twice is pure duplication. Set
+	// LitellmProvider/ModelsDevProvider instead only for the source where the
+	// key genuinely differs.
+	Provider string `yaml:"provider,omitempty"`
 	// LitellmProvider is the litellm_provider this provider's models are filed
-	// under, for a source of kind litellm.
+	// under, for a source of kind litellm. Overrides Provider for that kind.
 	LitellmProvider string `yaml:"litellm_provider,omitempty"`
 	// ModelsDevProvider is the models.dev provider key, for a source of kind
 	// modelsdev-api. Separate from LitellmProvider rather than reusing it,
 	// because the two name different namespaces and a single field would make a
-	// litellm value silently match nothing in a models.dev source.
+	// litellm value silently match nothing in a models.dev source. Overrides
+	// Provider for that kind.
 	ModelsDevProvider string `yaml:"models_dev_provider,omitempty"`
 	// KeyPrefix strips a namespacing prefix LiteLLM puts on the *input* key
 	// (e.g. "openrouter/anthropic/claude-3.5-sonnet" -> "anthropic/claude-3.5-sonnet").
@@ -270,6 +290,36 @@ func (m mapping) latencyOverride(provider, model string) (int, bool) {
 	return 0, false
 }
 
+// providerKeyFor resolves which provider key value applies to a source of the
+// given kind, and whether that kind needs one at all.
+//
+// LitellmProvider/ModelsDevProvider are the per-kind overrides for the ~10% of
+// mappings where the two upstreams genuinely use different keys for the same
+// provider; Provider is the common-case fallback used when only one string is
+// needed. kindModelsDev (the flat aggregator shape) has no provider dimension
+// at all, so it never needs a key — see buildCatalog's flat handling.
+//
+// key=="" with needsKey==true means this kind requires a key and this
+// providerMap supplied none — the caller's signal to skip with a clear reason
+// rather than silently matching nothing.
+func (pm providerMap) providerKeyFor(kind sourceKind) (key string, needsKey bool) {
+	if kind == kindModelsDev {
+		return "", false
+	}
+	if kind == kindModelsDevAPI {
+		if pm.ModelsDevProvider != "" {
+			return pm.ModelsDevProvider, true
+		}
+		return pm.Provider, true
+	}
+	// kindLitellm, or an unset/unrecognized kind: same as the pre-sources
+	// behavior, which never distinguished "litellm" from "unknown" here.
+	if pm.LitellmProvider != "" {
+		return pm.LitellmProvider, true
+	}
+	return pm.Provider, true
+}
+
 // buildCatalog emits one catalog row per model a provider's configured source
 // yields, for every name in providerNames — in that order, so the caller
 // controls determinism (main.go sorts it). A name with no mapping entry, or
@@ -288,7 +338,8 @@ func (m mapping) latencyOverride(provider, model string) (int, bool) {
 // section.
 //
 // sources is the loaded form of the mapping file's sources: list, keyed by the
-// path as written. A provider's Source names one of them; empty means the first.
+// path as written. A provider's Source names one of them; empty means the
+// first source that actually yields a match for this provider (see pickSource).
 func buildCatalog(sources map[string][]modelRow, sourceOrder []string, kinds map[string]sourceKind, m mapping, providerNames []string) ([]config.ModelCatalogEntry, []string) {
 	var out []config.ModelCatalogEntry
 	var skips []string
@@ -300,7 +351,7 @@ func buildCatalog(sources map[string][]modelRow, sourceOrder []string, kinds map
 			continue
 		}
 
-		sourceKey, rows, err := pickSource(pm, sources, sourceOrder)
+		sourceKey, rows, err := pickSource(pm, sources, sourceOrder, kinds)
 		if err != nil {
 			skips = append(skips, fmt.Sprintf("%s: %v", p, err))
 			continue
@@ -309,7 +360,9 @@ func buildCatalog(sources map[string][]modelRow, sourceOrder []string, kinds map
 		// Which provider key in the source this provider's models are filed
 		// under. The kinds name it differently, so the mapping says which — a
 		// single field would make a litellm value silently match nothing in a
-		// models.dev source.
+		// models.dev source. providerKeyFor also accepts the common-case
+		// provider: field, falling back to it when no kind-specific override
+		// is set.
 		//
 		// The flat modelsdev-models shape has NO provider dimension at all: its
 		// keys are already "<vendor>/<model>", which is exactly how a prefixing
@@ -317,13 +370,10 @@ func buildCatalog(sources map[string][]modelRow, sourceOrder []string, kinds map
 		// every row is eligible — which is what makes such an aggregator work
 		// through the generic machinery rather than needing special-casing.
 		sourceKind := kinds[sourceKey]
-		wantProvider := pm.LitellmProvider
-		if sourceKind == kindModelsDevAPI {
-			wantProvider = pm.ModelsDevProvider
-		}
-		flat := sourceKind == kindModelsDev
-		if wantProvider == "" && !flat {
-			skips = append(skips, fmt.Sprintf("%s: mapping entry names no provider key for source %s (set litellm_provider or models_dev_provider)", p, sourceLabel(sourceKey)))
+		wantProvider, needsKey := pm.providerKeyFor(sourceKind)
+		flat := !needsKey
+		if wantProvider == "" && needsKey {
+			skips = append(skips, fmt.Sprintf("%s: mapping entry names no provider key for source %s (set provider, or litellm_provider/models_dev_provider)", p, sourceLabel(sourceKey)))
 			continue
 		}
 
@@ -372,15 +422,17 @@ func buildCatalog(sources map[string][]modelRow, sourceOrder []string, kinds map
 				latency = v
 			}
 			out = append(out, config.ModelCatalogEntry{
-				Provider:          p,
-				Model:             model,
-				InputCostPerMTok:  row.InputCostPerMTok,
-				OutputCostPerMTok: row.OutputCostPerMTok,
-				LatencyMsP50:      latency,
-				InputModalities:   row.InputModalities,
-				MaxInputTokens:    row.MaxInputTokens,
-				MaxOutputTokens:   row.MaxOutputTokens,
-				Metadata:          row.Metadata,
+				Provider:              p,
+				Model:                 model,
+				InputCostPerMTok:      row.InputCostPerMTok,
+				OutputCostPerMTok:     row.OutputCostPerMTok,
+				CacheReadCostPerMTok:  row.CacheReadCostPerMTok,
+				CacheWriteCostPerMTok: row.CacheWriteCostPerMTok,
+				LatencyMsP50:          latency,
+				InputModalities:       row.InputModalities,
+				MaxInputTokens:        row.MaxInputTokens,
+				MaxOutputTokens:       row.MaxOutputTokens,
+				Metadata:              row.Metadata,
 			})
 			matched++
 		}
@@ -392,22 +444,60 @@ func buildCatalog(sources map[string][]modelRow, sourceOrder []string, kinds map
 	return out, skips
 }
 
-// pickSource resolves a provider's source entry, defaulting to the first listed
-// when unset. A name that matches no entry is an error rather than a silent
-// fallback to the first: a typo there would otherwise produce a catalog built
-// from the wrong file, which is exactly the kind of silent wrongness this tool
-// has to avoid.
-func pickSource(pm providerMap, sources map[string][]modelRow, order []string) (string, []modelRow, error) {
+// pickSource resolves a provider's source entry. An explicit Source: is a
+// direct, non-searching lookup — a typo there is an error, not a silent
+// fallback to the first source, because that would build a catalog from the
+// wrong file, exactly the kind of silent wrongness this tool has to avoid.
+//
+// An unset Source: searches sources: in order for the first one that actually
+// yields a match for this provider — using whichever provider key applies to
+// each candidate's kind (see providerKeyFor), or "any row" for the flat
+// modelsdev-models kind, which has no provider dimension to match on. This is
+// what makes sources: order a pure precedence list rather than also being a
+// hidden default-binding order: a provider mapping that only sets the
+// litellm-side key no longer silently binds to a models.dev source that
+// happens to be listed first and then fails downstream with a confusing "no
+// provider key" skip. A provider that matches nothing in any source still
+// falls back to the first listed source, so the caller's existing "no models
+// found" skip reports a single, sensible source name rather than an empty one.
+func pickSource(pm providerMap, sources map[string][]modelRow, order []string, kinds map[string]sourceKind) (string, []modelRow, error) {
 	if len(order) == 0 {
 		return "", nil, fmt.Errorf("mapping declares no sources: (add a sources: list naming the upstream files)")
 	}
-	if pm.Source == "" {
-		first := order[0]
-		return first, sources[first], nil
+	if pm.Source != "" {
+		rows, ok := sources[pm.Source]
+		if !ok {
+			return "", nil, fmt.Errorf("source %q is not listed in sources: (valid: %s)", pm.Source, strings.Join(order, ", "))
+		}
+		return pm.Source, rows, nil
 	}
-	rows, ok := sources[pm.Source]
-	if !ok {
-		return "", nil, fmt.Errorf("source %q is not listed in sources: (valid: %s)", pm.Source, strings.Join(order, ", "))
+
+	for _, candidate := range order {
+		key, needsKey := pm.providerKeyFor(kinds[candidate])
+		if needsKey && key == "" {
+			// This kind needs a key and the mapping gave none for it — not a
+			// match, but also not this provider's problem to report against
+			// THIS source; buildCatalog's own check (against whichever source
+			// is eventually picked) is what surfaces that.
+			continue
+		}
+		rows := sources[candidate]
+		if !needsKey {
+			// Flat shape: any row at all counts as a match.
+			if len(rows) > 0 {
+				return candidate, rows, nil
+			}
+			continue
+		}
+		for _, row := range rows {
+			if row.Provider == key {
+				return candidate, rows, nil
+			}
+		}
 	}
-	return pm.Source, rows, nil
+	// Nothing matched anywhere: fall back to the first source, unchanged from
+	// the pre-content-aware behavior, so the "no models found" skip below
+	// still names one concrete source.
+	first := order[0]
+	return first, sources[first], nil
 }

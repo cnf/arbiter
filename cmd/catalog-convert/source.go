@@ -38,6 +38,13 @@ type modelRow struct {
 	InputCostPerMTok  float64
 	OutputCostPerMTok float64
 
+	// CacheReadCostPerMTok / CacheWriteCostPerMTok are the source's cache-hit
+	// and cache-creation rates, already normalized to the catalog's
+	// USD-per-million-tokens unit. Zero means the source stated no cache
+	// pricing for this model.
+	CacheReadCostPerMTok  float64
+	CacheWriteCostPerMTok float64
+
 	InputModalities []string
 	MaxInputTokens  *int
 	MaxOutputTokens *int
@@ -174,15 +181,17 @@ func readLitellm(r io.Reader) ([]modelRow, []string, error) {
 			continue
 		}
 		rows = append(rows, modelRow{
-			Key:               key,
-			Provider:          e.LitellmProvider,
-			InputCostPerMTok:  perMTok(e.InputCostPerToken),
-			OutputCostPerMTok: perMTok(e.OutputCostPerToken),
-			InputModalities:   inputModalities(e),
-			MaxInputTokens:    tokenLimit(e.MaxInputTokens),
-			MaxOutputTokens:   tokenLimit(e.MaxOutputTokens),
-			Metadata:          extraMetadata(e),
-			HasCost:           e.InputCostPerToken != 0 || e.OutputCostPerToken != 0,
+			Key:                   key,
+			Provider:              e.LitellmProvider,
+			InputCostPerMTok:      perMTok(e.InputCostPerToken),
+			OutputCostPerMTok:     perMTok(e.OutputCostPerToken),
+			CacheReadCostPerMTok:  perMTok(e.CacheReadInputTokenCost),
+			CacheWriteCostPerMTok: perMTok(e.CacheCreationInputTokenCost),
+			InputModalities:       inputModalities(e),
+			MaxInputTokens:        tokenLimit(e.MaxInputTokens),
+			MaxOutputTokens:       tokenLimit(e.MaxOutputTokens),
+			Metadata:              extraMetadata(e),
+			HasCost:               e.InputCostPerToken != 0 || e.OutputCostPerToken != 0,
 		})
 	}
 	return rows, malformed, nil
@@ -224,8 +233,10 @@ type modelsDevModel struct {
 		Output  int `json:"output"`
 	} `json:"limit"`
 	Cost *struct {
-		Input  float64 `json:"input"`
-		Output float64 `json:"output"`
+		Input      float64 `json:"input"`
+		Output     float64 `json:"output"`
+		CacheRead  float64 `json:"cache_read"`
+		CacheWrite float64 `json:"cache_write"`
 	} `json:"cost"`
 }
 
@@ -283,6 +294,8 @@ func modelsDevRow(id, provider string, m modelsDevModel) modelRow {
 	if m.Cost != nil {
 		row.InputCostPerMTok = m.Cost.Input
 		row.OutputCostPerMTok = m.Cost.Output
+		row.CacheReadCostPerMTok = m.Cost.CacheRead
+		row.CacheWriteCostPerMTok = m.Cost.CacheWrite
 		// A cost block present but zero means "free", which is a real figure and
 		// must survive as 0 rather than be treated as unknown.
 		row.HasCost = true

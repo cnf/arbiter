@@ -146,9 +146,12 @@ func toolCallNames(blocks []types.ContentBlock) []string {
 
 // computeCost fills in cost from the static catalog when the upstream reported
 // none (plain Anthropic/OpenAI report nothing; OpenRouter reports a real
-// figure). A provider-reported cost is authoritative and left untouched. Cache
-// tokens are not priced — the catalog carries no cache rates — so the result
-// is a lower bound for providers that bill cache reads separately.
+// figure). A provider-reported cost is authoritative and left untouched.
+// Cache-read and cache-write tokens are priced at the catalog's cache rates
+// when it states them; a model with no cache pricing data (CacheReadCostPerMTok
+// and CacheWriteCostPerMTok both 0) prices its cache tokens at 0, same as
+// before these fields existed — this is a deliberate "unstated, not free"
+// choice, not an estimate.
 func (p *Pipeline) computeCost(provider, model string, usage types.Usage) float64 {
 	if usage.CostUSD > 0 || p.costCatalog == nil {
 		return usage.CostUSD
@@ -159,7 +162,9 @@ func (p *Pipeline) computeCost(provider, model string, usage types.Usage) float6
 	}
 	const perMTok = 1_000_000.0
 	return (float64(usage.InputTokens)*mc.InputCostPerMTok +
-		float64(usage.OutputTokens)*mc.OutputCostPerMTok) / perMTok
+		float64(usage.OutputTokens)*mc.OutputCostPerMTok +
+		float64(usage.CacheRead)*mc.CacheReadCostPerMTok +
+		float64(usage.CacheWrite)*mc.CacheWriteCostPerMTok) / perMTok
 }
 
 // executeStream handles streaming requests. It returns a channel of normalized

@@ -163,6 +163,78 @@ func TestBuildCatalogConvertsUnitsAndKeys(t *testing.T) {
 	}
 }
 
+// TestReadLitellmCacheCosts proves cache_read_input_token_cost and
+// cache_creation_input_token_cost — LiteLLM's own field names for a cache-hit
+// read and a cache-creation write — are read and scaled to per-million tokens
+// the same way the plain input/output costs are, and that a model stating
+// none of the cache fields gets a zero rate rather than an error.
+func TestReadLitellmCacheCosts(t *testing.T) {
+	const raw = `{
+	  "claude-sonnet-5": {
+	    "input_cost_per_token": 3e-06,
+	    "output_cost_per_token": 1.5e-05,
+	    "cache_read_input_token_cost": 3e-07,
+	    "cache_creation_input_token_cost": 3.75e-06,
+	    "litellm_provider": "anthropic",
+	    "mode": "chat"
+	  },
+	  "no-cache-pricing": {
+	    "input_cost_per_token": 1e-06,
+	    "output_cost_per_token": 2e-06,
+	    "litellm_provider": "anthropic",
+	    "mode": "chat"
+	  }
+	}`
+	rows, malformed, err := readLitellm(strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("readLitellm: %v", err)
+	}
+	if len(malformed) != 0 {
+		t.Fatalf("unexpected malformed entries: %v", malformed)
+	}
+	byKey := map[string]modelRow{}
+	for _, r := range rows {
+		byKey[r.Key] = r
+	}
+
+	sonnet := byKey["claude-sonnet-5"]
+	if sonnet.CacheReadCostPerMTok != 0.3 {
+		t.Errorf("CacheReadCostPerMTok = %v, want 0.3", sonnet.CacheReadCostPerMTok)
+	}
+	if sonnet.CacheWriteCostPerMTok != 3.75 {
+		t.Errorf("CacheWriteCostPerMTok = %v, want 3.75", sonnet.CacheWriteCostPerMTok)
+	}
+
+	noCaching := byKey["no-cache-pricing"]
+	if noCaching.CacheReadCostPerMTok != 0 || noCaching.CacheWriteCostPerMTok != 0 {
+		t.Errorf("no-cache-pricing cache rates = %v/%v, want 0/0 (unstated, not an error)",
+			noCaching.CacheReadCostPerMTok, noCaching.CacheWriteCostPerMTok)
+	}
+}
+
+// TestBuildCatalogCarriesCacheCosts proves a row's cache rates survive
+// buildCatalog into the emitted config.ModelCatalogEntry, alongside the plain
+// input/output costs.
+func TestBuildCatalogCarriesCacheCosts(t *testing.T) {
+	rows := []modelRow{{
+		Key: "claude-sonnet-5", Provider: "anthropic",
+		InputCostPerMTok: 3, OutputCostPerMTok: 15,
+		CacheReadCostPerMTok: 0.3, CacheWriteCostPerMTok: 3.75,
+	}}
+	sources := map[string][]modelRow{"a.json": rows}
+	m := mapping{
+		Sources:   []sourceSpec{{Path: "a.json", Kind: "litellm"}},
+		Providers: map[string]providerMap{"claude": {LitellmProvider: "anthropic"}},
+	}
+	got, skips := buildCatalog(sources, []string{"a.json"}, testKinds(m), m, []string{"claude"})
+	if len(skips) != 0 || len(got) != 1 {
+		t.Fatalf("rows=%d skips=%v, want one row and no skips", len(got), skips)
+	}
+	if got[0].CacheReadCostPerMTok != 0.3 || got[0].CacheWriteCostPerMTok != 3.75 {
+		t.Errorf("cache costs = %v/%v, want 0.3/3.75", got[0].CacheReadCostPerMTok, got[0].CacheWriteCostPerMTok)
+	}
+}
+
 // TestBuildCatalogSkipsNonChatEntries proves a pulled-everything litellm_provider
 // still excludes embedding/image entries filed under it, without needing them
 // named anywhere — there is no per-model list to omit them from.

@@ -106,8 +106,79 @@ func TestClientEffortStampedOnPinnedAliasPath(t *testing.T) {
 	}
 }
 
+// captureOpenAIMsg builds the payload the REAL clients send: an OpenAI chat
+// body carrying `reasoning_effort`. The sibling captureMsg above uses the
+// Anthropic shape, and passing "anthropic" as the format is what made the
+// original test suite green while production saw nothing — the OpenAI ingress
+// never read an effort at all (#79 follow-up).
+func captureOpenAIMsg(model, effort string) []byte {
+	body := `{"model":"` + model + `","max_tokens":10,"messages":[{"role":"user","content":"hello"}]`
+	if effort != "" {
+		body += `,"reasoning_effort":"` + effort + `"`
+	}
+	return []byte(body + `}`)
+}
+
+// End-to-end on the format the real clients speak. This is the assertion the
+// live store falsified: all 29,530 recorded rows had an empty client_effort
+// because the OpenAI spelling was never parsed, not because clients sent
+// nothing. Whole path — JSON decode, normalization, Execute's capture,
+// resolveRoute's stamp, routing, and the recorded event.
+//
+// Routed through a force alias ("auto"), because a literal provider model
+// short-circuits before the router: it would stamp the signal but never let a
+// rule match on it, which is not the path worth pinning here.
+func TestOpenAIReasoningEffortReachesRouterAndStore(t *testing.T) {
+	resolver := router.NewAliasResolver(map[string]router.Alias{
+		"auto": {Name: "auto", Force: map[string][]string{}},
+	}, testProviders(), nil, nil)
+	rr := &effortRecordingRouter{}
+	w := &capturingWriter{}
+	p := newEffortPipeline(rr, resolver)
+	p.store = w
+
+	if _, err := p.Execute(context.Background(), captureOpenAIMsg("auto", "high"), "openai", "t1", ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if rr.signals.ClientEffort != "high" {
+		t.Fatalf("router saw ClientEffort = %q, want high — the OpenAI `reasoning_effort` never entered the pipeline", rr.signals.ClientEffort)
+	}
+	ev, ok := w.last()
+	if !ok {
+		t.Fatal("no event was recorded")
+	}
+	if ev.ClientEffort != "high" {
+		t.Fatalf("recorded client_effort = %q, want high", ev.ClientEffort)
+	}
+}
+
+// The empty state must survive the OpenAI path too: no dial sent is not the
+// same as an explicit value, and it must not be invented downstream.
+func TestOpenAIWithoutEffortStaysEmptyEndToEnd(t *testing.T) {
+	resolver := router.NewAliasResolver(map[string]router.Alias{
+		"auto": {Name: "auto", Force: map[string][]string{}},
+	}, testProviders(), nil, nil)
+	rr := &effortRecordingRouter{}
+	w := &capturingWriter{}
+	p := newEffortPipeline(rr, resolver)
+	p.store = w
+
+	if _, err := p.Execute(context.Background(), captureOpenAIMsg("auto", ""), "openai", "t1", ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if rr.signals.ClientEffort != "" {
+		t.Fatalf("router saw ClientEffort = %q, want empty", rr.signals.ClientEffort)
+	}
+	ev, _ := w.last()
+	if ev.ClientEffort != "" {
+		t.Fatalf("recorded client_effort = %q, want empty", ev.ClientEffort)
+	}
+}
+
 // No effort requested is not the same as "effort low": the signals carry the
-// empty string, which a `when: {effort: ...}` rule treats as a wildcard.
+// empty string, which a `when: {effort: ...}` rule treats as a wildcard. This
+// is the Anthropic-ingress spelling of the empty state; the OpenAI one is
+// TestOpenAIWithoutEffortStaysEmptyEndToEnd below.
 func TestClientEffortEmptyWhenClientSendsNone(t *testing.T) {
 	rr := &effortRecordingRouter{}
 	p := newEffortPipeline(rr, nil)

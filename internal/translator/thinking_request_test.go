@@ -127,7 +127,9 @@ func TestNoThinkingRequestStaysAbsent(t *testing.T) {
 
 // An OpenAI-format client has no thinking field to send, so the normalized
 // request must come out with none either — the field is Anthropic-only and
-// must not be fabricated for the other ingress format.
+// must not be fabricated for the other ingress format. Its reasoning dial is
+// a different field on a different key (`reasoning_effort`), covered by
+// openai_effort_test.go.
 func TestOpenAIIngressGetsNoThinkingRequest(t *testing.T) {
 	raw := `{"model":"m","messages":[{"role":"user","content":"hi"}]}`
 	var req types.OpenAIRequest

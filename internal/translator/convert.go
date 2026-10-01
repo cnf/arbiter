@@ -258,13 +258,13 @@ func anthropicRequestToNormalized(req *types.AnthropicRequest) *types.Normalized
 		Tools:        tools,
 		Stream:       req.Stream,
 		Thinking:     req.Thinking,
-		OutputEffort: outputEffortOf(req),
+		OutputEffort: anthropicOutputEffortOf(req),
 	}
 }
 
-// outputEffortOf reads the effort knob out of a request's output_config,
-// tolerating an absent block so the caller need not nil-check.
-func outputEffortOf(req *types.AnthropicRequest) string {
+// anthropicOutputEffortOf reads the effort knob out of a request's
+// output_config, tolerating an absent block so the caller need not nil-check.
+func anthropicOutputEffortOf(req *types.AnthropicRequest) string {
 	if req.OutputConfig == nil {
 		return ""
 	}
@@ -387,6 +387,13 @@ func openAIRequestToNormalized(req *types.OpenAIRequest) *types.NormalizedReques
 		SystemPrompt: systemPrompt,
 		Tools:        tools,
 		Stream:       req.Stream,
+		// The OpenAI spelling of the reasoning dial. Read as a request fact
+		// like the Anthropic leg above, so it reaches the routing signals
+		// (#79) and the recorded row instead of being dropped at the door.
+		// Note this is the ONLY effort source for OpenAI-format traffic:
+		// Anthropic's `output_config` has no home on this wire shape, so a
+		// client sending the Anthropic knob here stays invisible.
+		OutputEffort: req.ReasoningEffort,
 	}
 }
 
@@ -476,6 +483,14 @@ func normalizedToOpenAIRequest(req *types.NormalizedRequest) *types.OpenAIReques
 	if req.Stream {
 		out.StreamOptions = &types.OpenAIStreamOptions{IncludeUsage: true}
 	}
+	// The reasoning dial travels under this format's own spelling. The
+	// normalized request may have been filled from EITHER ingress (an
+	// Anthropic client routed to an OpenAI-speaking upstream), and the wire
+	// field is chosen by the destination, not by where the value came from —
+	// so `output_config.effort` from an Anthropic client becomes
+	// `reasoning_effort` here rather than being dropped. Omitted when empty,
+	// so a client that asked for nothing does not gain a dial.
+	out.ReasoningEffort = req.OutputEffort
 	return out
 }
 

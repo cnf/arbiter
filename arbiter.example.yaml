@@ -382,9 +382,10 @@ routers:
 # `intent` and `cost_sensitivity` are still accepted (but not alongside their
 # replacement on the same rule). The axis spelling `effort` was renamed to
 # `difficulty` in phase 1 of #79, but `effort` is a valid `when` key again as of
-# phase 2 — it now matches the reasoning-effort knob the CLIENT sent
-# (`output_config.effort`), verbatim, so it is a request fact rather than an
-# axis. On the force-map path `effort` was NOT reassigned and stays a hard
+# phase 2 — it now matches the reasoning-effort knob the CLIENT sent, verbatim,
+# so it is a request fact rather than an axis. Both wire spellings are read:
+# `output_config.effort` from an Anthropic client and `reasoning_effort` from an
+# OpenAI one. On the force-map path `effort` was NOT reassigned and stays a hard
 # error naming `difficulty`; only `when` accepts it.
 # `request_kind` matches a request's kind
 # ("title", later "subagent") rather than what it's about — not an axis, but

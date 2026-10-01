@@ -70,8 +70,9 @@ type Signals struct {
 	// is a client request with kind "client" and RequestKind "title".
 	RequestKind string
 
-	// ClientEffort is the reasoning-effort knob the CLIENT actually sent
-	// (`output_config.effort`), carried verbatim from the request.
+	// ClientEffort is the reasoning-effort knob the CLIENT actually sent,
+	// carried verbatim from the request. Either wire spelling feeds it:
+	// `output_config.effort` (Anthropic) or `reasoning_effort` (OpenAI).
 	//
 	// Like RequestKind it is deliberately NOT an axis: it is a fact about
 	// what the client asked for, not a contested classification, so it

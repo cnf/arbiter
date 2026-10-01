@@ -545,6 +545,13 @@ type OpenAIRequest struct {
 	Tools       []OpenAITool    `json:"tools,omitempty"`
 	Stream      bool            `json:"stream,omitempty"`
 
+	// ReasoningEffort is OpenAI Chat Completions' spelling of the same
+	// reasoning dial Anthropic calls `output_config.effort`. It is read as a
+	// request fact and forwarded, exactly like the Anthropic spelling — the
+	// real clients (Hermes, opencode) speak this format, so without it the
+	// knob is invisible on every request Arbiter actually serves.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+
 	// StreamOptions is sent on streaming requests to ask the upstream for a
 	// terminal usage chunk. Without it the provider reports no token counts on
 	// a stream at all, so every streamed request would be recorded with zero

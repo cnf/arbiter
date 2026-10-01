@@ -47,9 +47,12 @@ a title-generation call is identified by the `request-kind` classifier
 whatever model the client happened to name.
 
 A rule's `when` clause can also match `effort` — the reasoning-effort knob the
-**client itself sent** (`output_config.effort`), matched verbatim against
-`types.Signals.ClientEffort`. Like `request_kind` it is a request fact rather
-than a classification axis (no confidence, no classifier fills it, no
+**client itself sent**, matched verbatim against `types.Signals.ClientEffort`.
+The wire spelling depends on the format the client spoke: Anthropic clients
+send it as `output_config.effort`, OpenAI clients as `reasoning_effort`. Both
+are read into the same signal, so a rule matches regardless of which format
+the request arrived in. Like `request_kind` it is a request fact rather than
+a classification axis (no confidence, no classifier fills it, no
 force-alias targets it), and it is stamped on every path before routing, so a
 rule like `when: { effort: "high" }` can send a request that asked for high
 effort to the strong model *without* having to override what the client asked

@@ -47,6 +47,13 @@ func choice(name string, confidence float64, probs map[string]float64) types.Dec
 	return types.DecisionAnswer{Type: types.DecisionChoice, Choice: name, Confidence: confidence, Probabilities: probs}
 }
 
+// noulAnswer builds a "noul" answer with the given yes-probability. Unlike
+// choice, a noul answer carries no Confidence field at all — the classifier
+// derives one as max(p, 1-p).
+func noulAnswer(p float64) types.DecisionAnswer {
+	return types.DecisionAnswer{Type: types.DecisionNoul, Noul: p}
+}
+
 // decisionsProvider is a provider that speaks the decisions protocol: its
 // endpoint is the complete URL, not an API root.
 func decisionsProvider(name string) types.ProviderConfig {
@@ -487,6 +494,274 @@ func TestDecisionsClassifierPromptIsStable(t *testing.T) {
 		}
 		if got != first {
 			t.Fatalf("prompt differs between calls:\nfirst: %q\ngot:   %q", first, got)
+		}
+	}
+}
+
+// newTestNoulClassifier builds a one-question "noul" classifier targeting the
+// cost_class axis with value "budget" — the shape a real config declares.
+func newTestNoulClassifier(client *fakeDecisionClient) *DecisionsClassifier {
+	return NewDecisionsClassifier(
+		"budget-noul", decisionsResolver("jev", testProvider), &Target{Alias: "jev"},
+		client, map[string]types.ProviderConfig{testProvider: decisionsProvider(testProvider)},
+		[]DecisionQuestionConfig{{
+			Name: "is_budget", Axis: AxisCostClass, Type: types.DecisionNoul,
+			Value: "budget", Instructions: "Is this a cost-sensitive request?",
+		}},
+		NewHeuristicClassifier("fb", AxisDomain, nil), 5*time.Second,
+	)
+}
+
+// A "yes" verdict (p > 0.5) must fill the axis with the question's configured
+// Value, and the derived confidence must be max(p, 1-p) — the one honest
+// number true of both a confident yes and a confident no, since Noul carries
+// no confidence field of its own.
+func TestDecisionsClassifierNoulYesFillsAxisWithConfiguredValue(t *testing.T) {
+	client := &fakeDecisionClient{responses: map[string]*types.DecisionResponse{
+		testProvider: decisionReply(map[string]types.DecisionAnswer{"is_budget": noulAnswer(0.83)}),
+	}}
+	c := newTestNoulClassifier(client)
+
+	sig, err := c.Classify(context.Background(), testRequest())
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.CostClass != "budget" {
+		t.Fatalf("CostClass = %q, want budget (the question's configured value)", sig.CostClass)
+	}
+	if got := sig.AxisConfidence[AxisCostClass]; got != 0.83 {
+		t.Fatalf("AxisConfidence[cost_class] = %v, want 0.83 (max(p, 1-p) with p=0.83)", got)
+	}
+}
+
+// A "no" verdict (p <= 0.5) must leave the axis exactly as it was — NOT fill
+// it with the sentinel the way a choice's escape does. "No" means "this
+// question's condition did not hold", not "nothing fits"; a later classifier
+// (or the fallback) must still get to fill the axis.
+func TestDecisionsClassifierNoulNoLeavesAxisUnset(t *testing.T) {
+	client := &fakeDecisionClient{responses: map[string]*types.DecisionResponse{
+		testProvider: decisionReply(map[string]types.DecisionAnswer{"is_budget": noulAnswer(0.2)}),
+	}}
+	c := newTestNoulClassifier(client)
+
+	sig, err := c.Classify(context.Background(), testRequest())
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.CostClass != "" {
+		t.Fatalf("CostClass = %q, want empty (a noul \"no\" must not fill the axis, unlike a choice escape)", sig.CostClass)
+	}
+	// Still a recorded, successful call with a derived confidence: a
+	// confident "no" is a real judgement, and max(p, 1-p) = max(0.2, 0.8).
+	if got := sig.AxisConfidence[AxisCostClass]; got != 0.8 {
+		t.Fatalf("AxisConfidence[cost_class] = %v, want 0.8 (max(p, 1-p) with p=0.2)", got)
+	}
+	if len(sig.ClassifierCalls) != 1 || sig.ClassifierCalls[0].Error != "" {
+		t.Fatalf("a noul \"no\" was recorded as a failure: %+v", sig.ClassifierCalls)
+	}
+}
+
+// A "no" verdict must not block a later classifier in the merge from filling
+// the same axis — this is the entire point of leaving it unset rather than
+// sentinel-filled.
+func TestDecisionsClassifierNoulNoLetsLaterClassifierFillAxis(t *testing.T) {
+	client := &fakeDecisionClient{responses: map[string]*types.DecisionResponse{
+		testProvider: decisionReply(map[string]types.DecisionAnswer{"is_budget": noulAnswer(0.1)}),
+	}}
+	noul := newTestNoulClassifier(client)
+	heuristic := NewHeuristicClassifier("cc-heuristic", AxisCostClass, map[string][]string{"quality_first": {"refactor"}})
+	merged := NewMergedClassifier("merged", []Classifier{noul, heuristic})
+
+	sig, err := merged.Classify(context.Background(), testRequest())
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.CostClass != "quality_first" {
+		t.Fatalf("CostClass = %q, want quality_first (the heuristic's answer, not blocked by the noul's \"no\")", sig.CostClass)
+	}
+}
+
+// The rationale must render a "no" verdict distinctly from a choice's escape
+// ("none of the options fit" reads as a false claim for a question that was
+// never offered options at all).
+func TestDecisionsClassifierNoulNoIsNamedDistinctlyInTheRationale(t *testing.T) {
+	client := &fakeDecisionClient{responses: map[string]*types.DecisionResponse{
+		testProvider: decisionReply(map[string]types.DecisionAnswer{"is_budget": noulAnswer(0.3)}),
+	}}
+	c := newTestNoulClassifier(client)
+
+	sig, err := c.Classify(context.Background(), testRequest())
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	verdict := sig.ClassifierCalls[0].Verdict
+	if !strings.Contains(verdict, "cost_class=no") {
+		t.Fatalf("verdict %q does not render the noul no-answer distinctly", verdict)
+	}
+	if strings.Contains(verdict, "none of the options fit") {
+		t.Fatalf("verdict %q wrongly borrowed the choice escape's wording", verdict)
+	}
+}
+
+// The wire request for a "noul" question must carry no criteria — it is a
+// bare yes/no question answered from Instructions alone.
+func TestDecisionsClassifierNoulSendsNoCriteria(t *testing.T) {
+	client := &fakeDecisionClient{responses: map[string]*types.DecisionResponse{
+		testProvider: decisionReply(map[string]types.DecisionAnswer{"is_budget": noulAnswer(0.9)}),
+	}}
+	c := newTestNoulClassifier(client)
+
+	if _, err := c.Classify(context.Background(), testRequest()); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	q, ok := client.requests[0].Questions["is_budget"]
+	if !ok {
+		t.Fatal("no question named is_budget was sent")
+	}
+	if q.Type != types.DecisionNoul {
+		t.Fatalf("question type = %q, want noul", q.Type)
+	}
+	if q.Criteria != nil {
+		t.Fatalf("Criteria = %v, want nil (noul is unused by criteria)", q.Criteria)
+	}
+	if q.Instructions != "Is this a cost-sensitive request?" {
+		t.Fatalf("Instructions = %q, lost in the wire request", q.Instructions)
+	}
+}
+
+// scoreAnswer builds a "score" answer at the given fractional position.
+// Unlike noul, a score answer DOES carry its own Confidence.
+func scoreAnswer(score, confidence float64) types.DecisionAnswer {
+	return types.DecisionAnswer{Type: types.DecisionScore, Score: score, Confidence: confidence}
+}
+
+func effortLevels() []types.ScoreLevel {
+	return []types.ScoreLevel{
+		{Name: "easy", Description: "a one-liner or a lookup"},
+		{Name: "medium", Description: "a few files, no design needed"},
+		{Name: "hard", Description: "multi-file, needs design"},
+	}
+}
+
+// newTestScoreClassifier builds a one-question "score" classifier targeting
+// the difficulty axis with three ordered levels.
+func newTestScoreClassifier(client *fakeDecisionClient) *DecisionsClassifier {
+	return NewDecisionsClassifier(
+		"effort-score", decisionsResolver("jev", testProvider), &Target{Alias: "jev"},
+		client, map[string]types.ProviderConfig{testProvider: decisionsProvider(testProvider)},
+		[]DecisionQuestionConfig{{
+			Name: "effort", Axis: AxisDifficulty, Type: types.DecisionScore,
+			Levels: effortLevels(), Instructions: "How much effort does this take?",
+		}},
+		NewHeuristicClassifier("fb", AxisDomain, nil), 5*time.Second,
+	)
+}
+
+// An answer that lands exactly on a level (0, 1 or 2) must fill the axis with
+// that level's Name, and the confidence must be read directly from the
+// answer — unlike "noul", "score" carries its own Confidence.
+func TestDecisionsClassifierScoreFillsAxisWithExactLevel(t *testing.T) {
+	client := &fakeDecisionClient{responses: map[string]*types.DecisionResponse{
+		testProvider: decisionReply(map[string]types.DecisionAnswer{"effort": scoreAnswer(1, 0.91)}),
+	}}
+	c := newTestScoreClassifier(client)
+
+	sig, err := c.Classify(context.Background(), testRequest())
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if sig.Difficulty != "medium" {
+		t.Fatalf("Difficulty = %q, want medium (level index 1)", sig.Difficulty)
+	}
+	if got := sig.AxisConfidence[AxisDifficulty]; got != 0.91 {
+		t.Fatalf("AxisConfidence[difficulty] = %v, want 0.91 (read directly from the answer)", got)
+	}
+}
+
+// A fractional answer must snap to the NEAREST level, rounding 0.5 up.
+func TestDecisionsClassifierScoreSnapsFractionalPositionToNearestLevel(t *testing.T) {
+	cases := []struct {
+		score float64
+		want  string
+	}{
+		{0.0, "easy"},
+		{0.4, "easy"},
+		{0.6, "medium"},
+		{1.5, "hard"}, // rounds up at the boundary
+		{1.49, "medium"},
+		{2.0, "hard"},
+	}
+	for _, tc := range cases {
+		client := &fakeDecisionClient{responses: map[string]*types.DecisionResponse{
+			testProvider: decisionReply(map[string]types.DecisionAnswer{"effort": scoreAnswer(tc.score, 0.7)}),
+		}}
+		c := newTestScoreClassifier(client)
+		sig, err := c.Classify(context.Background(), testRequest())
+		if err != nil {
+			t.Fatalf("score=%v: Classify: %v", tc.score, err)
+		}
+		if sig.Difficulty != tc.want {
+			t.Fatalf("score=%v: Difficulty = %q, want %q", tc.score, sig.Difficulty, tc.want)
+		}
+	}
+}
+
+// An out-of-range answer (outside [0, len(levels)-1], which should never
+// happen but is not this classifier's contract to enforce upstream) must
+// clamp to the nearest valid level rather than index out of bounds.
+func TestDecisionsClassifierScoreClampsOutOfRangeAnswer(t *testing.T) {
+	cases := []struct {
+		score float64
+		want  string
+	}{
+		{-1.0, "easy"},
+		{99.0, "hard"},
+	}
+	for _, tc := range cases {
+		client := &fakeDecisionClient{responses: map[string]*types.DecisionResponse{
+			testProvider: decisionReply(map[string]types.DecisionAnswer{"effort": scoreAnswer(tc.score, 0.5)}),
+		}}
+		c := newTestScoreClassifier(client)
+		sig, err := c.Classify(context.Background(), testRequest())
+		if err != nil {
+			t.Fatalf("score=%v: Classify: %v", tc.score, err)
+		}
+		if sig.Difficulty != tc.want {
+			t.Fatalf("score=%v: Difficulty = %q, want %q (clamped)", tc.score, sig.Difficulty, tc.want)
+		}
+	}
+}
+
+// The wire request for a "score" question must carry its levels as an
+// ORDERED list (low -> high), not choiceCriteria()'s alphabetically-sorted
+// map — order is the data a score's whole meaning depends on.
+func TestDecisionsClassifierScoreSendsOrderedCriteria(t *testing.T) {
+	client := &fakeDecisionClient{responses: map[string]*types.DecisionResponse{
+		testProvider: decisionReply(map[string]types.DecisionAnswer{"effort": scoreAnswer(0, 0.5)}),
+	}}
+	c := newTestScoreClassifier(client)
+
+	if _, err := c.Classify(context.Background(), testRequest()); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	q, ok := client.requests[0].Questions["effort"]
+	if !ok {
+		t.Fatal("no question named effort was sent")
+	}
+	if q.Type != types.DecisionScore {
+		t.Fatalf("question type = %q, want score", q.Type)
+	}
+	criteria, ok := q.Criteria.([]string)
+	if !ok {
+		t.Fatalf("Criteria = %#v (%T), want []string", q.Criteria, q.Criteria)
+	}
+	want := []string{"a one-liner or a lookup", "a few files, no design needed", "multi-file, needs design"}
+	if len(criteria) != len(want) {
+		t.Fatalf("Criteria = %v, want %v", criteria, want)
+	}
+	for i := range want {
+		if criteria[i] != want[i] {
+			t.Fatalf("Criteria[%d] = %q, want %q (order must be low -> high)", i, criteria[i], want[i])
 		}
 	}
 }

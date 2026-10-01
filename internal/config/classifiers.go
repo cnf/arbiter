@@ -127,9 +127,9 @@ func (c *Config) validateLLMClassifiers() error {
 // wrapped classifier, with no load-time signal that anything is wrong.
 //
 // The one rule that is genuinely decisions-specific: a question's type must be
-// "choice". Only that primitive is built, and accepting "score" or "noul" in
-// config while the builder ignores them would be exactly the silent no-op this
-// package exists to catch.
+// one of the three built primitives — accepting an unknown type in config
+// while the builder silently ignores it would be exactly the silent no-op
+// this package exists to catch.
 func (c *Config) validateDecisionsClassifiers() error {
 	classifierTypes := make(map[string]string, len(c.Classifiers)) // name -> type
 	for _, cc := range c.Classifiers {
@@ -195,8 +195,11 @@ func (c *Config) validateDecisionsClassifiers() error {
 				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q must be a map", cc.Name, qname), nil)
 			}
 			qtype, _ := q["type"].(string)
-			if qtype != types.DecisionChoice {
-				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q has type %q, which is not supported yet (want %q)", cc.Name, qname, qtype, types.DecisionChoice), nil)
+			if qtype == "" {
+				qtype = types.DecisionChoice
+			}
+			if qtype != types.DecisionChoice && qtype != types.DecisionNoul && qtype != types.DecisionScore {
+				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q has type %q, which is not a known primitive (want %q, %q or %q)", cc.Name, qname, qtype, types.DecisionChoice, types.DecisionNoul, types.DecisionScore), nil)
 			}
 			axis, _ := q["axis"].(string)
 			if axis == "" {
@@ -209,6 +212,20 @@ func (c *Config) validateDecisionsClassifiers() error {
 				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: questions %q and %q both fill axis %q — they are asked in one call, so neither can win", cc.Name, other, qname, axis), nil)
 			}
 			axesSeen[axis] = qname
+
+			if qtype == types.DecisionNoul {
+				if err := validateNoulQuestion(cc.Name, qname, q); err != nil {
+					return err
+				}
+				continue
+			}
+
+			if qtype == types.DecisionScore {
+				if err := validateScoreQuestion(cc.Name, qname, q); err != nil {
+					return err
+				}
+				continue
+			}
 
 			// Parsed with the same function the builder uses, so a shape
 			// validation accepts cannot be one construction drops.
@@ -283,6 +300,91 @@ func (c *Config) validateDecisionsClassifiers() error {
 			if _, err := time.ParseDuration(raw); err != nil {
 				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: invalid timeout %q", cc.Name, raw), err)
 			}
+		}
+	}
+	return nil
+}
+
+// validateNoulQuestion checks a "noul" question's shape: it requires "value"
+// (the axis value applied on yes) and rejects "labels"/"escape", which belong
+// to "choice" and would otherwise be silently ignored by the builder.
+//
+// "noul" is deliberately not accepted on the capabilities axis yet: that axis
+// is an additive set (RequiredCapabilities), and a single yes/no value does
+// not yet have a defined meaning there — see fillAxis's capabilities branch,
+// which expects a slice. Extending noul to gate a single capability is future
+// work, not a silent default.
+func validateNoulQuestion(classifierName, qname string, q map[string]interface{}) error {
+	axis, _ := q["axis"].(string)
+	if axis == types.AxisCapabilitiesName {
+		return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: type \"noul\" does not support the capabilities axis yet", classifierName, qname), nil)
+	}
+	if _, ok := q["labels"]; ok {
+		return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: \"labels\" is not valid for type \"noul\" (use \"value\")", classifierName, qname), nil)
+	}
+	if _, ok := q["escape"]; ok {
+		return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: \"escape\" is not valid for type \"noul\"", classifierName, qname), nil)
+	}
+	value, _ := q["value"].(string)
+	if value == "" {
+		return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q requires a non-empty \"value\" (the axis value applied on yes)", classifierName, qname), nil)
+	}
+	if value == types.UnmatchedValue {
+		return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: value \"unmatched\" is reserved — it is the sentinel a choice's escape verdict fills the axis with", classifierName, qname), nil)
+	}
+	if raw, ok := q["instructions"]; ok {
+		if _, isStr := raw.(string); !isStr {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: instructions must be a string", classifierName, qname), nil)
+		}
+	}
+	return nil
+}
+
+// validateScoreQuestion checks a "score" question's shape: it requires
+// "levels" (the ordered rubric the answer's fractional position snaps onto)
+// and rejects "labels"/"escape"/"value", which belong to "choice"/"noul" and
+// would otherwise be silently ignored by the builder.
+//
+// At least two levels are required — a single-level score could never
+// disagree with itself, which is not a rubric, it is a constant.
+func validateScoreQuestion(classifierName, qname string, q map[string]interface{}) error {
+	if _, ok := q["labels"]; ok {
+		return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: \"labels\" is not valid for type \"score\" (use \"levels\")", classifierName, qname), nil)
+	}
+	if _, ok := q["escape"]; ok {
+		return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: \"escape\" is not valid for type \"score\"", classifierName, qname), nil)
+	}
+	if _, ok := q["value"]; ok {
+		return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: \"value\" is not valid for type \"score\" (use \"levels\")", classifierName, qname), nil)
+	}
+	levels, err := types.ParseScoreLevels(q["levels"])
+	if err != nil {
+		return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: invalid levels: %v", classifierName, qname, err), nil)
+	}
+	if len(levels) < 2 {
+		return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q requires at least two \"levels\" (a single level cannot disagree with itself)", classifierName, qname), nil)
+	}
+	seen := make(map[string]bool, len(levels))
+	for _, l := range levels {
+		if l.Name == "" {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: levels must not contain an empty name", classifierName, qname), nil)
+		}
+		key := strings.ToLower(l.Name)
+		if seen[key] {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: level %q is declared more than once", classifierName, qname, l.Name), nil)
+		}
+		// "unmatched" is the reserved sentinel value an escape verdict fills
+		// the axis with (see types.UnmatchedValue) — a real level of that
+		// name would be indistinguishable in a `when:` rule from "nothing
+		// matched", which a score (unlike a choice) can never actually emit.
+		if key == types.UnmatchedValue {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: level %q is reserved — it is the sentinel value an escape verdict fills the axis with", classifierName, qname, l.Name), nil)
+		}
+		seen[key] = true
+	}
+	if raw, ok := q["instructions"]; ok {
+		if _, isStr := raw.(string); !isStr {
+			return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: instructions must be a string", classifierName, qname), nil)
 		}
 	}
 	return nil

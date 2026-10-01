@@ -173,7 +173,28 @@ classifiers:`+domainHeuristic+`
 	}
 }
 
-func TestDecisionsClassifierRejectsUnsupportedQuestionType(t *testing.T) {
+func TestDecisionsClassifierRejectsUnknownQuestionType(t *testing.T) {
+	err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "effort-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        effort:
+          axis: "difficulty"
+          type: "guess"
+          labels: ["easy", "hard"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), "not a known primitive") {
+		t.Fatalf("want an unknown-question-type error, got %v", err)
+	}
+}
+
+// A "score" question must declare "levels", not "choice"'s "labels" — sending
+// the wrong field is exactly the silent no-op this validation exists to catch.
+func TestDecisionsClassifierRejectsLabelsOnScoreQuestion(t *testing.T) {
 	err := loadConfig(t, decisionsBase+`
 classifiers:`+domainHeuristic+`
   - name: "effort-decisions"
@@ -187,8 +208,267 @@ classifiers:`+domainHeuristic+`
           labels: ["easy", "hard"]
       fallback: "domain-heuristic"
 `)
-	if err == nil || !strings.Contains(err.Error(), "not supported yet") {
-		t.Fatalf("want an unsupported-question-type error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), `"labels" is not valid for type "score"`) {
+		t.Fatalf("want a labels-not-valid-for-score error, got %v", err)
+	}
+}
+
+// A "noul" question is the yes/no primitive: it declares "value" (the axis
+// value applied on yes) instead of "labels".
+func TestDecisionsClassifierLoadsNoulQuestion(t *testing.T) {
+	if err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "budget-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        is_budget:
+          axis: "cost_class"
+          type: "noul"
+          value: "budget"
+          instructions: "Is this a cost-sensitive request?"
+      fallback: "domain-heuristic"
+`); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
+func TestDecisionsClassifierRejectsNoulWithoutValue(t *testing.T) {
+	err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "budget-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        is_budget:
+          axis: "cost_class"
+          type: "noul"
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), `requires a non-empty "value"`) {
+		t.Fatalf("want a missing-value error, got %v", err)
+	}
+}
+
+func TestDecisionsClassifierRejectsNoulWithLabels(t *testing.T) {
+	err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "budget-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        is_budget:
+          axis: "cost_class"
+          type: "noul"
+          value: "budget"
+          labels: ["budget", "quality_first"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), `"labels" is not valid for type "noul"`) {
+		t.Fatalf("want a labels-not-valid error, got %v", err)
+	}
+}
+
+func TestDecisionsClassifierRejectsNoulWithEscape(t *testing.T) {
+	err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "budget-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        is_budget:
+          axis: "cost_class"
+          type: "noul"
+          value: "budget"
+          escape: "none"
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), `"escape" is not valid for type "noul"`) {
+		t.Fatalf("want an escape-not-valid error, got %v", err)
+	}
+}
+
+func TestDecisionsClassifierRejectsNoulOnCapabilitiesAxis(t *testing.T) {
+	err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "vision-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        needs_vision:
+          axis: "capabilities"
+          type: "noul"
+          value: "vision"
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), `does not support the capabilities axis yet`) {
+		t.Fatalf("want a capabilities-not-supported error, got %v", err)
+	}
+}
+
+func TestDecisionsClassifierRejectsNoulWithReservedUnmatchedValue(t *testing.T) {
+	err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "budget-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        is_budget:
+          axis: "cost_class"
+          type: "noul"
+          value: "unmatched"
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), `value "unmatched" is reserved`) {
+		t.Fatalf("want a reserved-value error, got %v", err)
+	}
+}
+
+// A "score" question is the ordered-rubric primitive: it declares "levels"
+// (low -> high) instead of "labels", and the answer's fractional position
+// snaps to the nearest one.
+func TestDecisionsClassifierLoadsScoreQuestion(t *testing.T) {
+	if err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "effort-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        effort:
+          axis: "difficulty"
+          type: "score"
+          instructions: "How much effort does this take?"
+          levels:
+            - name: "easy"
+              description: "a one-liner or a lookup"
+            - name: "medium"
+            - name: "hard"
+              description: "multi-file, needs design"
+      fallback: "domain-heuristic"
+`); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
+func TestDecisionsClassifierRejectsScoreWithoutLevels(t *testing.T) {
+	err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "effort-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        effort:
+          axis: "difficulty"
+          type: "score"
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), `requires at least two "levels"`) {
+		t.Fatalf("want a missing-levels error, got %v", err)
+	}
+}
+
+func TestDecisionsClassifierRejectsScoreWithOneLevel(t *testing.T) {
+	err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "effort-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        effort:
+          axis: "difficulty"
+          type: "score"
+          levels: ["easy"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), `requires at least two "levels"`) {
+		t.Fatalf("want a too-few-levels error, got %v", err)
+	}
+}
+
+func TestDecisionsClassifierRejectsScoreWithDuplicateLevelNames(t *testing.T) {
+	err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "effort-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        effort:
+          axis: "difficulty"
+          type: "score"
+          levels: ["easy", "Easy"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), `is declared more than once`) {
+		t.Fatalf("want a duplicate-level error, got %v", err)
+	}
+}
+
+func TestDecisionsClassifierRejectsScoreWithReservedUnmatchedLevel(t *testing.T) {
+	err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "effort-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        effort:
+          axis: "difficulty"
+          type: "score"
+          levels: ["easy", "unmatched"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), `is reserved`) {
+		t.Fatalf("want a reserved-level error, got %v", err)
+	}
+}
+
+func TestDecisionsClassifierRejectsScoreWithValue(t *testing.T) {
+	err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "effort-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        effort:
+          axis: "difficulty"
+          type: "score"
+          value: "hard"
+          levels: ["easy", "hard"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), `"value" is not valid for type "score"`) {
+		t.Fatalf("want a value-not-valid error, got %v", err)
+	}
+}
+
+func TestDecisionsClassifierRejectsScoreWithEscape(t *testing.T) {
+	err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "effort-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        effort:
+          axis: "difficulty"
+          type: "score"
+          escape: "none"
+          levels: ["easy", "hard"]
+      fallback: "domain-heuristic"
+`)
+	if err == nil || !strings.Contains(err.Error(), `"escape" is not valid for type "score"`) {
+		t.Fatalf("want an escape-not-valid error, got %v", err)
 	}
 }
 

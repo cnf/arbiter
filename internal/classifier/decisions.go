@@ -67,13 +67,22 @@ type DecisionQuestionConfig struct {
 	Name string
 	// Axis is the Signals field the answer fills.
 	Axis string
-	// Type is the primitive: "choice" (the only one built so far).
+	// Type is the primitive: "choice", "noul" or "score".
 	Type string
 	// Labels is the option set for a choice, each with its optional rubric.
+	// Unused by "noul"/"score".
 	Labels []types.Label
 	// Escape names the label meaning "no option fits". Sent as the choice's
-	// `other` option; its verdict fills no axis.
+	// `other` option; its verdict fills no axis. Unused by "noul"/"score".
 	Escape string
+	// Value is "noul"'s axis value: applied when the model answers yes
+	// (Noul > 0.5), and nothing is applied on no — the axis is left exactly
+	// as it was, open for a later classifier to fill. Unused by "choice".
+	Value string
+	// Levels is "score"'s ordered rubric, low -> high. The answer's
+	// fractional position is snapped to the nearest level, and that
+	// level's Name is what fills the axis. Unused by "choice"/"noul".
+	Levels []types.ScoreLevel
 	// Instructions is what is being decided between the options.
 	Instructions string
 }
@@ -86,6 +95,8 @@ type decisionQuestion struct {
 	qtype        string
 	labels       []types.Label
 	escape       string
+	value        string
+	levels       []types.ScoreLevel
 	instructions string
 }
 
@@ -114,6 +125,8 @@ func NewDecisionsClassifierFull(name string, resolver *router.AliasResolver, tar
 			qtype:        q.Type,
 			labels:       q.Labels,
 			escape:       q.Escape,
+			value:        q.Value,
+			levels:       q.Levels,
 			instructions: q.Instructions,
 		})
 	}
@@ -168,6 +181,15 @@ func (c *DecisionsClassifier) Classify(ctx context.Context, req *types.Normalize
 				if v.confidence > sig.Confidence {
 					sig.Confidence = v.confidence
 				}
+				// A "noul" question that answered no is a real, recorded
+				// verdict (confidence above) but fills nothing — v.skip is
+				// how it differs from a choice's escape, which DOES fill the
+				// axis with the unmatched sentinel. "No" is not "nothing
+				// fits"; it is "this question's condition did not hold",
+				// and the axis must stay open for a later classifier.
+				if v.skip {
+					continue
+				}
 				fillAxis(sig, v.axis, v.value, v.capabilities)
 			}
 		})
@@ -180,9 +202,10 @@ func (c *DecisionsClassifier) Classify(ctx context.Context, req *types.Normalize
 // a policy router's `when: {domain: unmatched}` rule can match it explicitly,
 // instead of every wildcard rule matching a silently empty axis.
 //
-// Called only for a question resolveAnswers actually answered (escape or
-// real label alike) — never for a dropped/unanswered question — so there is
-// no "nothing happened here" case left to special-case away.
+// Called only for a question resolveAnswers actually answered AND that wants
+// to fill something — a choice's escape arrives here (as an empty value), but
+// a noul's "no" verdict does not (see axisVerdict.skip) — so there is no
+// "nothing happened here" case left to special-case away.
 func fillAxis(sig *types.Signals, axis, value string, capabilities []string) {
 	if axis == AxisCapabilities {
 		sig.RequiredCapabilities = capabilities
@@ -207,6 +230,10 @@ type axisVerdict struct {
 	value        string
 	capabilities []string
 	confidence   float64
+	// skip is true for a "noul" question that answered no: a real, recorded
+	// verdict, but one that fills nothing — see Classify's use of it, and
+	// fillAxis's doc for why this is not the same as a choice's escape.
+	skip bool
 }
 
 // tryDecide attempts the decision call. ok=false means it failed outright
@@ -315,6 +342,19 @@ func (c *DecisionsClassifier) resolveAnswers(resp *types.DecisionResponse) ([]ax
 			dropped = append(dropped, fmt.Sprintf("no answer for question %q", q.name))
 			continue
 		}
+		if q.qtype == types.DecisionNoul {
+			verdicts = append(verdicts, q.resolveNoul(answer))
+			continue
+		}
+		if q.qtype == types.DecisionScore {
+			v, err := q.resolveScore(answer)
+			if err != nil {
+				dropped = append(dropped, fmt.Sprintf("question %q: %v", q.name, err))
+				continue
+			}
+			verdicts = append(verdicts, v)
+			continue
+		}
 		label, isOption := q.matchChoice(answer.Choice)
 		if !isOption {
 			// A choice outside the option set should be impossible — the
@@ -331,6 +371,56 @@ func (c *DecisionsClassifier) resolveAnswers(resp *types.DecisionResponse) ([]ax
 		verdicts = append(verdicts, v)
 	}
 	return verdicts, dropped
+}
+
+// resolveNoul turns a "noul" answer into a verdict. On yes (p > 0.5) it fills
+// the axis with the question's configured Value; on no it fills nothing —
+// skip is set so Classify leaves the axis exactly as it was, open for a later
+// classifier (unlike a choice's escape, which fills the axis with the
+// unmatched sentinel — see fillAxis's doc for why the two are not the same).
+//
+// Confidence is derived as max(p, 1-p): a Noul answer carries no confidence
+// field of its own (see DecisionAnswer.Noul's doc), because a confident "no"
+// and a confident "yes" are equally confident — this is the one honest number
+// that is true of both.
+func (q decisionQuestion) resolveNoul(answer types.DecisionAnswer) axisVerdict {
+	p := answer.Noul
+	confidence := p
+	if confidence < 1-p {
+		confidence = 1 - p
+	}
+	if p > 0.5 {
+		return axisVerdict{axis: q.axis, value: q.value, confidence: confidence}
+	}
+	return axisVerdict{axis: q.axis, confidence: confidence, skip: true}
+}
+
+// resolveScore turns a "score" answer into a verdict by snapping its
+// fractional position to the nearest configured level and filling the axis
+// with that level's Name — a score only needs to collapse to one of the
+// axis's configured string values, same as a choice's winning label.
+//
+// The raw fractional position is lost in that collapse (1.6 and 1.9 both
+// round to index 2), which is a real precision loss, not an oversight: the
+// value this classifier produces is an axis string, and a `when:` rule
+// matches axis strings. A future extension could keep the raw score on
+// ClassifierCallInfo for a threshold-based `when:` rule, but that is not
+// needed to make "score" usable today.
+//
+// Confidence is read directly from the answer (unlike "noul", a "score"
+// answer DOES carry its own Confidence — see DecisionAnswer.Score's doc).
+func (q decisionQuestion) resolveScore(answer types.DecisionAnswer) (axisVerdict, error) {
+	if len(q.levels) == 0 {
+		return axisVerdict{}, fmt.Errorf("question has no configured levels")
+	}
+	i := int(answer.Score + 0.5)
+	if i < 0 {
+		i = 0
+	}
+	if max := len(q.levels) - 1; i > max {
+		i = max
+	}
+	return axisVerdict{axis: q.axis, value: q.levels[i].Name, confidence: answer.Confidence}, nil
 }
 
 // matchChoice resolves a choice answer to the label it names. isOption=false
@@ -396,16 +486,48 @@ func (q decisionQuestion) choiceCriteria() map[string]string {
 	return criteria
 }
 
+// scoreCriteria builds the ordered criteria list a score question sends: one
+// string per configured level, low -> high. A level's Description is sent
+// when configured (the Jev reference shape is a plain criteria sentence per
+// level); an undescribed level falls back to its bare Name rather than
+// sending an empty string, which would be the weakest possible rubric for
+// the level a model is meant to match against.
+func (q decisionQuestion) scoreCriteria() []string {
+	out := make([]string, 0, len(q.levels))
+	for _, l := range q.levels {
+		if l.Description != "" {
+			out = append(out, l.Description)
+			continue
+		}
+		out = append(out, l.Name)
+	}
+	return out
+}
+
 // wireQuestions builds the questions map for one request. Every question goes
 // in the same call, which is the point of a decision model.
 func (c *DecisionsClassifier) wireQuestions() map[string]types.DecisionQuestion {
 	out := make(map[string]types.DecisionQuestion, len(c.questions))
 	for _, q := range c.questions {
-		out[q.name] = types.DecisionQuestion{
+		wq := types.DecisionQuestion{
 			Type:         q.qtype,
 			Instructions: q.instructions,
-			Criteria:     q.choiceCriteria(),
 		}
+		// "noul" has no criteria — it is a bare yes/no question, answered
+		// from Instructions alone (see types.DecisionQuestion.Criteria's doc:
+		// "Unused by noul").
+		switch q.qtype {
+		case types.DecisionNoul:
+		case types.DecisionScore:
+			// Order IS the data for a score (see types.ScoreLevel's doc), so
+			// this sends the ordered list of level descriptions rather than
+			// choiceCriteria()'s alphabetically-sorted map, which would
+			// silently discard the order a score's whole meaning depends on.
+			wq.Criteria = q.scoreCriteria()
+		default:
+			wq.Criteria = q.choiceCriteria()
+		}
+		out[q.name] = wq
 	}
 	return out
 }
@@ -431,6 +553,27 @@ func (c *DecisionsClassifier) promptSummary() string {
 		if q.instructions != "" {
 			b.WriteString("\n  ")
 			b.WriteString(q.instructions)
+		}
+		if q.qtype == types.DecisionNoul {
+			// No criteria to list — a noul question is answered from
+			// Instructions alone. The axis value it applies on "yes" is
+			// still worth recording, so a verdict is readable without the
+			// config beside it.
+			fmt.Fprintf(&b, "\n  - yes -> %s=%q", q.axis, q.value)
+			continue
+		}
+		if q.qtype == types.DecisionScore {
+			// Order is the data here too, so levels are listed in their
+			// configured low -> high order rather than sorted by name.
+			for i, l := range q.levels {
+				b.WriteString("\n  - ")
+				fmt.Fprintf(&b, "[%d] %s", i, l.Name)
+				if l.Description != "" {
+					b.WriteString(": ")
+					b.WriteString(l.Description)
+				}
+			}
+			continue
 		}
 		criteria := q.choiceCriteria()
 		names := make([]string, 0, len(criteria))
@@ -468,13 +611,19 @@ func (c *DecisionsClassifier) verdictSummary(verdicts []axisVerdict) string {
 	parts := make([]string, 0, len(axes))
 	for _, axis := range axes {
 		v := byAxis[axis]
-		value := v.value
-		if value == "" {
+		switch {
+		case v.skip:
+			// A "noul" question that answered no: a real verdict, but
+			// distinct wording from a choice's escape — "no" is not "nothing
+			// fits", it is "this question's condition did not hold".
+			parts = append(parts, fmt.Sprintf("%s=no (%.2f)", axis, v.confidence))
+		case v.value == "":
 			// The escape verdict: reported explicitly rather than as an empty
 			// string, so the rationale reads as a decision the model made.
-			value = "none of the options fit"
+			parts = append(parts, fmt.Sprintf("%s=%q (%.2f)", axis, "none of the options fit", v.confidence))
+		default:
+			parts = append(parts, fmt.Sprintf("%s=%q (%.2f)", axis, v.value, v.confidence))
 		}
-		parts = append(parts, fmt.Sprintf("%s=%q (%.2f)", axis, value, v.confidence))
 	}
 	return "decisions classifier answered " + strings.Join(parts, ", ")
 }

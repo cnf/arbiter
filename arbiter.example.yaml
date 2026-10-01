@@ -100,13 +100,35 @@ providers:
 #     <name>:
 #                   axis:         which Signals axis it fills (required; two
 #                                 questions may not share an axis)
-#                   type:         "choice" (the only primitive built so far)
-#                   labels:       the option set, same shapes as `labels:` above
-#                   escape:       optional — names the label meaning "no option
-#                                 fits". It is sent under ITS OWN NAME (it is
-#                                 already one of `labels`), and choosing it fills
-#                                 no axis. With no escape configured, an `other`
-#                                 option is added instead.
+#                   type:         "choice", "noul" or "score"
+#                   labels:       "choice" only — the option set, same shapes
+#                                 as `labels:` above
+#                   escape:       "choice" only — optional, names the label
+#                                 meaning "no option fits". It is sent under
+#                                 ITS OWN NAME (it is already one of `labels`),
+#                                 and choosing it fills no axis. With no escape
+#                                 configured, an `other` option is added instead.
+#                   value:        "noul" only — the axis value applied when the
+#                                 model answers yes (probability > 0.5); "no"
+#                                 fills nothing and leaves the axis open for a
+#                                 later classifier — NOT the same as a choice's
+#                                 escape, which fills the reserved "unmatched"
+#                                 sentinel. "noul" does not support the
+#                                 capabilities axis yet. A "noul" answer has no
+#                                 confidence of its own, so max(p, 1-p) is
+#                                 recorded (a confident no is as confident as a
+#                                 confident yes).
+#                   levels:       "score" only — an ORDERED list, low -> high
+#                                 (a bare name, or {name, description}; a map is
+#                                 rejected — order IS the data). The answer is a
+#                                 fractional position along that order (e.g. 1.6
+#                                 sits between level 1 and level 2); it is
+#                                 snapped to the nearest level and that level's
+#                                 name fills the axis. Confidence is read
+#                                 directly from the answer, unlike "noul". At
+#                                 least two levels are required. Prefer "score"
+#                                 over "choice" when the axis is genuinely a
+#                                 scale rather than a set of categories.
 #                   instructions: optional — what is being decided between them
 #                 Each answer's probability becomes that axis's confidence
 #                 (Signals.AxisConfidence), so the merge scores every axis on

@@ -535,6 +535,28 @@ A partially-answered call is not a failed call: an unanswered or off-list
 question is dropped (and recorded on the call's row) while the axes that were
 answered stand, since each axis is resolved independently.
 
+Three primitives are built: `choice` (pick one of several labels, shown above
+for `domain` and `cost_class`), `noul` (a bare yes/no), and `score` (a
+fractional position on an ordered rubric). A `noul` question declares `value`
+instead of `labels`: answering "yes" (probability > 0.5) applies that value to
+the axis; answering "no" applies nothing and leaves the axis exactly as it
+was, open for a later classifier or the fallback to fill — this is
+deliberately NOT the same as a `choice`'s escape, which fills the axis with
+the reserved `unmatched` sentinel. A `noul` answer carries no confidence of
+its own (a confident "no" and a confident "yes" are equally confident), so the
+confidence recorded is `max(p, 1-p)`. `noul` does not yet support the
+`capabilities` axis (an additive set, not a single value) — that is future
+work, not a silent default.
+
+A `score` question declares `levels` instead of `labels`: an ORDERED list,
+low -> high (order is the data — a map would lose it to randomized iteration,
+so only a list is accepted). The answer is a fractional position along that
+order (e.g. `1.6` sits between level 1 and level 2); the classifier snaps it
+to the nearest level and fills the axis with that level's name. Confidence is
+read directly from the answer, unlike `noul`. Prefer `score` over `choice`
+when the axis is genuinely a scale rather than a set of categories — effort or
+cost class, for instance, is arguably better asked as a score than a choice.
+
 ```yaml
 providers:
   claude:
@@ -568,7 +590,7 @@ classifiers:
       questions:                          # ALL asked in ONE call
         domain:
           axis: "domain"                  # which Signals axis it fills
-          type: "choice"                  # the only primitive built so far
+          type: "choice"                  # "choice", "noul" or "score"
           labels:                         # bare names, or name -> rubric
             code_generation: "wants code written, modified or reviewed."
             reasoning: "wants something explained or debugged."
@@ -578,11 +600,18 @@ classifiers:
           instructions: "Pick the category that best describes the request."
         cost_class:
           axis: "cost_class"
-          type: "choice"
-          labels:
-            budget: "a cheap model is fine."
-            quality_first: "spend more for a better answer."
+          type: "score"                   # ordered rubric, no labels/value
+          levels:                         # low -> high; order IS the data
+            - name: "budget"
+              description: "a cheap model is fine."
+            - name: "quality_first"
+              description: "spend more for a better answer."
           instructions: "How much is this request worth spending on?"
+        is_urgent:
+          axis: "difficulty"
+          type: "noul"                    # bare yes/no, no labels
+          value: "hard"                   # applied to the axis on "yes"; "no" leaves it unset
+          instructions: "Does this request have a hard deadline or urgent tone?"
       fallback: "domain-heuristic"        # may name an `llm` classifier too
       timeout: "5s"                       # optional, defaults to 10s
 ```

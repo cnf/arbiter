@@ -1,12 +1,12 @@
 # Arbiter
 
-![architecture](docs/architecture.svg)
+![architecture](./architecture.svg)
 
 ## docs
 
-- [Getting Started](docs/getting-started.md)
-- [Configuration](docs/configuration.md)
-- [Routing](docs/routing.md)
-- [Observability](docs/observability.md)
-- [Guardrails](docs/guardrails.md)
-- [Client Info](docs/clients.md)
+- [Getting Started](./getting-started.md)
+- [Configuration](./configuration.md)
+- [Routing](./routing.md)
+- [Observability](./observability.md)
+- [Guardrails](./guardrails.md)
+- [Client Info](./clients.md)

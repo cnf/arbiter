@@ -90,7 +90,7 @@ LIMIT ?`
 // two answer different questions and return different shapes. Session returns
 // the thinner SessionRequest for the JSON trajectory API and for "where did
 // this request sit in its conversation"; this returns the full list projection
-// the transcript's inspector reads (domain, effort, cost_class, actual_model,
+// the transcript's inspector reads (domain, difficulty, cost_class, actual_model,
 // request_kind — none of which SessionRequest carries), because the transcript
 // page is a browsing view over one conversation and needs the same per-row
 // facts the flat requests list shows.

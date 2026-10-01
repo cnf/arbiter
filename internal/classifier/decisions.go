@@ -192,8 +192,8 @@ func fillAxis(sig *types.Signals, axis, value string, capabilities []string) {
 		value = types.UnmatchedValue
 	}
 	switch axis {
-	case AxisEffort:
-		sig.Effort = value
+	case AxisDifficulty:
+		sig.Difficulty = value
 	case AxisCostClass:
 		sig.CostClass = value
 	default:

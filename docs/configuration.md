@@ -42,12 +42,12 @@ providers:
 classifiers:
   - name: "domain"
     type: "heuristic"
-    axis: "domain"                     # domain | effort | cost_class | capabilities
+    axis: "domain"                     # domain | difficulty | cost_class | capabilities
     config:
       keywords: { code_generation: ["write", "refactor"] }
-  - name: "effort"
+  - name: "difficulty"
     type: "heuristic"
-    axis: "effort"                     # a second instance, same type, own axis
+    axis: "difficulty"                 # a second instance, same type, own axis
     config:
       keywords: { easy: ["quick"], hard: ["architecture"] }
 
@@ -88,7 +88,7 @@ routers:
     type: "policy"
     config:
       rules:
-        - when: { domain: "code_generation", effort: "hard" }
+        - when: { domain: "code_generation", difficulty: "hard" }
           target: "cheap-claude"       # a rule target may name an alias
         - when: { capabilities: ["vision"] }
           provider: "gpt4"             # ...or a literal provider/model

@@ -11,7 +11,7 @@ import (
 
 func TestExecuteRecordsClassifiedSignals(t *testing.T) {
 	fc := &classifiedSignalsClassifier{signals: types.Signals{
-		Domain: "discovery", Effort: "hard", CostClass: "free", Confidence: 0.91,
+		Domain: "discovery", Difficulty: "hard", CostClass: "free", Confidence: 0.91,
 		RequiredCapabilities: []string{"vision", "tool_use"},
 	}}
 	w := &capturingWriter{}
@@ -25,8 +25,8 @@ func TestExecuteRecordsClassifiedSignals(t *testing.T) {
 	if !ok {
 		t.Fatal("no event recorded")
 	}
-	if ev.Domain != "discovery" || ev.Effort != "hard" || ev.CostClass != "free" || ev.Confidence != 0.91 {
-		t.Errorf("recorded axes/confidence = %q/%q/%q/%v", ev.Domain, ev.Effort, ev.CostClass, ev.Confidence)
+	if ev.Domain != "discovery" || ev.Difficulty != "hard" || ev.CostClass != "free" || ev.Confidence != 0.91 {
+		t.Errorf("recorded axes/confidence = %q/%q/%q/%v", ev.Domain, ev.Difficulty, ev.CostClass, ev.Confidence)
 	}
 	if len(ev.RequiredCapabilities) != 2 || ev.RequiredCapabilities[0] != "vision" || ev.RequiredCapabilities[1] != "tool_use" {
 		t.Errorf("recorded capabilities = %v", ev.RequiredCapabilities)
@@ -49,7 +49,7 @@ func (c *classifiedSignalsClassifier) Classify(context.Context, *types.Normalize
 // rule matched on, and the rationale naming the rule's own `when` clause.
 func TestStoppedRequestKeepsClassifiedSignals(t *testing.T) {
 	fc := &classifiedSignalsClassifier{signals: types.Signals{
-		Domain: "discovery", Effort: "hard", CostClass: "free", Confidence: 0.91,
+		Domain: "discovery", Difficulty: "hard", CostClass: "free", Confidence: 0.91,
 		RequiredCapabilities: []string{"vision", "tool_use"}, RequestKind: "title",
 	}}
 	w := &capturingRecorder{}
@@ -75,8 +75,8 @@ func TestStoppedRequestKeepsClassifiedSignals(t *testing.T) {
 	}
 
 	// …and the classification that led to it must not have been dropped.
-	if ev.Domain != "discovery" || ev.Effort != "hard" || ev.CostClass != "free" {
-		t.Errorf("axes = %q/%q/%q, want discovery/hard/free", ev.Domain, ev.Effort, ev.CostClass)
+	if ev.Domain != "discovery" || ev.Difficulty != "hard" || ev.CostClass != "free" {
+		t.Errorf("axes = %q/%q/%q, want discovery/hard/free", ev.Domain, ev.Difficulty, ev.CostClass)
 	}
 	if ev.Confidence != 0.91 {
 		t.Errorf("Confidence = %v, want 0.91", ev.Confidence)

@@ -50,7 +50,7 @@ func (r *Reader) SessionsForContent(ctx context.Context, hash string, limit int)
 
 	q := `
 WITH ranked (id, trace_id, ts, ts_text, session_key, format, provider, model, actual_model,
-             alias_used, routing_rationale, domain, effort, cost_class, input_tokens,
+             alias_used, routing_rationale, domain, difficulty, cost_class, input_tokens,
              output_tokens, cost_usd, latency_ms, status_code, error, stream, config_epoch,
              kind, request_kind, arrival_ts, arrival_ts_text, required_capabilities_json, rn) AS (
     SELECT` + requestRowColumns + `,
@@ -65,7 +65,7 @@ WITH ranked (id, trace_id, ts, ts_text, session_key, format, provider, model, ac
     )
 )
 SELECT id, trace_id, ts, ts_text, session_key, format, provider, model, actual_model,
-       alias_used, routing_rationale, domain, effort, cost_class, input_tokens,
+       alias_used, routing_rationale, domain, difficulty, cost_class, input_tokens,
        output_tokens, cost_usd, latency_ms, status_code, error, stream, config_epoch,
        kind, request_kind, arrival_ts, arrival_ts_text, required_capabilities_json
 FROM ranked WHERE rn = 1

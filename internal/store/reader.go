@@ -185,7 +185,7 @@ type RequestRow struct {
 	AliasUsed        string `json:"alias_used,omitempty"`
 	RoutingRationale string `json:"routing_rationale"`
 	Domain           string `json:"domain,omitempty"`
-	Effort           string `json:"effort,omitempty"`
+	Difficulty       string `json:"difficulty,omitempty"`
 	CostClass        string `json:"cost_class,omitempty"`
 	// RequiredCapabilities is nil when classification did not produce a result,
 	// and an empty non-nil slice when classification found no capabilities.
@@ -230,7 +230,7 @@ type RequestRow struct {
 // classification output, and a title request is recorded by the stamp alone.
 func (r RequestRow) HasClassification() bool {
 	return r.RequiredCapabilities != nil ||
-		r.Domain != "" || r.Effort != "" || r.CostClass != ""
+		r.Domain != "" || r.Difficulty != "" || r.CostClass != ""
 }
 
 // RequestDetail is the full record for one request. Unlike RequestRow it
@@ -272,7 +272,7 @@ type RequestDetail struct {
 // GetRequest so the two cannot drift into returning differently-shaped rows.
 const requestRowColumns = `
     id, trace_id, ts, CAST(ts AS TEXT), session_key, format, provider, model, actual_model, alias_used,
-    routing_rationale, domain, effort, cost_class, input_tokens, output_tokens,
+    routing_rationale, domain, difficulty, cost_class, input_tokens, output_tokens,
     cost_usd, latency_ms, status_code, error, stream, config_epoch, kind, request_kind, arrival_ts,
     CAST(arrival_ts AS TEXT), required_capabilities_json`
 
@@ -436,7 +436,7 @@ FROM requests WHERE id = ?`
 		actual       sql.NullString
 		alias        sql.NullString
 		domain       sql.NullString
-		effort       sql.NullString
+		difficulty   sql.NullString
 		costCl       sql.NullString
 		capabilities sql.NullString
 		errText      sql.NullString
@@ -451,7 +451,7 @@ FROM requests WHERE id = ?`
 	)
 	err := r.db.QueryRowContext(ctx, q, id).Scan(
 		&d.ID, &d.TraceID, &tsRaw, &d.TsRaw, &session, &d.Format, &d.Provider, &d.Model, &actual, &alias,
-		&d.RoutingRationale, &domain, &effort, &costCl, &d.InputTokens, &d.OutputTokens,
+		&d.RoutingRationale, &domain, &difficulty, &costCl, &d.InputTokens, &d.OutputTokens,
 		&d.CostUSD, &d.LatencyMs, &d.StatusCode, &errText, &d.Stream, &epoch, &d.Kind, &reqKind,
 		&arrivalTs, &arrivalTsRaw, &capabilities,
 		&conf, &d.CacheReadTokens, &d.CacheWriteTokens, &tools, &client, &headers)
@@ -469,7 +469,7 @@ FROM requests WHERE id = ?`
 	d.ActualModel = actual.String
 	d.AliasUsed = alias.String
 	d.Domain = domain.String
-	d.Effort = effort.String
+	d.Difficulty = difficulty.String
 	d.CostClass = costCl.String
 	if capabilities.Valid {
 		if err := json.Unmarshal([]byte(capabilities.String), &d.RequiredCapabilities); err != nil {
@@ -507,7 +507,7 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 		actual       sql.NullString
 		alias        sql.NullString
 		domain       sql.NullString
-		effort       sql.NullString
+		difficulty   sql.NullString
 		costCl       sql.NullString
 		errText      sql.NullString
 		epoch        sql.NullString
@@ -517,7 +517,7 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 		capabilities sql.NullString
 	)
 	if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &s.TsRaw, &session, &s.Format, &s.Provider,
-		&s.Model, &actual, &alias, &s.RoutingRationale, &domain, &effort, &costCl,
+		&s.Model, &actual, &alias, &s.RoutingRationale, &domain, &difficulty, &costCl,
 		&s.InputTokens, &s.OutputTokens, &s.CostUSD, &s.LatencyMs, &s.StatusCode,
 		&errText, &s.Stream, &epoch, &s.Kind, &reqKind, &arrivalTs, &arrivalTsRaw, &capabilities); err != nil {
 		return RequestRow{}, fmt.Errorf("scan request row: %w", err)
@@ -529,7 +529,7 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 	s.ActualModel = actual.String
 	s.AliasUsed = alias.String
 	s.Domain = domain.String
-	s.Effort = effort.String
+	s.Difficulty = difficulty.String
 	s.CostClass = costCl.String
 	if capabilities.Valid {
 		if err := json.Unmarshal([]byte(capabilities.String), &s.RequiredCapabilities); err != nil {

@@ -61,7 +61,7 @@ func TestSchemaAppliesAndRoundTrips(t *testing.T) {
 		AliasUsed:        "cheap-claude",
 		RoutingRationale: "policy rule matched domain=code_generation",
 		Domain:           "code_generation",
-		Effort:           "easy",
+		Difficulty:       "easy",
 		CostClass:        "budget",
 		Confidence:       0.82,
 		Usage:            types.Usage{InputTokens: 1200, OutputTokens: 340, CacheRead: 100, CacheWrite: 0, CostUSD: 0.000725},
@@ -238,7 +238,7 @@ func TestMigrationAddsRequestKindToAnExistingTable(t *testing.T) {
 		alias_used            TEXT,
 		routing_rationale     TEXT NOT NULL,
 		domain                TEXT,
-		effort                TEXT,
+		difficulty            TEXT,
 		cost_class            TEXT,
 		confidence            REAL,
 		input_tokens          INTEGER NOT NULL DEFAULT 0,
@@ -288,6 +288,99 @@ func TestMigrationAddsRequestKindToAnExistingTable(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].RequestKind != "title" {
 		t.Fatalf("after migration rows = %+v, want one row with request_kind=title", rows)
+	}
+}
+
+// TestMigrationRenamesEffortToDifficulty is the upgrade path for #79: the
+// routing axis column was renamed, not added, so a database created before the
+// rename still has `effort` while every read/write now names `difficulty`. A
+// plain ADD COLUMN cannot express it and CREATE TABLE IF NOT EXISTS is a no-op
+// against the existing table, so without renameColumnIfPresent every row after
+// the change would fail to insert (unknown column) — silently losing events.
+//
+// Covers both guards: the rename happens on a database that still has `effort`,
+// the pre-existing value survives, and running startup a second time (the
+// column now already named `difficulty`) is a no-op rather than an error.
+func TestMigrationRenamesEffortToDifficulty(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-effort.db")
+
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `CREATE TABLE requests (
+		id                    INTEGER PRIMARY KEY,
+		trace_id              TEXT NOT NULL,
+		session_key           TEXT,
+		client_id             TEXT,
+		ts                    TIMESTAMP NOT NULL,
+		format                TEXT NOT NULL,
+		provider              TEXT NOT NULL,
+		model                 TEXT NOT NULL,
+		actual_model          TEXT,
+		alias_used            TEXT,
+		routing_rationale     TEXT NOT NULL,
+		domain                TEXT,
+		effort                TEXT,
+		cost_class            TEXT,
+		confidence            REAL,
+		input_tokens          INTEGER NOT NULL DEFAULT 0,
+		output_tokens         INTEGER NOT NULL DEFAULT 0,
+		cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+		cache_write_tokens    INTEGER NOT NULL DEFAULT 0,
+		cost_usd              REAL NOT NULL DEFAULT 0,
+		latency_ms            INTEGER NOT NULL,
+		status_code           INTEGER NOT NULL,
+		error                 TEXT,
+		stream                BOOLEAN NOT NULL,
+		tool_calls_json       TEXT,
+		config_epoch          TEXT,
+		headers_json          TEXT,
+		kind                  TEXT NOT NULL DEFAULT 'client',
+		request_kind          TEXT
+	)`); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	// A row written under the old spelling, so the value surviving the rename
+	// is proven and not just the column name.
+	if _, err := legacy.ExecContext(ctx, `INSERT INTO requests
+		(trace_id, ts, format, provider, model, routing_rationale, domain, effort, latency_ms, status_code, stream)
+		VALUES ('trace-effort', CURRENT_TIMESTAMP, 'openai', 'openrouter', 'm', 'legacy', 'code_generation', 'hard', 10, 200, 0)`); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	w, err := NewSQLiteWriter(path, &recordingLogger{})
+	if err != nil {
+		t.Fatalf("NewSQLiteWriter on a pre-rename database: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Startup a second time: the column is already `difficulty`, so
+	// renameColumnIfPresent must do nothing rather than fail on a missing
+	// `effort`.
+	w2, err := NewSQLiteWriter(path, &recordingLogger{})
+	if err != nil {
+		t.Fatalf("NewSQLiteWriter second run (must be idempotent): %v", err)
+	}
+	if err := w2.Close(); err != nil {
+		t.Fatalf("Close second run: %v", err)
+	}
+
+	r := &Reader{db: reopenReads(t, path)}
+	rows, err := r.ListRequests(ctx, RequestFilter{})
+	if err != nil {
+		t.Fatalf("ListRequests after migration: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("after migration rows = %d, want 1", len(rows))
+	}
+	if rows[0].Difficulty != "hard" {
+		t.Errorf("Difficulty = %q, want hard — the pre-rename value must survive", rows[0].Difficulty)
 	}
 }
 
@@ -387,7 +480,7 @@ func TestEmptyStringsBecomeNull(t *testing.T) {
 		t.Fatalf("insertRequest: %v", err)
 	}
 
-	for _, col := range []string{"session_key", "client_id", "alias_used", "domain", "effort", "cost_class", "error", "tool_calls_json", "config_epoch"} {
+	for _, col := range []string{"session_key", "client_id", "alias_used", "domain", "difficulty", "cost_class", "error", "tool_calls_json", "config_epoch"} {
 		var isNull int
 		q := `SELECT ` + col + ` IS NULL FROM requests WHERE trace_id = 'trace-nulls'`
 		if err := db.QueryRowContext(ctx, q).Scan(&isNull); err != nil {

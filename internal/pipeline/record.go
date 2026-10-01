@@ -66,8 +66,8 @@ func (p *Pipeline) recordClassifierCalls(req *types.NormalizedRequest, sig types
 			if sig.Domain != "" {
 				axes[classifier.AxisDomain] = sig.Domain
 			}
-			if sig.Effort != "" {
-				axes[classifier.AxisEffort] = sig.Effort
+			if sig.Difficulty != "" {
+				axes[classifier.AxisDifficulty] = sig.Difficulty
 			}
 			if sig.CostClass != "" {
 				axes[classifier.AxisCostClass] = sig.CostClass
@@ -83,7 +83,7 @@ func (p *Pipeline) recordClassifierCalls(req *types.NormalizedRequest, sig types
 			Model:            call.Model,
 			RoutingRationale: rationale,
 			Domain:           axes[classifier.AxisDomain],
-			Effort:           axes[classifier.AxisEffort],
+			Difficulty:       axes[classifier.AxisDifficulty],
 			CostClass:        axes[classifier.AxisCostClass],
 			Confidence:       confidence,
 			Usage:            call.Usage,
@@ -200,7 +200,7 @@ func (p *Pipeline) recordFailed(ctx context.Context, traceID, sessionKey, format
 		Model:                model,
 		AliasUsed:            p.aliasName(model),
 		Domain:               sig.Domain,
-		Effort:               sig.Effort,
+		Difficulty:           sig.Difficulty,
 		CostClass:            sig.CostClass,
 		Confidence:           sig.Confidence,
 		RequestKind:          sig.RequestKind,

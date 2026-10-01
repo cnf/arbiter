@@ -46,7 +46,7 @@ func TestTranscriptRendersTurnsWithNestedInternalCalls(t *testing.T) {
 		{TraceID: "tr-2", SessionKey: key, Kind: "classifier",
 			Provider: "openrouter", Model: "small", StatusCode: 200,
 			Ts: now.Add(1500 * time.Millisecond), LatencyMs: 40,
-			Domain: "coding", Effort: "medium", Confidence: 0.8,
+			Domain: "coding", Difficulty: "medium", Confidence: 0.8,
 			RoutingRationale: "matched on the tool-call signal"},
 		clientEvent("tr-2", 2*time.Second, 200, &store.CapturedContent{
 			Request: []store.Block{
@@ -646,7 +646,7 @@ func TestTranscriptShowsClassifierSignals(t *testing.T) {
 	events := []store.Event{
 		{TraceID: "classified", SessionKey: "classifier-signals", Kind: "client", Provider: "p", Model: "m", StatusCode: 200,
 			Ts: now, RoutingRationale: `policy router "test": domain=discovery -> provider "p"`,
-			Domain: "discovery", Effort: "hard", CostClass: "free", Confidence: 0.91,
+			Domain: "discovery", Difficulty: "hard", CostClass: "free", Confidence: 0.91,
 			RequiredCapabilities: []string{"vision", "tool_use"}},
 		{TraceID: "no-match", SessionKey: "classifier-signals", Kind: "client", Provider: "p", Model: "m", StatusCode: 200,
 			Ts: now.Add(time.Second), RequiredCapabilities: []string{}},
@@ -664,7 +664,7 @@ func TestTranscriptShowsClassifierSignals(t *testing.T) {
 	if !strings.Contains(body, `policy router &#34;test&#34;: domain=discovery -&gt; provider &#34;p&#34;`) {
 		t.Error("matched routing predicate not found in rationale")
 	}
-	for _, empty := range []string{`effort=""`, `cost_class=""`, "capabilities=[]", "request_kind=\"\""} {
+	for _, empty := range []string{`difficulty=""`, `cost_class=""`, "capabilities=[]", "request_kind=\"\""} {
 		if strings.Contains(body, empty) {
 			t.Errorf("rationale contains unused predicate %q", empty)
 		}

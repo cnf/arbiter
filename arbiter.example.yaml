@@ -38,9 +38,9 @@ providers:
       - "llama2"
 
 # Each classifier fills exactly one axis of the routing signals, declared via
-# `axis` (domain | effort | cost_class | capabilities). Several instances of
+# `axis` (domain | difficulty | cost_class | capabilities). Several instances of
 # the same "heuristic" type run side by side and are merged per axis, so a
-# high-confidence domain match can't starve the effort axis. `axis` may be
+# high-confidence domain match can't starve the difficulty axis. `axis` may be
 # omitted on a "heuristic" classifier (defaults to domain, matching older
 # configs); the legacy "capability_detector" type always fills capabilities.
 #
@@ -52,7 +52,7 @@ providers:
 # classifier with only_if_unset, and the model call fires only when the
 # heuristic didn't fill the axis (including an escape/"other" verdict, which
 # fills nothing). Only "llm"/"decisions" may set it; the merge skip is per-axis,
-# so an only_if_unset domain classifier still runs when only the effort axis
+# so an only_if_unset domain classifier still runs when only the difficulty axis
 # was filled elsewhere.
 #
 # A `type: "llm"` classifier asks an upstream model to classify instead of
@@ -259,9 +259,9 @@ classifiers:
           - "how does"
           - "when did"
 
-  - name: "effort"
+  - name: "difficulty"
     type: "heuristic"
-    axis: "effort"
+    axis: "difficulty"
     config:
       keywords:
         easy:
@@ -321,7 +321,7 @@ aliases:
   coding:
     force: { domain: ["code_generation"] }
   coding-hard:
-    force: { domain: ["code_generation"], effort: ["hard"] }
+    force: { domain: ["code_generation"], difficulty: ["hard"] }
 
   cheap-claude:
     type: "pinned"
@@ -377,10 +377,12 @@ routers:
 # match wins — and errors if nothing matches. Chain it ahead of a "simple"
 # router so unmatched requests fall through to a default instead of failing.
 # A rule's target is either `target:` (an alias name) or `provider:`/`model:`
-# (a literal provider/model) — not both. `when` keys are domain, effort,
+# (a literal provider/model) — not both. `when` keys are domain, difficulty,
 # cost_class, capabilities, and request_kind; the deprecated spellings
 # `intent` and `cost_sensitivity` are still accepted (but not alongside their
-# replacement on the same rule). `request_kind` matches a request's kind
+# replacement on the same rule), and the removed spelling `effort` (renamed to
+# `difficulty`) is rejected with an error naming its replacement.
+# `request_kind` matches a request's kind
 # ("title", later "subagent") rather than what it's about — not an axis, but
 # still a legitimate routing condition; see the `request-kind` classifier
 # above.
@@ -389,9 +391,9 @@ routers:
 #    type: "policy"
 #    config:
 #      rules:
-#        - when: { domain: "code_generation", effort: "hard" }
+#        - when: { domain: "code_generation", difficulty: "hard" }
 #          target: "cheap-claude"
-#        - when: { domain: "code_generation", effort: "easy" }
+#        - when: { domain: "code_generation", difficulty: "easy" }
 #          target: "free-search"
 #        - when: { capabilities: ["vision"] }
 #          provider: "gpt4"

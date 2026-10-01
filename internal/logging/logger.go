@@ -69,7 +69,7 @@ func (sl *StdoutLogger) LogRouting(ctx context.Context, route types.Route, signa
 		"model", route.Model,
 		"rationale", route.Rationale,
 		"domain", signals.Domain,
-		"effort", signals.Effort,
+		"difficulty", signals.Difficulty,
 		"cost_class", signals.CostClass,
 		"capabilities", signals.RequiredCapabilities,
 		"confidence", signals.Confidence,

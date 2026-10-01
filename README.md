@@ -21,10 +21,10 @@ Concretely, it gives you:
 
 - **Every request recorded, with the reason it was routed that way.** Each row
   carries a one-line rationale (`policy router "policy": domain="code_generation"
-  effort="" capabilities=[] cost_class="" -> alias "cheap-claude" -> claude/haiku`),
+  difficulty="" capabilities=[] cost_class="" -> alias "cheap-claude" -> claude/haiku`),
   so a routing decision never has to be guessed from the response.
 - **Routing you write in config, not in code.** Classifiers turn a request into
-  independent axes (`domain`, `effort`, `cost_class`, `capabilities`); aliases
+  independent axes (`domain`, `difficulty`, `cost_class`, `capabilities`); aliases
   name a target; policy rules match on the axes. Stacked conditions, not a
   bag of `if` statements.
 - **One endpoint in front of many providers.** OpenAI-shaped and Anthropic-shaped
@@ -168,7 +168,7 @@ arbiter/
 │   ├── http/             # ingress: proxy endpoints, SSE flushing, trace IDs, /admin/* (reload + stats)
 │   ├── pipeline/         # request lifecycle: normalize -> guardrails -> classify -> force -> route -> upstream
 │   ├── router/           # routing: policy rules, simple default/fallback, alias resolution
-│   ├── classifier/       # per-axis routing signals (domain, effort, cost class, capabilities)
+│   ├── classifier/       # per-axis routing signals (domain, difficulty, cost class, capabilities)
 │   ├── guardrail/        # composable pre/post hooks (system prompt, rate limit, prompt rewrite)
 │   ├── translator/       # Anthropic <-> OpenAI <-> Normalized conversions (incl. SSE events)
 │   ├── upstream/         # provider HTTP calls, SSE reading, response parsing

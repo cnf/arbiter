@@ -324,7 +324,7 @@ step 3 + the 4a query surface is currently greenlit.
 > runs.
 >
 > A dimension whose window has only one value was *explained* rather than
-> presented as a finding — on this deployment domain/effort/alias are all empty
+> presented as a finding — on this deployment domain/difficulty/alias are all empty
 > because the traffic names a concrete model, which routes before classification
 > runs. That reasoning still holds and the new page honours it.
 >

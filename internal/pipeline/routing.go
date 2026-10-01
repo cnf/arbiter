@@ -208,7 +208,7 @@ func (p *Pipeline) aliasRoute(name string) (types.Route, bool) {
 // applyForceAlias overrides the axes named by a force-alias, when req.Model
 // names one. Only the axes the alias declares are overridden — an unforced
 // axis keeps whatever the classifiers produced (e.g. "coding" forces domain
-// but leaves effort to be classified normally). ok=false (req.Model isn't a
+// but leaves difficulty to be classified normally). ok=false (req.Model isn't a
 // force-alias, or no aliases are configured at all) returns sig unchanged.
 func (p *Pipeline) applyForceAlias(req *types.NormalizedRequest, sig types.Signals) types.Signals {
 	if p.aliasResolver == nil || req.Model == "" {
@@ -225,8 +225,8 @@ func (p *Pipeline) applyForceAlias(req *types.NormalizedRequest, sig types.Signa
 		switch axis {
 		case classifier.AxisDomain, "intent":
 			sig.Domain = values[0]
-		case classifier.AxisEffort:
-			sig.Effort = values[0]
+		case classifier.AxisDifficulty:
+			sig.Difficulty = values[0]
 		case classifier.AxisCostClass, "cost_sensitivity":
 			sig.CostClass = values[0]
 		case classifier.AxisCapabilities:

@@ -162,7 +162,7 @@ func (s signalState) HasValues() bool { return s == signalPresent }
 // was how a capability-only classification rendered as "no signals matched"
 // and hid the capability it had found.
 func signalStateFor(row store.RequestRow, confidence float64) signalState {
-	if row.Domain != "" || row.Effort != "" || row.CostClass != "" ||
+	if row.Domain != "" || row.Difficulty != "" || row.CostClass != "" ||
 		len(row.RequiredCapabilities) > 0 {
 		return signalPresent
 	}
@@ -188,7 +188,7 @@ type transcriptInspector struct {
 	// Verdict is the classifier's own answer. Zero-valued for a client turn
 	// except for the rationale, which every request carries.
 	Domain               string
-	Effort               string
+	Difficulty           string
 	CostClass            string
 	RequiredCapabilities []string
 	Confidence           float64
@@ -638,7 +638,7 @@ func (h *Handler) buildTurn(r *http.Request, row store.RequestRow, seq int, page
 		Inspector: transcriptInspector{
 			IsClassifier:         row.Kind != "client",
 			Domain:               row.Domain,
-			Effort:               row.Effort,
+			Difficulty:           row.Difficulty,
 			CostClass:            row.CostClass,
 			RequiredCapabilities: row.RequiredCapabilities,
 		},

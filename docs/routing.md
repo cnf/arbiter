@@ -26,9 +26,9 @@ precedence order:
    `routing.fallback_providers`).
 4. **Classify + rules.** Signals are classified per axis (each `heuristic`
    classifier fills the one axis it declares, merged per axis so a
-   high-confidence domain match can't starve effort), a **force alias** named
+   high-confidence domain match can't starve difficulty), a **force alias** named
    by the client overrides only the axes it declares (`coding` sets domain but
-   leaves effort to classify), then the first matching policy rule wins. A
+   leaves difficulty to classify), then the first matching policy rule wins. A
    policy router errors when nothing matches, so chain a `simple` router after
    it (or write a catch-all rule) to degrade instead of failing.
 
@@ -443,7 +443,7 @@ only if needed": declare a heuristic before the llm classifier, and the model
 call fires only when the heuristic left the axis empty. An escape/"other"
 verdict fills no axis, so it counts as empty and the gated classifier still
 runs. The skip is per axis: a gated `domain` classifier still runs when only
-the `effort` axis was filled elsewhere. A decisions classifier, whose one call
+the `difficulty` axis was filled elsewhere. A decisions classifier, whose one call
 answers several axes, is skipped only when *every* axis it would fill is
 already set — any unanswered axis justifies the call. Only model-backed types
 may set it; a heuristic that never makes an upstream call has nothing to gate.

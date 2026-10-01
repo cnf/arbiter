@@ -385,6 +385,27 @@ func TestPolicyRulesRejectsEveryUnknownWhenKey(t *testing.T) {
 	}
 }
 
+// A key removed by a rename is not just "unknown": the operator's config is
+// stale, and the useful error names the replacement rather than sending them
+// hunting through the recognized-keys list. Guards the #79 rename specifically.
+func TestPolicyRulesRejectsRenamedEffortKeyNamingDifficulty(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"target": "coding-hard",
+				"when":   map[string]interface{}{"effort": "hard"},
+			},
+		},
+	}
+	_, err := policyRules(cfg)
+	if err == nil {
+		t.Fatal("expected an error: `effort` was renamed to `difficulty`")
+	}
+	if !strings.Contains(err.Error(), "difficulty") || !strings.Contains(err.Error(), "effort") {
+		t.Errorf("error = %q, want it to name both the old key `effort` and the replacement `difficulty`", err)
+	}
+}
+
 // A `when` that parses to no predicates is a catch-all by accident unless the
 // operator wrote it that way. An explicitly empty map is the legal spelling of
 // "match everything"; a non-empty map that yields nothing (a typo'd key, or a

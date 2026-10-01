@@ -207,7 +207,7 @@ type ClassifierConfig struct {
 	Name string `yaml:"name"`
 	Type string `yaml:"type"`
 	// Axis names the types.Signals field this classifier instance fills
-	// ("domain", "effort", "cost_class", "capabilities"). Empty defaults to
+	// ("domain", "difficulty", "cost_class", "capabilities"). Empty defaults to
 	// "domain" for type "heuristic" and "capabilities" for the legacy type
 	// "capability_detector" — matching pre-axis behavior so existing configs
 	// need no change.
@@ -410,6 +410,28 @@ var knownAxisSet = func() map[string]bool {
 	set["cost_sensitivity"] = true // deprecated spelling of "cost_class"
 	return set
 }()
+
+// renamedAxisSpelling maps an axis spelling that was REMOVED (not
+// deprecated-with-an-alias) onto the name that replaced it. It differs from
+// the intent->domain and cost_sensitivity->cost_class synonyms above on
+// purpose: those never meant anything but their canonical target, whereas
+// `effort` was the routing axis's own name and has been reassigned to mean the
+// client-facing reasoning-effort knob. Accepting it silently would let a stale
+// `effort:` key parse clean and match nothing (or, later, collide with the new
+// client-facing key), so config load rejects it by name via
+// RenamedAxisSpelling rather than mapping it.
+var renamedAxisSpelling = map[string]string{
+	"effort": "difficulty",
+}
+
+// RenamedAxisSpelling reports whether old is a removed axis spelling and, if
+// so, the current name it was renamed to. Callers use it to fail a stale key
+// with an error that names the replacement, instead of the generic
+// unknown-axis error.
+func RenamedAxisSpelling(old string) (string, bool) {
+	cur, ok := renamedAxisSpelling[old]
+	return cur, ok
+}
 
 // canonicalAxisSet is the subset of knownAxisSet that a classifier's `axis`
 // field may use. Deprecated spellings are accepted for force aliases and when

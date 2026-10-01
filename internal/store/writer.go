@@ -36,7 +36,7 @@ const (
 // value type so the pipeline can build one without holding a DB handle.
 //
 // Empty strings in the nullable fields (SessionKey, ClientID, AliasUsed,
-// Domain, Effort, CostClass, Error) are written as SQL NULL — an absent
+// Domain, Difficulty, CostClass, Error) are written as SQL NULL — an absent
 // value and an empty one are the same thing here.
 type Event struct {
 	TraceID    string
@@ -70,7 +70,7 @@ type Event struct {
 	ConfigEpoch string
 
 	Domain     string
-	Effort     string
+	Difficulty string
 	CostClass  string
 	Confidence float64
 	// RequiredCapabilities is nil when classification is unavailable and an
@@ -185,6 +185,16 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate event store schema: %w", err)
 	}
+	// requests.effort was renamed to requests.difficulty (#79) — the routing
+	// axis was renamed so the bare word "effort" can mean the client-facing
+	// reasoning-effort knob. CREATE TABLE IF NOT EXISTS above is a no-op on an
+	// existing table, so a deployed database still has the old column name and
+	// every read/write referencing `difficulty` would fail. Guarded, because a
+	// fresh database already has `difficulty` straight from schema.sql.
+	if err := renameColumnIfPresent(db, "requests", "effort", "difficulty"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate event store schema: %w", err)
+	}
 	// affinity_pins predates prompt_hash and its composite primary key (see
 	// schema.sql): a database created before that change has session_key as
 	// its sole PRIMARY KEY, and CREATE TABLE IF NOT EXISTS above is a no-op
@@ -291,6 +301,55 @@ func addColumnIfMissing(db *sql.DB, table, decl string) error {
 	if _, err := db.ExecContext(context.Background(),
 		"ALTER TABLE "+table+" ADD COLUMN "+decl); err != nil {
 		return fmt.Errorf("add %s.%s: %w", table, name, err)
+	}
+	return nil
+}
+
+// renameColumnIfPresent renames a column only when `from` still exists and
+// `to` does not. SQLite's ALTER TABLE ... RENAME COLUMN has no IF EXISTS
+// form, so the check is a PRAGMA read (same shape as addColumnIfMissing).
+//
+// Both directions are guarded: a fresh database (created from the current
+// schema.sql) already has `to`, and a database already migrated has neither
+// `from`. The `to` check also makes the helper idempotent and safe to re-run.
+func renameColumnIfPresent(db *sql.DB, table, from, to string) error {
+	rows, err := db.QueryContext(context.Background(), "PRAGMA table_info("+table+")")
+	if err != nil {
+		return fmt.Errorf("read %s columns: %w", table, err)
+	}
+	hasFrom, hasTo := false, false
+	for rows.Next() {
+		var (
+			cid       int
+			colName   string
+			colType   string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &colName, &colType, &notNull, &dfltValue, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan %s columns: %w", table, err)
+		}
+		switch colName {
+		case from:
+			hasFrom = true
+		case to:
+			hasTo = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("read %s columns: %w", table, err)
+	}
+	_ = rows.Close()
+
+	if !hasFrom || hasTo {
+		return nil
+	}
+	if _, err := db.ExecContext(context.Background(),
+		"ALTER TABLE "+table+" RENAME COLUMN "+from+" TO "+to); err != nil {
+		return fmt.Errorf("rename %s.%s to %s: %w", table, from, to, err)
 	}
 	return nil
 }
@@ -432,7 +491,7 @@ func insertRequestTx(ctx context.Context, db execer, ev Event) (int64, error) {
 	const q = `
 INSERT INTO requests (
     trace_id, session_key, client_id, ts, arrival_ts, format, provider, model, actual_model,
-    alias_used, routing_rationale, domain, effort, cost_class, confidence, required_capabilities_json,
+    alias_used, routing_rationale, domain, difficulty, cost_class, confidence, required_capabilities_json,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
     cost_usd, latency_ms, status_code, error, stream, tool_calls_json,
     config_epoch, headers_json, kind, request_kind
@@ -467,7 +526,7 @@ INSERT INTO requests (
 		nullStr(ev.AliasUsed),
 		ev.RoutingRationale,
 		nullStr(ev.Domain),
-		nullStr(ev.Effort),
+		nullStr(ev.Difficulty),
 		nullStr(ev.CostClass),
 		ev.Confidence,
 		jsonList(ev.RequiredCapabilities),

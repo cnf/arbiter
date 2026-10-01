@@ -44,8 +44,8 @@ func TestHeuristicClassifierZeroHitsZeroConfidence(t *testing.T) {
 	}
 }
 
-func TestHeuristicClassifierEffortAxis(t *testing.T) {
-	hc := NewHeuristicClassifier("effort", AxisEffort, map[string][]string{
+func TestHeuristicClassifierDifficultyAxis(t *testing.T) {
+	hc := NewHeuristicClassifier("effort", AxisDifficulty, map[string][]string{
 		"easy": {"quick"},
 		"hard": {"complex", "architecture"},
 	})
@@ -54,11 +54,11 @@ func TestHeuristicClassifierEffortAxis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	if sig.Effort != "hard" {
-		t.Fatalf("expected hard, got %q", sig.Effort)
+	if sig.Difficulty != "hard" {
+		t.Fatalf("expected hard, got %q", sig.Difficulty)
 	}
 	if sig.Domain != "" {
-		t.Fatalf("effort-axis classifier must not fill Domain, got %q", sig.Domain)
+		t.Fatalf("difficulty-axis classifier must not fill Domain, got %q", sig.Domain)
 	}
 }
 
@@ -99,15 +99,15 @@ func TestMergedClassifierNoCapabilitiesIsEmptyNotNil(t *testing.T) {
 
 // TestMergedClassifierPerAxisConfidence guards against a merge bug where a
 // single global "highest confidence wins" would let a high-confidence domain
-// classifier's result also block a lower-confidence effort classifier from
-// populating Effort — confidence must be tracked per axis.
+// classifier's result also block a lower-confidence difficulty classifier from
+// populating Difficulty — confidence must be tracked per axis.
 func TestMergedClassifierPerAxisConfidence(t *testing.T) {
 	// Multiple domain keyword hits -> high confidence on the domain axis.
 	domain := NewHeuristicClassifier("domain", "", map[string][]string{
 		"code_generation": {"write", "generate", "implement", "refactor"},
 	})
-	// Single effort keyword hit -> low confidence on the effort axis.
-	effort := NewHeuristicClassifier("effort", AxisEffort, map[string][]string{
+	// Single difficulty keyword hit -> low confidence on the difficulty axis.
+	effort := NewHeuristicClassifier("effort", AxisDifficulty, map[string][]string{
 		"hard": {"complex"},
 	})
 	merged := NewMergedClassifier("merged", []Classifier{domain, effort})
@@ -119,8 +119,8 @@ func TestMergedClassifierPerAxisConfidence(t *testing.T) {
 	if sig.Domain != "code_generation" {
 		t.Fatalf("expected code_generation, got %q", sig.Domain)
 	}
-	if sig.Effort != "hard" {
-		t.Fatalf("effort axis starved by higher-confidence domain axis, got %q", sig.Effort)
+	if sig.Difficulty != "hard" {
+		t.Fatalf("difficulty axis starved by higher-confidence domain axis, got %q", sig.Difficulty)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestMergedClassifierPerAxisConfidence(t *testing.T) {
 func TestMergedClassifierPropagatesClassifierCalls(t *testing.T) {
 	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("code_generation")}}
 	llm := NewLLMClassifier("domain-llm", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, 0)
-	effort := NewHeuristicClassifier("effort", AxisEffort, map[string][]string{"hard": {"complex"}})
+	effort := NewHeuristicClassifier("effort", AxisDifficulty, map[string][]string{"hard": {"complex"}})
 	merged := NewMergedClassifier("merged", []Classifier{llm, effort})
 
 	sig, err := merged.Classify(context.Background(), req("a complex request"))
@@ -141,8 +141,8 @@ func TestMergedClassifierPropagatesClassifierCalls(t *testing.T) {
 	if sig.Domain != "code_generation" {
 		t.Errorf("Domain = %q, want code_generation", sig.Domain)
 	}
-	if sig.Effort != "hard" {
-		t.Errorf("Effort = %q, want hard (must survive alongside the LLM classifier)", sig.Effort)
+	if sig.Difficulty != "hard" {
+		t.Errorf("Difficulty = %q, want hard (must survive alongside the LLM classifier)", sig.Difficulty)
 	}
 	if len(sig.ClassifierCalls) != 1 || sig.ClassifierCalls[0].Provider != "primary" {
 		t.Fatalf("ClassifierCalls = %v, want the LLM classifier's one call propagated", sig.ClassifierCalls)
@@ -295,11 +295,11 @@ func TestMergedClassifierGatedLLMRunsWhenAxisEmpty(t *testing.T) {
 
 // TestMergedClassifierGatedRunsWhenOnlyOtherAxisSet proves gating is per-axis:
 // a gated domain classifier must still run when an earlier classifier filled
-// only the effort axis — domain is still empty, so the call is justified.
+// only the difficulty axis — domain is still empty, so the call is justified.
 func TestMergedClassifierGatedRunsWhenOnlyOtherAxisSet(t *testing.T) {
 	u := &fakeUpstream{responses: map[string]*types.NormalizedResponse{"primary": reply("code_generation")}}
 	llm := NewLLMClassifierFull("domain-llm", AxisDomain, pinnedResolver(), &Target{Alias: "classify"}, u, testProviders(), bareLabels, "", "", fakeHeuristic{domain: "chat"}, 0, 0, true)
-	effort := NewHeuristicClassifier("effort", AxisEffort, map[string][]string{"hard": {"complex"}})
+	effort := NewHeuristicClassifier("effort", AxisDifficulty, map[string][]string{"hard": {"complex"}})
 
 	merged := NewMergedClassifier("merged", []Classifier{effort, llm})
 	sig, err := merged.Classify(context.Background(), req("a complex design"))
@@ -309,11 +309,11 @@ func TestMergedClassifierGatedRunsWhenOnlyOtherAxisSet(t *testing.T) {
 	if sig.Domain != "code_generation" {
 		t.Fatalf("Domain = %q, want the gated llm (domain still empty)", sig.Domain)
 	}
-	if sig.Effort != "hard" {
-		t.Fatalf("Effort = %q, want hard — the effort axis was set independently", sig.Effort)
+	if sig.Difficulty != "hard" {
+		t.Fatalf("Difficulty = %q, want hard — the difficulty axis was set independently", sig.Difficulty)
 	}
 	if len(u.calls) != 1 {
-		t.Fatalf("gated llm made %d calls, want 1 (only effort was set, not domain)", len(u.calls))
+		t.Fatalf("gated llm made %d calls, want 1 (only difficulty was set, not domain)", len(u.calls))
 	}
 }
 

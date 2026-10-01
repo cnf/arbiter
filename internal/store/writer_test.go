@@ -151,7 +151,7 @@ func TestRecordPersistsFullEvent(t *testing.T) {
 		AliasUsed:        "cheap-claude",
 		RoutingRationale: "policy rule matched domain=code_generation",
 		Domain:           "code_generation",
-		Effort:           "easy",
+		Difficulty:       "easy",
 		CostClass:        "budget",
 		Confidence:       0.82,
 		Usage:            types.Usage{InputTokens: 1200, OutputTokens: 340, CacheRead: 100, CostUSD: 0.000725},

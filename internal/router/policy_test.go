@@ -129,14 +129,14 @@ func TestPolicyRouterModelOverride(t *testing.T) {
 	}
 }
 
-func TestPolicyRouterEffortMatches(t *testing.T) {
+func TestPolicyRouterDifficultyMatches(t *testing.T) {
 	rules := []PolicyRule{
-		{When: PolicyCondition{Domain: "code_generation", Effort: "hard"}, Provider: "claude"},
+		{When: PolicyCondition{Domain: "code_generation", Difficulty: "hard"}, Provider: "claude"},
 		{When: PolicyCondition{}, Provider: "gpt4"},
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
-	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "code_generation", Effort: "hard"})
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "code_generation", Difficulty: "hard"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -145,15 +145,15 @@ func TestPolicyRouterEffortMatches(t *testing.T) {
 	}
 }
 
-func TestPolicyRouterEffortWildcardFallsThrough(t *testing.T) {
+func TestPolicyRouterDifficultyWildcardFallsThrough(t *testing.T) {
 	rules := []PolicyRule{
-		{When: PolicyCondition{Domain: "code_generation", Effort: "hard"}, Provider: "claude"},
+		{When: PolicyCondition{Domain: "code_generation", Difficulty: "hard"}, Provider: "claude"},
 		{When: PolicyCondition{}, Provider: "gpt4"},
 	}
 	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
 
-	// same domain, different effort -> falls through to the wildcard
-	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "code_generation", Effort: "easy"})
+	// same domain, different difficulty -> falls through to the wildcard
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Domain: "code_generation", Difficulty: "easy"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

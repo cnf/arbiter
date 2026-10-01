@@ -15,12 +15,12 @@ import (
 // fallback in a ChainedRouter.
 type PolicyCondition struct {
 	Domain       string
-	Effort       string
+	Difficulty   string
 	Capabilities []string // every entry must appear in signals.RequiredCapabilities
 	CostClass    string
 
 	// RequestKind matches types.Signals.RequestKind exactly ("title", later
-	// "subagent"). Unlike Domain/Effort/CostClass this is not a contested
+	// "subagent"). Unlike Domain/Difficulty/CostClass this is not a contested
 	// routing axis — it carries no confidence and no force-alias can
 	// override it — but it is still a legitimate thing to route ON: a
 	// title-generation call is who's asking, not what the request is about,
@@ -47,7 +47,7 @@ func (c PolicyCondition) Matches(sig types.Signals) bool {
 	if c.Domain != "" && c.Domain != sig.Domain {
 		return false
 	}
-	if c.Effort != "" && c.Effort != sig.Effort {
+	if c.Difficulty != "" && c.Difficulty != sig.Difficulty {
 		return false
 	}
 	if c.CostClass != "" && c.CostClass != sig.CostClass {
@@ -78,8 +78,8 @@ func (c PolicyCondition) String() string {
 	if c.Domain != "" {
 		parts = append(parts, fmt.Sprintf("domain=%q", c.Domain))
 	}
-	if c.Effort != "" {
-		parts = append(parts, fmt.Sprintf("effort=%q", c.Effort))
+	if c.Difficulty != "" {
+		parts = append(parts, fmt.Sprintf("difficulty=%q", c.Difficulty))
 	}
 	if len(c.Capabilities) > 0 {
 		parts = append(parts, fmt.Sprintf("capabilities=%v", c.Capabilities))
@@ -311,5 +311,5 @@ func (pr *PolicyRouter) routeViaAlias(rule PolicyRule, req *types.NormalizedRequ
 // signalsDescription renders the signal axes routing matches on, for log
 // lines and error messages.
 func signalsDescription(sig types.Signals) string {
-	return fmt.Sprintf("domain=%q effort=%q capabilities=%v cost_class=%q", sig.Domain, sig.Effort, sig.RequiredCapabilities, sig.CostClass)
+	return fmt.Sprintf("domain=%q difficulty=%q capabilities=%v cost_class=%q", sig.Domain, sig.Difficulty, sig.RequiredCapabilities, sig.CostClass)
 }

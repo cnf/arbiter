@@ -389,7 +389,7 @@ func TestGetRequestReturnsFullRowAndMissingIsNotAnError(t *testing.T) {
 
 	insertRow(t, q, Event{Ts: now, Provider: "a", Model: "m1", SessionKey: "s1",
 		AliasUsed: "auto", Domain: "code_generation",
-		Effort: "hard", CostClass: "budget", ConfigEpoch: "epoch-a", LatencyMs: 250, StatusCode: 200,
+		Difficulty: "hard", CostClass: "budget", ConfigEpoch: "epoch-a", LatencyMs: 250, StatusCode: 200,
 		ToolCalls: []string{"read", "write"}, Usage: types.Usage{InputTokens: 10, OutputTokens: 20, CacheRead: 5, CacheWrite: 7, CostUSD: 1.5}})
 
 	rows, err := r.ListRequests(context.Background(), RequestFilter{})
@@ -404,8 +404,8 @@ func TestGetRequestReturnsFullRowAndMissingIsNotAnError(t *testing.T) {
 	if d.Model != "m1" || d.SessionKey != "s1" || d.AliasUsed != "auto" {
 		t.Errorf("route fields = %+v, want m1/s1/auto", d.RequestRow)
 	}
-	if d.Domain != "code_generation" || d.Effort != "hard" || d.CostClass != "budget" {
-		t.Errorf("axes = %q/%q/%q, want code_generation/hard/budget", d.Domain, d.Effort, d.CostClass)
+	if d.Domain != "code_generation" || d.Difficulty != "hard" || d.CostClass != "budget" {
+		t.Errorf("axes = %q/%q/%q, want code_generation/hard/budget", d.Domain, d.Difficulty, d.CostClass)
 	}
 	if d.CacheReadTokens != 5 || d.CacheWriteTokens != 7 {
 		t.Errorf("cache tokens = %d/%d, want 5/7", d.CacheReadTokens, d.CacheWriteTokens)

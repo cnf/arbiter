@@ -61,6 +61,9 @@ func (c *Config) validateAliases() error {
 				return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: force alias must not also set type", name), nil)
 			}
 			for axis := range a.Force {
+				if from, renamed := RenamedAxisSpelling(axis); renamed {
+					return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: force names %q, which was renamed to %q; update the config", name, axis, from), nil)
+				}
 				if !knownAxisSet[axis] {
 					return arbitererrors.NewConfigError(fmt.Sprintf("alias %q: force names unknown axis %q", name, axis), nil)
 				}

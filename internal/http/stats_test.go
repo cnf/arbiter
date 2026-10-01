@@ -303,7 +303,7 @@ func TestRequestsHandlerOnDisabledStoreReturns503(t *testing.T) {
 func TestRequestHandlerDetail(t *testing.T) {
 	h := newTestStatsHandler(t,
 		store.Event{TraceID: "t1", Format: "openai", Provider: "p", Model: "m1",
-			Domain: "code_generation", Effort: "hard", ConfigEpoch: "epoch-a",
+			Domain: "code_generation", Difficulty: "hard", ConfigEpoch: "epoch-a",
 			Usage:     types.Usage{InputTokens: 10, OutputTokens: 20, CostUSD: 1.5, CacheRead: 5, CacheWrite: 7},
 			ToolCalls: []string{"read_file"}},
 	)
@@ -328,7 +328,7 @@ func TestRequestHandlerDetail(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Model != "m1" || got.Effort != "hard" || got.CacheReadTokens != 5 || got.CacheWriteTokens != 7 {
+	if got.Model != "m1" || got.Difficulty != "hard" || got.CacheReadTokens != 5 || got.CacheWriteTokens != 7 {
 		t.Errorf("detail = %+v, want m1/hard/5/7", got)
 	}
 	if got.ToolCalls != `["read_file"]` {

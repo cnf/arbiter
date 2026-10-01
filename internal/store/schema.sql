@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS requests (
     alias_used            TEXT,                -- NULL if req.Model was literal
     routing_rationale     TEXT NOT NULL,
     domain                TEXT,
-    effort                TEXT,
+    difficulty            TEXT,
     cost_class            TEXT,
     confidence            REAL,
     required_capabilities_json TEXT,

@@ -765,3 +765,69 @@ func TestDecisionsClassifierScoreSendsOrderedCriteria(t *testing.T) {
 		}
 	}
 }
+
+// Tags are additive: several questions in one decisions call each contribute
+// their own value, and the set ends up a UNION, not a last-write-wins
+// scalar — this is the whole reason tags are exempt from the duplicate-axis
+// config guard (see config.axesSeen / types.IsAdditiveAxis).
+func TestDecisionsClassifierUnionsMultipleTagQuestions(t *testing.T) {
+	client := &fakeDecisionClient{responses: map[string]*types.DecisionResponse{
+		testProvider: decisionReply(map[string]types.DecisionAnswer{
+			"language":  choice("python", 0.9, nil),
+			"is_french": noulAnswer(0.9),
+		}),
+	}}
+	c := NewDecisionsClassifier(
+		"multi-tag", decisionsResolver("jev", testProvider), &Target{Alias: "jev"},
+		client, map[string]types.ProviderConfig{testProvider: decisionsProvider(testProvider)},
+		[]DecisionQuestionConfig{
+			{Name: "language", Axis: AxisTags, Type: types.DecisionChoice,
+				Labels: []types.Label{{Name: "python"}, {Name: "cpp"}, {Name: "rust"}}, Escape: "none"},
+			{Name: "is_french", Axis: AxisTags, Type: types.DecisionNoul, Value: "french"},
+		},
+		NewHeuristicClassifier("fb", AxisDomain, nil), 5*time.Second,
+	)
+
+	sig, err := c.Classify(context.Background(), testRequest())
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	want := []string{"python", "french"}
+	if len(sig.Tags) != len(want) {
+		t.Fatalf("Tags = %v, want %v", sig.Tags, want)
+	}
+	for i := range want {
+		if sig.Tags[i] != want[i] {
+			t.Fatalf("Tags = %v, want %v", sig.Tags, want)
+		}
+	}
+}
+
+// A choice's escape verdict on an additive axis must add NOTHING — not the
+// types.UnmatchedValue sentinel a contested axis gets. "none of the options
+// matched" means an absent set member, never a member literally named
+// "unmatched" (see fillAxis's doc).
+func TestDecisionsClassifierTagEscapeAddsNothing(t *testing.T) {
+	client := &fakeDecisionClient{responses: map[string]*types.DecisionResponse{
+		testProvider: decisionReply(map[string]types.DecisionAnswer{
+			"language": choice("none", 0.8, nil),
+		}),
+	}}
+	c := NewDecisionsClassifier(
+		"tag-escape", decisionsResolver("jev", testProvider), &Target{Alias: "jev"},
+		client, map[string]types.ProviderConfig{testProvider: decisionsProvider(testProvider)},
+		[]DecisionQuestionConfig{
+			{Name: "language", Axis: AxisTags, Type: types.DecisionChoice,
+				Labels: []types.Label{{Name: "python"}, {Name: "cpp"}}, Escape: "none"},
+		},
+		NewHeuristicClassifier("fb", AxisDomain, nil), 5*time.Second,
+	)
+
+	sig, err := c.Classify(context.Background(), testRequest())
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(sig.Tags) != 0 {
+		t.Fatalf("Tags = %v, want empty (escape adds nothing, not %q)", sig.Tags, types.UnmatchedValue)
+	}
+}

@@ -232,6 +232,29 @@ const (
 // like capabilities rather than contested like domain — see Signals.Tags.
 var KnownAxes = []string{AxisDomainName, AxisDifficultyName, AxisCostClassName, AxisCapabilitiesName, AxisTagsName}
 
+// AdditiveAxes names the axes whose values UNION rather than contest. A
+// contested axis (domain/difficulty/cost_class) holds one winner chosen by
+// confidence and a force-alias override; an additive axis is a set that every
+// contributor adds to, with no confidence contest and no `unmatched` sentinel
+// (see Signals.Tags and UnmatchedValue's doc).
+//
+// The distinction is load-bearing beyond the merge: several classifier
+// questions may fill the same additive axis in one call (each contributes),
+// and an escape verdict leaves an additive axis genuinely empty rather than
+// sentinel-filled. Derive membership from this list rather than re-listing the
+// axis names at each site.
+var AdditiveAxes = []string{AxisCapabilitiesName, AxisTagsName}
+
+// IsAdditiveAxis reports whether name is an additive (set-valued) axis.
+func IsAdditiveAxis(name string) bool {
+	for _, a := range AdditiveAxes {
+		if a == name {
+			return true
+		}
+	}
+	return false
+}
+
 // UnmatchedValue is the reserved sentinel a scalar axis (domain, difficulty,
 // cost_class) is filled with when a model-backed classifier reaches its
 // escape verdict — the configured `escape:` label, or the auto-added

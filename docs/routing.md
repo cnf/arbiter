@@ -567,9 +567,9 @@ was, open for a later classifier or the fallback to fill — this is
 deliberately NOT the same as a `choice`'s escape, which fills the axis with
 the reserved `unmatched` sentinel. A `noul` answer carries no confidence of
 its own (a confident "no" and a confident "yes" are equally confident), so the
-confidence recorded is `max(p, 1-p)`. `noul` does not yet support the
-`capabilities` axis (an additive set, not a single value) — that is future
-work, not a silent default.
+confidence recorded is `max(p, 1-p)`. On an additive axis (`capabilities`,
+`tags`) `noul`'s "yes" adds `value` as one set member and "no" adds nothing —
+there is no single-value special case there.
 
 A `score` question declares `levels` instead of `labels`: an ORDERED list,
 low -> high (order is the data — a map would lose it to randomized iteration,

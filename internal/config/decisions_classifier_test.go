@@ -173,6 +173,36 @@ classifiers:`+domainHeuristic+`
 	}
 }
 
+// A CONTESTED axis guard; an ADDITIVE axis has no such race because every
+// question's value is unioned rather than contested, so two (or more)
+// questions filling "tags" — or "capabilities" — in one call are exactly the
+// intended usage, not a conflict.
+func TestDecisionsClassifierAllowsMultipleQuestionsOnAnAdditiveAxis(t *testing.T) {
+	if err := loadConfig(t, decisionsBase+`
+classifiers:`+domainHeuristic+`
+  - name: "multi-tag-decisions"
+    type: "decisions"
+    config:
+      alias: "jev"
+      questions:
+        language:
+          axis: "tags"
+          type: "choice"
+          labels: ["python", "cpp", "rust"]
+        is_french:
+          axis: "tags"
+          type: "noul"
+          value: "french"
+        needs_vision:
+          axis: "capabilities"
+          type: "noul"
+          value: "vision"
+      fallback: "domain-heuristic"
+`); err != nil {
+		t.Fatalf("want multiple additive-axis questions accepted, got %v", err)
+	}
+}
+
 func TestDecisionsClassifierRejectsUnknownQuestionType(t *testing.T) {
 	err := loadConfig(t, decisionsBase+`
 classifiers:`+domainHeuristic+`
@@ -292,8 +322,12 @@ classifiers:`+domainHeuristic+`
 	}
 }
 
-func TestDecisionsClassifierRejectsNoulOnCapabilitiesAxis(t *testing.T) {
-	err := loadConfig(t, decisionsBase+`
+// A "noul" question on an ADDITIVE axis is well-defined now: "yes" adds one
+// member, "no" adds none. It used to be rejected on capabilities because that
+// axis's fill expected a slice; the fill appends a single value now, so the
+// rejection is gone and both additive axes accept it.
+func TestDecisionsClassifierAcceptsNoulOnAdditiveAxes(t *testing.T) {
+	if err := loadConfig(t, decisionsBase+`
 classifiers:`+domainHeuristic+`
   - name: "vision-decisions"
     type: "decisions"
@@ -304,10 +338,13 @@ classifiers:`+domainHeuristic+`
           axis: "capabilities"
           type: "noul"
           value: "vision"
+        is_french:
+          axis: "tags"
+          type: "noul"
+          value: "french"
       fallback: "domain-heuristic"
-`)
-	if err == nil || !strings.Contains(err.Error(), `does not support the capabilities axis yet`) {
-		t.Fatalf("want a capabilities-not-supported error, got %v", err)
+`); err != nil {
+		t.Fatalf("want both noul questions accepted, got %v", err)
 	}
 }
 

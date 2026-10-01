@@ -186,8 +186,13 @@ func (c *Config) validateDecisionsClassifiers() error {
 		}
 
 		// Every question is asked in one call, so two questions filling the
-		// same axis would race for it with nothing to break the tie — the
-		// verdict would depend on map iteration order.
+		// same CONTESTED axis would race for it with nothing to break the tie
+		// — the verdict would depend on map iteration order.
+		//
+		// An ADDITIVE axis (capabilities, tags) is exempt: each question
+		// contributes its own value to a set, so several questions filling
+		// the same additive axis is exactly how a multi-tag classifier is
+		// expressed. There is no race to break — the union is the answer.
 		axesSeen := make(map[string]string, len(questions))
 		for qname, rawQ := range questions {
 			q, ok := rawQ.(map[string]interface{})
@@ -208,7 +213,7 @@ func (c *Config) validateDecisionsClassifiers() error {
 			if !canonicalAxisSet[axis] {
 				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q has unknown axis %q (want one of %v)", cc.Name, qname, axis, types.KnownAxes), nil)
 			}
-			if other, taken := axesSeen[axis]; taken {
+			if other, taken := axesSeen[axis]; taken && !types.IsAdditiveAxis(axis) {
 				return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: questions %q and %q both fill axis %q — they are asked in one call, so neither can win", cc.Name, other, qname, axis), nil)
 			}
 			axesSeen[axis] = qname
@@ -309,16 +314,12 @@ func (c *Config) validateDecisionsClassifiers() error {
 // (the axis value applied on yes) and rejects "labels"/"escape", which belong
 // to "choice" and would otherwise be silently ignored by the builder.
 //
-// "noul" is deliberately not accepted on the capabilities axis yet: that axis
-// is an additive set (RequiredCapabilities), and a single yes/no value does
-// not yet have a defined meaning there — see fillAxis's capabilities branch,
-// which expects a slice. Extending noul to gate a single capability is future
-// work, not a silent default.
+// A "noul" question works on any axis, additive ones included: on "yes" it
+// adds `value` as one member of the set (a capability or a tag), on "no" it
+// adds nothing — which is exactly the additive fill's semantics. It was
+// rejected on the capabilities axis while that axis's fill expected a slice;
+// it no longer does (see fillAxis), so the rejection is gone.
 func validateNoulQuestion(classifierName, qname string, q map[string]interface{}) error {
-	axis, _ := q["axis"].(string)
-	if axis == types.AxisCapabilitiesName {
-		return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: type \"noul\" does not support the capabilities axis yet", classifierName, qname), nil)
-	}
 	if _, ok := q["labels"]; ok {
 		return arbitererrors.NewConfigError(fmt.Sprintf("classifier %q: question %q: \"labels\" is not valid for type \"noul\" (use \"value\")", classifierName, qname), nil)
 	}

@@ -190,34 +190,37 @@ func (c *DecisionsClassifier) Classify(ctx context.Context, req *types.Normalize
 				if v.skip {
 					continue
 				}
-				fillAxis(sig, v.axis, v.value, v.capabilities)
+				fillAxis(sig, v.axis, v.value)
 			}
 		})
 }
 
-// fillAxis writes one answered axis onto Signals. An escape verdict arrives
-// here as an empty value, which is filled with the reserved sentinel
-// types.UnmatchedValue (except on the ADDITIVE axes — capabilities and tags —
-// which are sets with no single "nothing matched" value; see
-// types.UnmatchedValue's own doc) so a policy router's `when: {domain:
-// unmatched}` rule can match it explicitly, instead of every wildcard rule
-// matching a silently empty axis.
+// fillAxis writes one answered axis onto Signals.
+//
+// A CONTESTED axis (domain/difficulty/cost_class) is scalar: an escape verdict
+// arrives here as an empty value and is filled with the reserved sentinel
+// types.UnmatchedValue, so a policy router's `when: {domain: unmatched}` rule
+// can match it explicitly instead of every wildcard rule matching a silently
+// empty axis.
+//
+// An ADDITIVE axis (capabilities, tags) is a set, and behaves differently in
+// the two ways that matter here: it APPENDS — several questions in one call
+// each contribute their own value, which is the whole point of exempting
+// additive axes from the config's duplicate-axis guard — and an empty value
+// adds NOTHING, because "none of the options matched" means an absent member,
+// not a member literally named `unmatched`.
 //
 // Called only for a question resolveAnswers actually answered AND that wants
 // to fill something — a choice's escape arrives here (as an empty value), but
 // a noul's "no" verdict does not (see axisVerdict.skip) — so there is no
 // "nothing happened here" case left to special-case away.
-func fillAxis(sig *types.Signals, axis, value string, capabilities []string) {
+func fillAxis(sig *types.Signals, axis, value string) {
 	if axis == AxisCapabilities {
-		sig.RequiredCapabilities = capabilities
+		if value != "" {
+			sig.RequiredCapabilities = append(sig.RequiredCapabilities, value)
+		}
 		return
 	}
-	// Tags are additive like capabilities, but filled one tag at a time (a
-	// question yields one string), so this APPENDS and an empty value adds
-	// nothing — a choice's escape verdict ("none of the options matched")
-	// means no tag, not the unmatched sentinel. Multiple tag questions in one
-	// call are rejected by config validation in phase 1; the append is the
-	// per-classifier accumulation phase 3 will allow.
 	if axis == AxisTags {
 		if value != "" {
 			sig.Tags = append(sig.Tags, value)
@@ -239,10 +242,9 @@ func fillAxis(sig *types.Signals, axis, value string, capabilities []string) {
 
 // axisVerdict is one answered axis.
 type axisVerdict struct {
-	axis         string
-	value        string
-	capabilities []string
-	confidence   float64
+	axis       string
+	value      string
+	confidence float64
 	// skip is true for a "noul" question that answered no: a real, recorded
 	// verdict, but one that fills nothing — see Classify's use of it, and
 	// fillAxis's doc for why this is not the same as a choice's escape.

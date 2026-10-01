@@ -187,6 +187,10 @@ type RequestRow struct {
 	Domain           string `json:"domain,omitempty"`
 	Difficulty       string `json:"difficulty,omitempty"`
 	CostClass        string `json:"cost_class,omitempty"`
+	// ClientEffort is the reasoning effort the client requested
+	// (output_config.effort), recorded as a request fact (#79). Empty means
+	// the client asked for none.
+	ClientEffort string `json:"client_effort,omitempty"`
 	// RequiredCapabilities is nil when classification did not produce a result,
 	// and an empty non-nil slice when classification found no capabilities.
 	RequiredCapabilities []string `json:"required_capabilities"`
@@ -274,7 +278,7 @@ const requestRowColumns = `
     id, trace_id, ts, CAST(ts AS TEXT), session_key, format, provider, model, actual_model, alias_used,
     routing_rationale, domain, difficulty, cost_class, input_tokens, output_tokens,
     cost_usd, latency_ms, status_code, error, stream, config_epoch, kind, request_kind, arrival_ts,
-    CAST(arrival_ts AS TEXT), required_capabilities_json`
+    CAST(arrival_ts AS TEXT), required_capabilities_json, client_effort`
 
 // ListRequests returns requests newest first, narrowed by f.
 //
@@ -439,6 +443,7 @@ FROM requests WHERE id = ?`
 		difficulty   sql.NullString
 		costCl       sql.NullString
 		capabilities sql.NullString
+		clientEffort sql.NullString
 		errText      sql.NullString
 		epoch        sql.NullString
 		reqKind      sql.NullString
@@ -453,7 +458,7 @@ FROM requests WHERE id = ?`
 		&d.ID, &d.TraceID, &tsRaw, &d.TsRaw, &session, &d.Format, &d.Provider, &d.Model, &actual, &alias,
 		&d.RoutingRationale, &domain, &difficulty, &costCl, &d.InputTokens, &d.OutputTokens,
 		&d.CostUSD, &d.LatencyMs, &d.StatusCode, &errText, &d.Stream, &epoch, &d.Kind, &reqKind,
-		&arrivalTs, &arrivalTsRaw, &capabilities,
+		&arrivalTs, &arrivalTsRaw, &capabilities, &clientEffort,
 		&conf, &d.CacheReadTokens, &d.CacheWriteTokens, &tools, &client, &headers)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RequestDetail{}, false, nil
@@ -471,6 +476,7 @@ FROM requests WHERE id = ?`
 	d.Domain = domain.String
 	d.Difficulty = difficulty.String
 	d.CostClass = costCl.String
+	d.ClientEffort = clientEffort.String
 	if capabilities.Valid {
 		if err := json.Unmarshal([]byte(capabilities.String), &d.RequiredCapabilities); err != nil {
 			// A malformed legacy value degrades to unavailable signals rather
@@ -515,11 +521,13 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 		arrivalTs    interface{}
 		arrivalTsRaw sql.NullString
 		capabilities sql.NullString
+		clientEffort sql.NullString
 	)
 	if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &s.TsRaw, &session, &s.Format, &s.Provider,
 		&s.Model, &actual, &alias, &s.RoutingRationale, &domain, &difficulty, &costCl,
 		&s.InputTokens, &s.OutputTokens, &s.CostUSD, &s.LatencyMs, &s.StatusCode,
-		&errText, &s.Stream, &epoch, &s.Kind, &reqKind, &arrivalTs, &arrivalTsRaw, &capabilities); err != nil {
+		&errText, &s.Stream, &epoch, &s.Kind, &reqKind, &arrivalTs, &arrivalTsRaw, &capabilities,
+		&clientEffort); err != nil {
 		return RequestRow{}, fmt.Errorf("scan request row: %w", err)
 	}
 	s.Ts = formatTime(tsRaw)
@@ -531,6 +539,7 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 	s.Domain = domain.String
 	s.Difficulty = difficulty.String
 	s.CostClass = costCl.String
+	s.ClientEffort = clientEffort.String
 	if capabilities.Valid {
 		if err := json.Unmarshal([]byte(capabilities.String), &s.RequiredCapabilities); err != nil {
 			s.RequiredCapabilities = nil

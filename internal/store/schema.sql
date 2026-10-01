@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS requests (
     config_epoch          TEXT,
     headers_json          TEXT,                -- JSON object of inbound headers, credentials redacted
     kind                  TEXT NOT NULL DEFAULT 'client', -- who sent it: "client" (real traffic) | "classifier"
-    request_kind          TEXT                 -- what it IS: "title" | future: "subagent". Distinct from `kind` above, which says who sent it
+    request_kind          TEXT,                -- what it IS: "title" | future: "subagent". Distinct from `kind` above, which says who sent it
+    client_effort         TEXT                 -- the reasoning effort the CLIENT requested (output_config.effort), recorded as a request fact (#79). NULL = the client asked for none.
 );
 
 CREATE INDEX IF NOT EXISTS idx_requests_trace ON requests(trace_id);

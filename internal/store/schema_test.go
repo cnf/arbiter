@@ -585,3 +585,79 @@ func TestCapabilitiesRoundTrip(t *testing.T) {
 		t.Errorf("detail: NULL capabilities read back as %v, want nil", detail.RequiredCapabilities)
 	}
 }
+
+// TestClientEffortRoundTrip is the store half of #79 phase 4: the reasoning
+// effort the CLIENT requested is a request fact and must survive a write and a
+// read through BOTH projections. The list row and the detail row are separate
+// scans with separate column lists, so a column dropped from either would
+// silently read back empty while the write side kept it — the same trap the
+// capabilities column-set has.
+//
+// Two states, not three: there is no "locked by a force alias" state yet
+// (that is phase 3, deferred), so the stored value is always what the client
+// sent. NULL (empty) means the client asked for none.
+func TestClientEffortRoundTrip(t *testing.T) {
+	db := openMemory(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		trace        string
+		clientEffort string
+		raw          string // stored text; "NULL" means SQL NULL
+	}{
+		{"effort-none", "", "NULL"},
+		{"effort-high", "high", "high"},
+		{"effort-longscale", "extrahigh", "extrahigh"}, // Hermes' longer vocabulary, verbatim
+	}
+	for _, tc := range cases {
+		ev := Event{
+			TraceID: tc.trace, Format: "openai", Provider: "p", Model: "m",
+			StatusCode: 200, ClientEffort: tc.clientEffort,
+		}
+		if err := insertRequest(ctx, db, ev); err != nil {
+			t.Fatalf("insert %s: %v", tc.trace, err)
+		}
+		var raw sql.NullString
+		if err := db.QueryRowContext(ctx,
+			`SELECT client_effort FROM requests WHERE trace_id = ?`, tc.trace).Scan(&raw); err != nil {
+			t.Fatalf("read %s: %v", tc.trace, err)
+		}
+		if tc.raw == "NULL" {
+			if raw.Valid {
+				t.Errorf("%s stored %q, want SQL NULL", tc.trace, raw.String)
+			}
+			continue
+		}
+		if !raw.Valid || raw.String != tc.raw {
+			t.Errorf("%s stored %q (valid %v), want %s", tc.trace, raw.String, raw.Valid, tc.raw)
+		}
+	}
+
+	// Read back through the list projection and the detail projection — two
+	// independent column lists.
+	r := &Reader{db: db}
+	rows, err := r.ListRequests(ctx, RequestFilter{})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	byTrace := make(map[string]RequestRow, len(rows))
+	for _, row := range rows {
+		byTrace[row.TraceID] = row
+	}
+	for _, tc := range cases {
+		row, ok := byTrace[tc.trace]
+		if !ok {
+			t.Fatalf("ListRequests did not return %s", tc.trace)
+		}
+		if row.ClientEffort != tc.clientEffort {
+			t.Errorf("list: %s client effort = %q, want %q", tc.trace, row.ClientEffort, tc.clientEffort)
+		}
+		detail, ok, err := r.GetRequest(ctx, row.ID)
+		if err != nil || !ok {
+			t.Fatalf("GetRequest(%s) = ok %v, err %v", tc.trace, ok, err)
+		}
+		if detail.ClientEffort != tc.clientEffort {
+			t.Errorf("detail: %s client effort = %q, want %q", tc.trace, detail.ClientEffort, tc.clientEffort)
+		}
+	}
+}

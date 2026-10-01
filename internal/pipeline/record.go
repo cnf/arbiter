@@ -205,6 +205,7 @@ func (p *Pipeline) recordFailed(ctx context.Context, traceID, sessionKey, format
 		Confidence:           sig.Confidence,
 		RequestKind:          sig.RequestKind,
 		RequiredCapabilities: sig.RequiredCapabilities,
+		ClientEffort:         sig.ClientEffort,
 		ArrivalTs:            start,
 		LatencyMs:            time.Since(start).Milliseconds(),
 		StatusCode:           arbitererrors.StatusFor(err),

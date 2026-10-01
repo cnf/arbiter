@@ -680,6 +680,34 @@ func TestTranscriptShowsClassifierSignals(t *testing.T) {
 	}
 }
 
+// #79 phase 4: the effort the CLIENT requested is a request FACT and belongs
+// in the "routing & model" meta-grid next to alias/model/provider — NOT in the
+// classifier-verdict `axes` span (domain=/difficulty=/cost_class=), which is
+// classification output only. Both halves are asserted: the value renders in
+// the grid, and `effort=` never appears as an axis on the pane.
+func TestTranscriptShowsClientEffortAsRequestFact(t *testing.T) {
+	now := time.Now().UTC()
+	events := []store.Event{
+		{TraceID: "effort-high", SessionKey: "client-effort", Kind: "client", Provider: "anthropic", Model: "claude-sonnet", StatusCode: 200,
+			Ts: now, AliasUsed: "claude", ClientEffort: "high"},
+		{TraceID: "effort-none", SessionKey: "client-effort", Kind: "client", Provider: "anthropic", Model: "claude-sonnet", StatusCode: 200,
+			Ts: now.Add(time.Second), ClientEffort: ""},
+	}
+	h, _ := newSeededHandler(t, events...)
+	body := serve(t, h, "GET", "/admin/ui/session?key=client-effort", false).Body.String()
+
+	if !strings.Contains(body, `<span class="k">client effort</span><span class="v">high</span>`) {
+		t.Error("requested effort was not rendered in the routing & model grid")
+	}
+	if !strings.Contains(body, `<span class="v">(not requested)</span>`) {
+		t.Error("a request that asked for no effort did not render the (not requested) state")
+	}
+	// The other half of the placement rule: it must not leak into the axis row.
+	if strings.Contains(body, `<span class="axis">effort=`) {
+		t.Error("client effort was rendered as a classifier axis; it is a request fact and belongs in the meta-grid")
+	}
+}
+
 // actually ran with, not just the session opener's — and a classifier child
 // exposes its own system prompt too. newestRequestMessage narrows splitBlocks
 // to the request's newest message index, which would otherwise silently

@@ -82,6 +82,13 @@ type Event struct {
 	// types.Signals.RequestKind for why the two are not the same column.
 	RequestKind string
 
+	// ClientEffort is the reasoning effort the CLIENT requested
+	// (output_config.effort), recorded as a request fact (#79) — see
+	// types.Signals.ClientEffort. It is what the client asked for, not what
+	// was sent upstream (phase 3's lock can change the latter). Empty is
+	// written as NULL, i.e. "the client asked for none".
+	ClientEffort string
+
 	Usage      types.Usage
 	LatencyMs  int64
 	StatusCode int
@@ -173,7 +180,7 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 	// added to schema.sql after a database was first created never appears on
 	// it. Add the ones we know about explicitly; an insert referencing a
 	// missing column fails every time, which would silently lose events.
-	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT", "actual_model TEXT", "kind TEXT NOT NULL DEFAULT 'client'", "request_kind TEXT", "arrival_ts TIMESTAMP", "required_capabilities_json TEXT"} {
+	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT", "actual_model TEXT", "kind TEXT NOT NULL DEFAULT 'client'", "request_kind TEXT", "arrival_ts TIMESTAMP", "required_capabilities_json TEXT", "client_effort TEXT"} {
 		if err := addColumnIfMissing(db, "requests", col); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate event store schema: %w", err)
@@ -494,13 +501,13 @@ INSERT INTO requests (
     alias_used, routing_rationale, domain, difficulty, cost_class, confidence, required_capabilities_json,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
     cost_usd, latency_ms, status_code, error, stream, tool_calls_json,
-    config_epoch, headers_json, kind, request_kind
+    config_epoch, headers_json, kind, request_kind, client_effort
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?
+    ?, ?, ?, ?, ?
 )`
 
 	// kind is NOT NULL with a schema default, but this INSERT always binds it
@@ -543,7 +550,8 @@ INSERT INTO requests (
 		nullStr(ev.ConfigEpoch),
 		headersJSON(ev.Headers),
 		kind,
-		nullStr(ev.RequestKind))
+		nullStr(ev.RequestKind),
+		nullStr(ev.ClientEffort))
 	if err != nil {
 		return 0, fmt.Errorf("insert request: %w", err)
 	}

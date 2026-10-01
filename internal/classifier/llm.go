@@ -165,8 +165,8 @@ func (c *LLMClassifier) fillAxis(sig *types.Signals, label *types.Label) {
 // so the two can never disagree about which field an axis name maps to.
 func (c *LLMClassifier) fillAxisValue(sig *types.Signals, value string) {
 	switch c.axis {
-	case AxisEffort:
-		sig.Effort = value
+	case AxisDifficulty:
+		sig.Difficulty = value
 	case AxisCostClass:
 		sig.CostClass = value
 	case AxisCapabilities:

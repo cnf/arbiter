@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cnf/arbiter/internal/config"
 	"github.com/cnf/arbiter/internal/logging"
 	"github.com/cnf/arbiter/internal/store"
 )
@@ -79,6 +80,14 @@ type Handler struct {
 	// shown.
 	captureContent atomic.Bool
 
+	// cfg is the live config, shown read-only by the config page (#77 phase
+	// 1). Same reasoning as captureContent: it is written once at wiring
+	// time and again on every reload, and read concurrently by request
+	// handling, so it needs the same atomic-pointer treatment rather than a
+	// plain field. A nil value (only possible before the first SetConfig
+	// call) means the page has nothing to show yet.
+	cfg atomic.Pointer[config.Config]
+
 	// discoveryCache holds the Discovery ledger's expensive query result
 	// per parameter combination — see discovery.go's discoveryCache doc
 	// comment for why a TTL cache is the right shape here.
@@ -112,6 +121,12 @@ func New(reader *store.Reader, l logging.Logger) *Handler {
 // different goroutines. The atomic makes that safe without a mutex.
 func (h *Handler) SetCaptureContent(on bool) {
 	h.captureContent.Store(on)
+}
+
+// SetConfig records the live config for the read-only config page. Called
+// once at wiring time and again on every reload — see cfg's field comment.
+func (h *Handler) SetConfig(cfg *config.Config) {
+	h.cfg.Store(cfg)
 }
 
 // versionOf hashes the whole embedded tree. Hashing everything rather than per
@@ -150,7 +165,7 @@ func versionOf(fsys fs.FS) string {
 // "requests"/"request" have no template and no longer have handlers either —
 // the merged Sessions page (#52) replaced that split, and #54's rip-out removed
 // the dead handlers rather than leaving them to 500.
-var pageFiles = []string{"sessions", "session", "discovery", "block", "overview"}
+var pageFiles = []string{"sessions", "session", "discovery", "block", "overview", "config"}
 
 // parseTemplates builds one template set per page, each from the layout, every
 // partial, and that one page. Go's html/template cannot redefine a block name

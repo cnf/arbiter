@@ -18,8 +18,8 @@ trip (transcript.js moves the full text into the content modal). */}}
     <h2>{{if .Seq}}#{{.Seq}} — {{end}}request {{.ID}}</h2>
     <span class="chip">{{.Provider}}/{{.Model}}</span>
     {{if ge .StatusCode 400}}<span class="chip err">HTTP {{.StatusCode}}</span>{{end}}
-    {{if eq .Kind "client"}}{{if .RequestKind}}<span class="chip warn">{{.RequestKind}}</span>{{end}}
-    {{else}}<span class="chip warn">{{.Kind}}</span>{{end}}
+    {{if eq .Kind "client"}}{{if .RequestKind}}<span class="chip kind">{{.RequestKind}}</span>{{end}}
+    {{else}}<span class="chip kind">{{.Kind}}</span>{{end}}
     {{if .Inspector.SystemPrompt.Present}}
     <button class="preamble-btn{{if .Inspector.SystemPrompt.Guardrailed}} touched{{end}}" type="button"
             data-preamble-trigger
@@ -27,6 +27,10 @@ trip (transcript.js moves the full text into the content modal). */}}
       <span class="touched-dot"></span>preamble
     </button>
     {{end}}
+    {{/* Config epoch is context, not a headline: a dim mention pushed to the
+    right of the header line keeps it available without the prominence it had
+    as its own meta-grid tile. */}}
+    <span class="f-epoch" title="the resolved config that served this request">{{if .ConfigEpoch}}{{.ConfigEpoch}}{{else}}no epoch{{end}}</span>
   </div>
   <div class="f-sub"><span title="{{ts .Ts}}">{{clock .Ts}} UTC</span> · trace <span title="{{.TraceID}}">{{trace8 .TraceID}}</span> · {{usd .CostUSD}} · {{dur .LatencyMs}}</div>
 
@@ -38,19 +42,25 @@ trip (transcript.js moves the full text into the content modal). */}}
 
   {{if .Error}}<div class="error-block"><b>request-level error</b><br>{{.Error}}</div>{{end}}
 
-  {{if .Inspector.IsClassifier}}
+  {{/* ShowSignals and Signals are both derived once in buildTurn (see
+  signalStateFor) rather than re-derived here from the row's fields. */}}
+  {{if .Inspector.ShowSignals}}
   <div class="f-section">
-    <div class="label">classifier verdict</div>
+    <div class="label">{{if .Inspector.IsClassifier}}classifier verdict{{else}}classified signals{{end}}</div>
     <div class="classifier-verdict">
       <div class="axes">
-        {{if .Inspector.HasVerdict}}
+        {{if .Inspector.Signals.HasValues}}
           {{if .Domain}}<span class="axis">domain={{.Domain}}</span>{{end}}
-          {{if .Effort}}<span class="axis">effort={{.Effort}}</span>{{end}}
+          {{if .Difficulty}}<span class="axis">difficulty={{.Difficulty}}</span>{{end}}
           {{if .CostClass}}<span class="axis">cost_class={{.CostClass}}</span>{{end}}
-          {{if gt .Inspector.Confidence 0.0}}<span class="axis">confidence={{pct .Inspector.Confidence}}</span>{{end}}
+          {{if .RequiredCapabilities}}<span class="axis">capabilities={{range $i, $cap := .RequiredCapabilities}}{{if $i}}, {{end}}{{$cap}}{{end}}</span>{{end}}
         {{else}}
-          <span class="axis none">no axis reported</span>
+          <span class="axis none">{{.Inspector.Signals.Label}}</span>
         {{end}}
+        {{/* Confidence is not one of the axes: a call can be sure and still
+        name nothing, so it is shown beside whichever of the two states this
+        is rather than folded into the value list. */}}
+        {{if gt .Inspector.Confidence 0.0}}<span class="axis">confidence={{pct .Inspector.Confidence}}</span>{{end}}
       </div>
       <div class="rationale">{{if .RoutingRationale}}{{.RoutingRationale}}{{else}}(no rationale captured){{end}}</div>
     </div>
@@ -64,11 +74,15 @@ trip (transcript.js moves the full text into the content modal). */}}
       <div class="kv"><span class="k">model served</span><span class="v">{{.Model}}</span></div>
       <div class="kv"><span class="k">actual model (upstream-reported)</span><span class="v{{if and .ActualModel (ne .ActualModel .Model)}} changed{{end}}">{{if .ActualModel}}{{.ActualModel}}{{else}}same as served{{end}}</span></div>
       <div class="kv"><span class="k">provider</span><span class="v">{{.Provider}}</span></div>
-      <div class="kv"><span class="k">config epoch</span><span class="v">{{if .ConfigEpoch}}{{.ConfigEpoch}}{{else}}—{{end}}</span></div>
+      {{/* The client's requested reasoning effort is a request FACT, shown
+      here beside model/provider/alias — never in the classifier-verdict
+      `axes` span above, which is classification output only (#79). It took
+      the slot config epoch vacated in the header. */}}
+      <div class="kv"><span class="k">client effort</span><span class="v">{{if .ClientEffort}}{{.ClientEffort}}{{else}}(not requested){{end}}</span></div>
     </div>
   </div>
 
-  {{if and .RoutingRationale (not .Inspector.IsClassifier)}}
+  {{if and .RoutingRationale (not .Inspector.ShowSignals)}}
   <div class="f-section">
     <div class="label">routing rationale</div>
     <div class="rationale-box">{{.RoutingRationale}}</div>

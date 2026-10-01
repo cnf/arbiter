@@ -36,7 +36,7 @@ const (
 // value type so the pipeline can build one without holding a DB handle.
 //
 // Empty strings in the nullable fields (SessionKey, ClientID, AliasUsed,
-// Domain, Effort, CostClass, Error) are written as SQL NULL — an absent
+// Domain, Difficulty, CostClass, Error) are written as SQL NULL — an absent
 // value and an empty one are the same thing here.
 type Event struct {
 	TraceID    string
@@ -70,14 +70,24 @@ type Event struct {
 	ConfigEpoch string
 
 	Domain     string
-	Effort     string
+	Difficulty string
 	CostClass  string
 	Confidence float64
+	// RequiredCapabilities is nil when classification is unavailable and an
+	// empty non-nil slice when it ran but detected none.
+	RequiredCapabilities []string
 
 	// RequestKind is what the request IS ("title", later "subagent"), as
 	// opposed to who sent it — that is Kind below. See
 	// types.Signals.RequestKind for why the two are not the same column.
 	RequestKind string
+
+	// ClientEffort is the reasoning effort the CLIENT requested
+	// (output_config.effort), recorded as a request fact (#79) — see
+	// types.Signals.ClientEffort. It is what the client asked for, not what
+	// was sent upstream (phase 3's lock can change the latter). Empty is
+	// written as NULL, i.e. "the client asked for none".
+	ClientEffort string
 
 	Usage      types.Usage
 	LatencyMs  int64
@@ -170,7 +180,7 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 	// added to schema.sql after a database was first created never appears on
 	// it. Add the ones we know about explicitly; an insert referencing a
 	// missing column fails every time, which would silently lose events.
-	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT", "actual_model TEXT", "kind TEXT NOT NULL DEFAULT 'client'", "request_kind TEXT", "arrival_ts TIMESTAMP"} {
+	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT", "actual_model TEXT", "kind TEXT NOT NULL DEFAULT 'client'", "request_kind TEXT", "arrival_ts TIMESTAMP", "required_capabilities_json TEXT", "client_effort TEXT"} {
 		if err := addColumnIfMissing(db, "requests", col); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate event store schema: %w", err)
@@ -179,6 +189,16 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 	// name (#22): an attachment's filename, added to content_refs after the
 	// table already existed in deployed databases.
 	if err := addColumnIfMissing(db, "content_refs", "name TEXT"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate event store schema: %w", err)
+	}
+	// requests.effort was renamed to requests.difficulty (#79) — the routing
+	// axis was renamed so the bare word "effort" can mean the client-facing
+	// reasoning-effort knob. CREATE TABLE IF NOT EXISTS above is a no-op on an
+	// existing table, so a deployed database still has the old column name and
+	// every read/write referencing `difficulty` would fail. Guarded, because a
+	// fresh database already has `difficulty` straight from schema.sql.
+	if err := renameColumnIfPresent(db, "requests", "effort", "difficulty"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate event store schema: %w", err)
 	}
@@ -288,6 +308,55 @@ func addColumnIfMissing(db *sql.DB, table, decl string) error {
 	if _, err := db.ExecContext(context.Background(),
 		"ALTER TABLE "+table+" ADD COLUMN "+decl); err != nil {
 		return fmt.Errorf("add %s.%s: %w", table, name, err)
+	}
+	return nil
+}
+
+// renameColumnIfPresent renames a column only when `from` still exists and
+// `to` does not. SQLite's ALTER TABLE ... RENAME COLUMN has no IF EXISTS
+// form, so the check is a PRAGMA read (same shape as addColumnIfMissing).
+//
+// Both directions are guarded: a fresh database (created from the current
+// schema.sql) already has `to`, and a database already migrated has neither
+// `from`. The `to` check also makes the helper idempotent and safe to re-run.
+func renameColumnIfPresent(db *sql.DB, table, from, to string) error {
+	rows, err := db.QueryContext(context.Background(), "PRAGMA table_info("+table+")")
+	if err != nil {
+		return fmt.Errorf("read %s columns: %w", table, err)
+	}
+	hasFrom, hasTo := false, false
+	for rows.Next() {
+		var (
+			cid       int
+			colName   string
+			colType   string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &colName, &colType, &notNull, &dfltValue, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan %s columns: %w", table, err)
+		}
+		switch colName {
+		case from:
+			hasFrom = true
+		case to:
+			hasTo = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("read %s columns: %w", table, err)
+	}
+	_ = rows.Close()
+
+	if !hasFrom || hasTo {
+		return nil
+	}
+	if _, err := db.ExecContext(context.Background(),
+		"ALTER TABLE "+table+" RENAME COLUMN "+from+" TO "+to); err != nil {
+		return fmt.Errorf("rename %s.%s to %s: %w", table, from, to, err)
 	}
 	return nil
 }
@@ -429,16 +498,16 @@ func insertRequestTx(ctx context.Context, db execer, ev Event) (int64, error) {
 	const q = `
 INSERT INTO requests (
     trace_id, session_key, client_id, ts, arrival_ts, format, provider, model, actual_model,
-    alias_used, routing_rationale, domain, effort, cost_class, confidence,
+    alias_used, routing_rationale, domain, difficulty, cost_class, confidence, required_capabilities_json,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
     cost_usd, latency_ms, status_code, error, stream, tool_calls_json,
-    config_epoch, headers_json, kind, request_kind
+    config_epoch, headers_json, kind, request_kind, client_effort
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?,
-    ?, ?, ?, ?
+    ?, ?, ?, ?, ?
 )`
 
 	// kind is NOT NULL with a schema default, but this INSERT always binds it
@@ -464,9 +533,10 @@ INSERT INTO requests (
 		nullStr(ev.AliasUsed),
 		ev.RoutingRationale,
 		nullStr(ev.Domain),
-		nullStr(ev.Effort),
+		nullStr(ev.Difficulty),
 		nullStr(ev.CostClass),
 		ev.Confidence,
+		jsonList(ev.RequiredCapabilities),
 		int64(ev.Usage.InputTokens),
 		int64(ev.Usage.OutputTokens),
 		int64(ev.Usage.CacheRead),
@@ -480,7 +550,8 @@ INSERT INTO requests (
 		nullStr(ev.ConfigEpoch),
 		headersJSON(ev.Headers),
 		kind,
-		nullStr(ev.RequestKind))
+		nullStr(ev.RequestKind),
+		nullStr(ev.ClientEffort))
 	if err != nil {
 		return 0, fmt.Errorf("insert request: %w", err)
 	}
@@ -506,6 +577,18 @@ func nullTime(t time.Time) *time.Time {
 		return nil
 	}
 	return &t
+}
+
+func jsonList(values []string) *string {
+	if values == nil {
+		return nil
+	}
+	b, err := json.Marshal(values)
+	if err != nil {
+		return nil
+	}
+	s := string(b)
+	return &s
 }
 
 func toolCallsJSON(names []string) *string {

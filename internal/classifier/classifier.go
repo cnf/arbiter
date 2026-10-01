@@ -14,11 +14,11 @@ type Classifier interface {
 
 // Axis names a Signals field a classifier produces. Each heuristic instance
 // declares which axis it fills, so several instances can run side by side
-// (domain, effort, capabilities) without overwriting each other's axis —
+// (domain, difficulty, capabilities) without overwriting each other's axis —
 // the merger keys off this rather than off the classifier's name.
 const (
 	AxisDomain       = types.AxisDomainName
-	AxisEffort       = types.AxisEffortName
+	AxisDifficulty   = types.AxisDifficultyName
 	AxisCapabilities = types.AxisCapabilitiesName
 	AxisCostClass    = types.AxisCostClassName
 )
@@ -283,8 +283,8 @@ func (hc *HeuristicClassifier) detectCapabilities(req *types.NormalizedRequest, 
 // reports and what a matcher's escape-equivalent would mean.
 func (hc *HeuristicClassifier) fillAxis(sig *types.Signals, value string) {
 	switch hc.axis {
-	case AxisEffort:
-		sig.Effort = value
+	case AxisDifficulty:
+		sig.Difficulty = value
 	case AxisCostClass:
 		sig.CostClass = value
 	case AxisCapabilities:
@@ -380,7 +380,7 @@ func axisScore(sig types.Signals, axis string) float64 {
 }
 
 // mergeAxisValue applies one classifier's verdict for one scalar axis
-// (Domain, Effort, CostClass) to the merge in progress. target points at the
+// (Domain, Difficulty, CostClass) to the merge in progress. target points at the
 // merged Signals field for this axis; axisConfidence records the score that
 // won it, keyed by axis name.
 //
@@ -429,8 +429,8 @@ func mergeAxisValue(target *string, axisConfidence map[string]float64, axis, val
 // empty rather than assuming an unknown axis is unset.
 func axisValue(sig *types.Signals, axis string) string {
 	switch axis {
-	case AxisEffort:
-		return sig.Effort
+	case AxisDifficulty:
+		return sig.Difficulty
 	case AxisCostClass:
 		return sig.CostClass
 	case AxisDomain:
@@ -465,10 +465,10 @@ func axesAllSet(axes []string, merged *types.Signals, axisConfidence map[string]
 }
 
 // Classify merges signals from all classifiers. Each scalar axis (Domain,
-// Effort, CostClass) is filled by whichever sub-classifier reported the
+// Difficulty, CostClass) is filled by whichever sub-classifier reported the
 // highest confidence *for that axis* — keyed per-axis, not globally, so a
-// high-confidence domain classifier can't starve a lower-confidence effort
-// classifier out of populating Effort. RequiredCapabilities and
+// high-confidence domain classifier can't starve a lower-confidence difficulty
+// classifier out of populating Difficulty. RequiredCapabilities and
 // EstimatedTokens are unioned/maxed since those are additive rather than
 // exclusive facts about the request.
 //
@@ -480,6 +480,14 @@ func axesAllSet(axes []string, merged *types.Signals, axisConfidence map[string]
 // the priority order, which buildClassifiers already preserves.
 func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedRequest) (types.Signals, error) {
 	var merged types.Signals
+	// RequiredCapabilities is initialized to a non-nil empty slice so that
+	// "the merge ran and no classifier named a capability" is distinguishable
+	// on the recorded row from "classification never ran" — the latter leaves
+	// this nil (see pipeline.classify with no classifiers configured, and the
+	// signals-less short-circuits in resolveRoute). Without this, a real
+	// request that matched nothing persisted exactly the same NULL as a row
+	// that was never classified, and no reader could tell the two apart.
+	merged.RequiredCapabilities = []string{}
 	axisConfidence := make(map[string]float64)
 	capSeen := make(map[string]bool)
 	sawAxisConfidence := false
@@ -504,7 +512,7 @@ func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedR
 		}
 
 		mergeAxisValue(&merged.Domain, axisConfidence, AxisDomain, sig.Domain, axisScore(sig, AxisDomain))
-		mergeAxisValue(&merged.Effort, axisConfidence, AxisEffort, sig.Effort, axisScore(sig, AxisEffort))
+		mergeAxisValue(&merged.Difficulty, axisConfidence, AxisDifficulty, sig.Difficulty, axisScore(sig, AxisDifficulty))
 		mergeAxisValue(&merged.CostClass, axisConfidence, AxisCostClass, sig.CostClass, axisScore(sig, AxisCostClass))
 		for _, capability := range sig.RequiredCapabilities {
 			if !capSeen[capability] {

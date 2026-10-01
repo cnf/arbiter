@@ -296,7 +296,7 @@ func TestPinsAlwaysEligibleForOrdinaryTraffic(t *testing.T) {
 // TestForceAliasOverridesOnlyNamedAxes verifies that a force-alias overrides
 // only the axes it declares, leaving other axes to come from normal
 // classification: 'coding' forces domain=code_generation but says nothing
-// about effort, so effort must still be classified from the request text.
+// about difficulty, so difficulty must still be classified from the request text.
 func TestForceAliasOverridesOnlyNamedAxes(t *testing.T) {
 	provs := map[string]types.ProviderConfig{
 		"fast":  {Name: "fast", Type: "openai", Models: []string{"fast-model"}},
@@ -306,15 +306,15 @@ func TestForceAliasOverridesOnlyNamedAxes(t *testing.T) {
 		"coding": {Name: "coding", Force: map[string][]string{"domain": {"code_generation"}}},
 	}, provs, nil, nil)
 
-	effort := classifier.NewHeuristicClassifier("effort", classifier.AxisEffort, map[string][]string{
+	effort := classifier.NewHeuristicClassifier("effort", classifier.AxisDifficulty, map[string][]string{
 		"easy":   {"quick", "simple"},
 		"medium": {"think", "consider"},
 		"hard":   {"complex", "architecture"},
 	})
 
-	// Only matches if BOTH the forced domain and the classified effort land.
+	// Only matches if BOTH the forced domain and the classified difficulty land.
 	rules := []router.PolicyRule{
-		{When: router.PolicyCondition{Domain: "code_generation", Effort: "medium"}, Provider: "smart"},
+		{When: router.PolicyCondition{Domain: "code_generation", Difficulty: "medium"}, Provider: "smart"},
 		{When: router.PolicyCondition{}, Provider: "fast"},
 	}
 	policy := router.NewPolicyRouter("test", rules, provs, resolver, nil)
@@ -327,7 +327,7 @@ func TestForceAliasOverridesOnlyNamedAxes(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 	if len(fu.calls) != 1 || fu.calls[0] != "smart" {
-		t.Fatalf("upstream calls = %v, want [smart]: domain is forced but effort must still classify to medium", fu.calls)
+		t.Fatalf("upstream calls = %v, want [smart]: domain is forced but difficulty must still classify to medium", fu.calls)
 	}
 }
 

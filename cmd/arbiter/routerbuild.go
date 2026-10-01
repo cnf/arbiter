@@ -45,3 +45,15 @@ func buildRouter(rc config.RouterConfig, providers map[string]types.ProviderConf
 // axis on one rule is an error rather than silently picking one.
 // "request_kind" matches types.Signals.RequestKind exactly ("title", later
 // "subagent") — not an axis, but still a legitimate rule condition.
+//
+// A `when` key the parser does not read is an ERROR, not ignored. An ignored
+// key contributes no predicate, and a rule whose only key was ignored parses to
+// the zero PolicyCondition — which Matches treats as a wildcard, so the rule
+// silently becomes a catch-all and swallows every request behind it while its
+// own conditions appear to discriminate. The same applies to a recognised key
+// carrying a value of the wrong shape (`capabilities: "vision"` where a list
+// belongs), and to a `when` that sets nothing on purpose-by-accident.
+//
+// A rule with no `when` at all, or `when: {}`, is still the deliberate way to
+// match everything — deliberate in the spelling, so the easy mistake and the
+// intended catch-all are distinguishable at load time.

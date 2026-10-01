@@ -94,12 +94,12 @@ selectable in its own right — it has its own inspector — so the nested row i
 a button, not a label. */}}
 {{define "transcript-entry"}}
 <div class="entry" data-search="{{.Badge}} {{.Summary}} {{.UserPreview}} {{.Provider}} {{.Model}} {{.Error}}">
-  <div class="row{{if eq .Dot "err"}} error-row{{end}}" data-id="{{.ID}}" data-seq="{{.Seq}}" tabindex="0" role="button">
+  <div class="row{{if eq .Dot "err"}} error-row{{end}}{{if .RequestKind}} internal{{end}}" data-id="{{.ID}}" data-seq="{{.Seq}}" tabindex="0" role="button">
     <span class="seq">#{{.Seq}}</span>
     <span class="dot {{.Dot}}"></span>
     <span class="main">
       {{if .UserPreview}}<span class="u-preview">» {{.UserPreview}}</span>{{end}}
-      <span class="badge">{{.Badge}}</span><span class="summary">{{.Summary}}</span>
+      {{if .RequestKind}}<span class="badge kind">{{.RequestKind}}</span>{{else}}<span class="badge">{{.Badge}}</span>{{end}}<span class="summary">{{.Summary}}</span>
     </span>
     <span class="side"><span>{{usd .CostUSD}}</span><span>{{dur .LatencyMs}}</span></span>
   </div>

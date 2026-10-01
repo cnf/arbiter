@@ -82,7 +82,7 @@ func TestTraceIDRoundTripsThroughContext(t *testing.T) {
 // "grep all lines for this request" match every untraced line.
 func TestTraceIDIsTaggedOnEveryLogCall(t *testing.T) {
 	route := types.Route{Provider: "claude", Model: "claude/claude-sonnet-5", Rationale: "default rule"}
-	signals := types.Signals{Domain: "code", Effort: "high", CostClass: "medium", Confidence: 0.9}
+	signals := types.Signals{Domain: "code", Difficulty: "high", CostClass: "medium", Confidence: 0.9}
 	usage := types.Usage{InputTokens: 10, OutputTokens: 20, CacheRead: 3, CacheWrite: 4, CostUSD: 0.01}
 
 	calls := []struct {
@@ -135,7 +135,7 @@ func TestLogRoutingEmitsDecisionFields(t *testing.T) {
 		Rationale: "domain=code matched the coding rule",
 	}
 	signals := types.Signals{
-		Domain: "code", Effort: "high", CostClass: "expensive",
+		Domain: "code", Difficulty: "high", CostClass: "expensive",
 		RequiredCapabilities: []string{"thinking"}, Confidence: 0.75,
 	}
 	l.LogRouting(context.Background(), route, signals, 1500*time.Millisecond)
@@ -148,7 +148,7 @@ func TestLogRoutingEmitsDecisionFields(t *testing.T) {
 		"model":       "claude/claude-opus-4",
 		"rationale":   "domain=code matched the coding rule",
 		"domain":      "code",
-		"effort":      "high",
+		"difficulty":  "high",
 		"cost_class":  "expensive",
 		"confidence":  0.75,
 		"duration_ms": float64(1500),

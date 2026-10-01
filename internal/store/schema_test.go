@@ -61,7 +61,7 @@ func TestSchemaAppliesAndRoundTrips(t *testing.T) {
 		AliasUsed:        "cheap-claude",
 		RoutingRationale: "policy rule matched domain=code_generation",
 		Domain:           "code_generation",
-		Effort:           "easy",
+		Difficulty:       "easy",
 		CostClass:        "budget",
 		Confidence:       0.82,
 		Usage:            types.Usage{InputTokens: 1200, OutputTokens: 340, CacheRead: 100, CacheWrite: 0, CostUSD: 0.000725},
@@ -238,7 +238,7 @@ func TestMigrationAddsRequestKindToAnExistingTable(t *testing.T) {
 		alias_used            TEXT,
 		routing_rationale     TEXT NOT NULL,
 		domain                TEXT,
-		effort                TEXT,
+		difficulty            TEXT,
 		cost_class            TEXT,
 		confidence            REAL,
 		input_tokens          INTEGER NOT NULL DEFAULT 0,
@@ -288,6 +288,99 @@ func TestMigrationAddsRequestKindToAnExistingTable(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].RequestKind != "title" {
 		t.Fatalf("after migration rows = %+v, want one row with request_kind=title", rows)
+	}
+}
+
+// TestMigrationRenamesEffortToDifficulty is the upgrade path for #79: the
+// routing axis column was renamed, not added, so a database created before the
+// rename still has `effort` while every read/write now names `difficulty`. A
+// plain ADD COLUMN cannot express it and CREATE TABLE IF NOT EXISTS is a no-op
+// against the existing table, so without renameColumnIfPresent every row after
+// the change would fail to insert (unknown column) — silently losing events.
+//
+// Covers both guards: the rename happens on a database that still has `effort`,
+// the pre-existing value survives, and running startup a second time (the
+// column now already named `difficulty`) is a no-op rather than an error.
+func TestMigrationRenamesEffortToDifficulty(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-effort.db")
+
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `CREATE TABLE requests (
+		id                    INTEGER PRIMARY KEY,
+		trace_id              TEXT NOT NULL,
+		session_key           TEXT,
+		client_id             TEXT,
+		ts                    TIMESTAMP NOT NULL,
+		format                TEXT NOT NULL,
+		provider              TEXT NOT NULL,
+		model                 TEXT NOT NULL,
+		actual_model          TEXT,
+		alias_used            TEXT,
+		routing_rationale     TEXT NOT NULL,
+		domain                TEXT,
+		effort                TEXT,
+		cost_class            TEXT,
+		confidence            REAL,
+		input_tokens          INTEGER NOT NULL DEFAULT 0,
+		output_tokens         INTEGER NOT NULL DEFAULT 0,
+		cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+		cache_write_tokens    INTEGER NOT NULL DEFAULT 0,
+		cost_usd              REAL NOT NULL DEFAULT 0,
+		latency_ms            INTEGER NOT NULL,
+		status_code           INTEGER NOT NULL,
+		error                 TEXT,
+		stream                BOOLEAN NOT NULL,
+		tool_calls_json       TEXT,
+		config_epoch          TEXT,
+		headers_json          TEXT,
+		kind                  TEXT NOT NULL DEFAULT 'client',
+		request_kind          TEXT
+	)`); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	// A row written under the old spelling, so the value surviving the rename
+	// is proven and not just the column name.
+	if _, err := legacy.ExecContext(ctx, `INSERT INTO requests
+		(trace_id, ts, format, provider, model, routing_rationale, domain, effort, latency_ms, status_code, stream)
+		VALUES ('trace-effort', CURRENT_TIMESTAMP, 'openai', 'openrouter', 'm', 'legacy', 'code_generation', 'hard', 10, 200, 0)`); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	w, err := NewSQLiteWriter(path, &recordingLogger{})
+	if err != nil {
+		t.Fatalf("NewSQLiteWriter on a pre-rename database: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Startup a second time: the column is already `difficulty`, so
+	// renameColumnIfPresent must do nothing rather than fail on a missing
+	// `effort`.
+	w2, err := NewSQLiteWriter(path, &recordingLogger{})
+	if err != nil {
+		t.Fatalf("NewSQLiteWriter second run (must be idempotent): %v", err)
+	}
+	if err := w2.Close(); err != nil {
+		t.Fatalf("Close second run: %v", err)
+	}
+
+	r := &Reader{db: reopenReads(t, path)}
+	rows, err := r.ListRequests(ctx, RequestFilter{})
+	if err != nil {
+		t.Fatalf("ListRequests after migration: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("after migration rows = %d, want 1", len(rows))
+	}
+	if rows[0].Difficulty != "hard" {
+		t.Errorf("Difficulty = %q, want hard — the pre-rename value must survive", rows[0].Difficulty)
 	}
 }
 
@@ -387,7 +480,7 @@ func TestEmptyStringsBecomeNull(t *testing.T) {
 		t.Fatalf("insertRequest: %v", err)
 	}
 
-	for _, col := range []string{"session_key", "client_id", "alias_used", "domain", "effort", "cost_class", "error", "tool_calls_json", "config_epoch"} {
+	for _, col := range []string{"session_key", "client_id", "alias_used", "domain", "difficulty", "cost_class", "error", "tool_calls_json", "config_epoch"} {
 		var isNull int
 		q := `SELECT ` + col + ` IS NULL FROM requests WHERE trace_id = 'trace-nulls'`
 		if err := db.QueryRowContext(ctx, q).Scan(&isNull); err != nil {
@@ -395,6 +488,176 @@ func TestEmptyStringsBecomeNull(t *testing.T) {
 		}
 		if isNull != 1 {
 			t.Errorf("%s is not NULL for an unset Event field", col)
+		}
+	}
+}
+
+// TestCapabilitiesRoundTrip is the store half of the classified-signals work:
+// required_capabilities_json has three meaningful states and all three must
+// survive a write and a read. NULL means classification never ran; [] means it
+// ran and no classifier named a capability; a populated list is what matched.
+// Collapsing [] into NULL is exactly the defect this column exists to fix — a
+// request that WAS classified then looked identical to one that was not.
+func TestCapabilitiesRoundTrip(t *testing.T) {
+	db := openMemory(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		trace string
+		caps  []string
+		raw   string // stored JSON text; "NULL" means SQL NULL
+	}{
+		{"caps-nil", nil, "NULL"},
+		{"caps-empty", []string{}, "[]"},
+		{"caps-present", []string{"vision", "tool_use"}, `["vision","tool_use"]`},
+	}
+	for _, tc := range cases {
+		ev := Event{
+			TraceID: tc.trace, Format: "openai", Provider: "p", Model: "m",
+			StatusCode: 200, RequiredCapabilities: tc.caps,
+		}
+		if err := insertRequest(ctx, db, ev); err != nil {
+			t.Fatalf("insert %s: %v", tc.trace, err)
+		}
+		var raw sql.NullString
+		if err := db.QueryRowContext(ctx,
+			`SELECT required_capabilities_json FROM requests WHERE trace_id = ?`, tc.trace).Scan(&raw); err != nil {
+			t.Fatalf("read %s: %v", tc.trace, err)
+		}
+		if tc.raw == "NULL" {
+			if raw.Valid {
+				t.Errorf("%s stored %q, want SQL NULL", tc.trace, raw.String)
+			}
+			continue
+		}
+		if !raw.Valid || raw.String != tc.raw {
+			t.Errorf("%s stored %q (valid %v), want %s", tc.trace, raw.String, raw.Valid, tc.raw)
+		}
+	}
+
+	// Read back through both projections: the list row and the detail row are
+	// separate scans with separate column lists, so a column dropped from
+	// either would silently flatten the distinction the write side keeps.
+	r := &Reader{db: db}
+	rows, err := r.ListRequests(ctx, RequestFilter{})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	byTrace := make(map[string]RequestRow, len(rows))
+	for _, row := range rows {
+		byTrace[row.TraceID] = row
+	}
+	for _, tc := range cases {
+		if _, ok := byTrace[tc.trace]; !ok {
+			t.Fatalf("ListRequests did not return %s", tc.trace)
+		}
+	}
+
+	if got := byTrace["caps-nil"].RequiredCapabilities; got != nil {
+		t.Errorf("list: NULL capabilities read back as %v, want nil", got)
+	}
+	if got := byTrace["caps-empty"].RequiredCapabilities; got == nil || len(got) != 0 {
+		t.Errorf("list: [] capabilities read back as %v (nil %v), want empty non-nil", got, got == nil)
+	}
+	if got := byTrace["caps-present"].RequiredCapabilities; len(got) != 2 || got[0] != "vision" || got[1] != "tool_use" {
+		t.Errorf("list: capabilities = %v, want [vision tool_use]", got)
+	}
+
+	detail, ok, err := r.GetRequest(ctx, byTrace["caps-empty"].ID)
+	if err != nil || !ok {
+		t.Fatalf("GetRequest(empty) = ok %v, err %v", ok, err)
+	}
+	if detail.RequiredCapabilities == nil {
+		t.Error("detail: [] capabilities read back as nil, want empty non-nil")
+	}
+	detail, ok, err = r.GetRequest(ctx, byTrace["caps-present"].ID)
+	if err != nil || !ok {
+		t.Fatalf("GetRequest(present) = ok %v, err %v", ok, err)
+	}
+	if len(detail.RequiredCapabilities) != 2 {
+		t.Errorf("detail: capabilities = %v, want 2 entries", detail.RequiredCapabilities)
+	}
+	detail, ok, err = r.GetRequest(ctx, byTrace["caps-nil"].ID)
+	if err != nil || !ok {
+		t.Fatalf("GetRequest(nil) = ok %v, err %v", ok, err)
+	}
+	if detail.RequiredCapabilities != nil {
+		t.Errorf("detail: NULL capabilities read back as %v, want nil", detail.RequiredCapabilities)
+	}
+}
+
+// TestClientEffortRoundTrip is the store half of #79 phase 4: the reasoning
+// effort the CLIENT requested is a request fact and must survive a write and a
+// read through BOTH projections. The list row and the detail row are separate
+// scans with separate column lists, so a column dropped from either would
+// silently read back empty while the write side kept it — the same trap the
+// capabilities column-set has.
+//
+// Two states, not three: there is no "locked by a force alias" state yet
+// (that is phase 3, deferred), so the stored value is always what the client
+// sent. NULL (empty) means the client asked for none.
+func TestClientEffortRoundTrip(t *testing.T) {
+	db := openMemory(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		trace        string
+		clientEffort string
+		raw          string // stored text; "NULL" means SQL NULL
+	}{
+		{"effort-none", "", "NULL"},
+		{"effort-high", "high", "high"},
+		{"effort-longscale", "extrahigh", "extrahigh"}, // Hermes' longer vocabulary, verbatim
+	}
+	for _, tc := range cases {
+		ev := Event{
+			TraceID: tc.trace, Format: "openai", Provider: "p", Model: "m",
+			StatusCode: 200, ClientEffort: tc.clientEffort,
+		}
+		if err := insertRequest(ctx, db, ev); err != nil {
+			t.Fatalf("insert %s: %v", tc.trace, err)
+		}
+		var raw sql.NullString
+		if err := db.QueryRowContext(ctx,
+			`SELECT client_effort FROM requests WHERE trace_id = ?`, tc.trace).Scan(&raw); err != nil {
+			t.Fatalf("read %s: %v", tc.trace, err)
+		}
+		if tc.raw == "NULL" {
+			if raw.Valid {
+				t.Errorf("%s stored %q, want SQL NULL", tc.trace, raw.String)
+			}
+			continue
+		}
+		if !raw.Valid || raw.String != tc.raw {
+			t.Errorf("%s stored %q (valid %v), want %s", tc.trace, raw.String, raw.Valid, tc.raw)
+		}
+	}
+
+	// Read back through the list projection and the detail projection — two
+	// independent column lists.
+	r := &Reader{db: db}
+	rows, err := r.ListRequests(ctx, RequestFilter{})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	byTrace := make(map[string]RequestRow, len(rows))
+	for _, row := range rows {
+		byTrace[row.TraceID] = row
+	}
+	for _, tc := range cases {
+		row, ok := byTrace[tc.trace]
+		if !ok {
+			t.Fatalf("ListRequests did not return %s", tc.trace)
+		}
+		if row.ClientEffort != tc.clientEffort {
+			t.Errorf("list: %s client effort = %q, want %q", tc.trace, row.ClientEffort, tc.clientEffort)
+		}
+		detail, ok, err := r.GetRequest(ctx, row.ID)
+		if err != nil || !ok {
+			t.Fatalf("GetRequest(%s) = ok %v, err %v", tc.trace, ok, err)
+		}
+		if detail.ClientEffort != tc.clientEffort {
+			t.Errorf("detail: %s client effort = %q, want %q", tc.trace, detail.ClientEffort, tc.clientEffort)
 		}
 	}
 }

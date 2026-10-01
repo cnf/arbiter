@@ -176,7 +176,7 @@ devenv shell --no-tui -- bash -c 'http --ignore-stdin -S GET ":8080/admin/reques
   "provider": "fake",
   "model": "fake-model",
   "alias_used": "auto",
-  "routing_rationale": "policy router \"policy\": domain=\"code_generation\" effort=\"\" capabilities=[] cost_class=\"\" -> alias \"fake-alias\" -> fake/fake-model",
+  "routing_rationale": "policy router \"policy\": domain=\"code_generation\" difficulty=\"\" capabilities=[] cost_class=\"\" -> alias \"fake-alias\" -> fake/fake-model",
   "domain": "code_generation",
   "input_tokens": 11,
   "output_tokens": 7,

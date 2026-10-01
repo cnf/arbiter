@@ -26,9 +26,9 @@ precedence order:
    `routing.fallback_providers`).
 4. **Classify + rules.** Signals are classified per axis (each `heuristic`
    classifier fills the one axis it declares, merged per axis so a
-   high-confidence domain match can't starve effort), a **force alias** named
+   high-confidence domain match can't starve difficulty), a **force alias** named
    by the client overrides only the axes it declares (`coding` sets domain but
-   leaves effort to classify), then the first matching policy rule wins. A
+   leaves difficulty to classify), then the first matching policy rule wins. A
    policy router errors when nothing matches, so chain a `simple` router after
    it (or write a catch-all rule) to degrade instead of failing.
 
@@ -45,6 +45,20 @@ a title-generation call is identified by the `request-kind` classifier
 (see "Matching a request's own text" below) and a rule like
 `when: { request_kind: "title" }` sends it to a cheap/fast alias instead of
 whatever model the client happened to name.
+
+A rule's `when` clause can also match `effort` — the reasoning-effort knob the
+**client itself sent**, matched verbatim against `types.Signals.ClientEffort`.
+The wire spelling depends on the format the client spoke: Anthropic clients
+send it as `output_config.effort`, OpenAI clients as `reasoning_effort`. Both
+are read into the same signal, so a rule matches regardless of which format
+the request arrived in. Like `request_kind` it is a request fact rather than
+a classification axis (no confidence, no classifier fills it, no
+force-alias targets it), and it is stamped on every path before routing, so a
+rule like `when: { effort: "high" }` can send a request that asked for high
+effort to the strong model *without* having to override what the client asked
+for. Note the value is matched by equality against whatever vocabulary the
+client uses (Anthropic's `low`/`medium`/`high`, another client's longer scale)
+— there is no cross-vocabulary ordering, only an exact string match.
 
 A rule's target is exactly one of: a named alias (`target: "…"`), a literal
 provider/model (`provider:`/`model:`), or a **terminal refusal**. A refusal rule
@@ -443,7 +457,7 @@ only if needed": declare a heuristic before the llm classifier, and the model
 call fires only when the heuristic left the axis empty. An escape/"other"
 verdict fills no axis, so it counts as empty and the gated classifier still
 runs. The skip is per axis: a gated `domain` classifier still runs when only
-the `effort` axis was filled elsewhere. A decisions classifier, whose one call
+the `difficulty` axis was filled elsewhere. A decisions classifier, whose one call
 answers several axes, is skipped only when *every* axis it would fill is
 already set — any unanswered axis justifies the call. Only model-backed types
 may set it; a heuristic that never makes an upstream call has nothing to gate.

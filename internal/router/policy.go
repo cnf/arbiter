@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	arbitererrors "github.com/cnf/arbiter/pkg/errors"
 	"github.com/cnf/arbiter/pkg/types"
@@ -14,18 +15,30 @@ import (
 // fallback in a ChainedRouter.
 type PolicyCondition struct {
 	Domain       string
-	Effort       string
+	Difficulty   string
 	Capabilities []string // every entry must appear in signals.RequiredCapabilities
 	CostClass    string
 
 	// RequestKind matches types.Signals.RequestKind exactly ("title", later
-	// "subagent"). Unlike Domain/Effort/CostClass this is not a contested
+	// "subagent"). Unlike Domain/Difficulty/CostClass this is not a contested
 	// routing axis — it carries no confidence and no force-alias can
 	// override it — but it is still a legitimate thing to route ON: a
 	// title-generation call is who's asking, not what the request is about,
 	// and #11 exists to send that traffic to a cheap/fast alias instead of
 	// whatever model the client happened to name.
 	RequestKind string
+
+	// Effort matches types.Signals.ClientEffort — the reasoning-effort knob
+	// the client itself sent. Like RequestKind it is a request FACT, not a
+	// contested axis (no confidence, no classifier fills it), but routing on
+	// it is legitimate: "a request that asked for high effort goes to the
+	// strong model" is a rule an operator may well want, and it does not
+	// require overriding what the client asked for.
+	//
+	// Note this is the NAME each client uses for its own scale (Anthropic
+	// "low"/"medium"/"high", Hermes' longer scale), matched verbatim — there
+	// is no cross-vocabulary ordering here, only equality.
+	Effort string
 
 	// RequiresInputModalities guards the rule's *target* rather than matching
 	// the request: every entry must be something the target model accepts
@@ -46,13 +59,16 @@ func (c PolicyCondition) Matches(sig types.Signals) bool {
 	if c.Domain != "" && c.Domain != sig.Domain {
 		return false
 	}
-	if c.Effort != "" && c.Effort != sig.Effort {
+	if c.Difficulty != "" && c.Difficulty != sig.Difficulty {
 		return false
 	}
 	if c.CostClass != "" && c.CostClass != sig.CostClass {
 		return false
 	}
 	if c.RequestKind != "" && c.RequestKind != sig.RequestKind {
+		return false
+	}
+	if c.Effort != "" && c.Effort != sig.ClientEffort {
 		return false
 	}
 	for _, want := range c.Capabilities {
@@ -70,9 +86,35 @@ func (c PolicyCondition) Matches(sig types.Signals) bool {
 	return true
 }
 
-// String renders the condition for log lines and error messages.
+// String renders only the configured predicates that participated in a match.
+// A condition with no predicates is an explicit catch-all.
 func (c PolicyCondition) String() string {
-	return fmt.Sprintf("domain=%q effort=%q capabilities=%v cost_class=%q", c.Domain, c.Effort, c.Capabilities, c.CostClass)
+	parts := make([]string, 0, 6)
+	if c.Domain != "" {
+		parts = append(parts, fmt.Sprintf("domain=%q", c.Domain))
+	}
+	if c.Difficulty != "" {
+		parts = append(parts, fmt.Sprintf("difficulty=%q", c.Difficulty))
+	}
+	if len(c.Capabilities) > 0 {
+		parts = append(parts, fmt.Sprintf("capabilities=%v", c.Capabilities))
+	}
+	if c.CostClass != "" {
+		parts = append(parts, fmt.Sprintf("cost_class=%q", c.CostClass))
+	}
+	if c.RequestKind != "" {
+		parts = append(parts, fmt.Sprintf("request_kind=%q", c.RequestKind))
+	}
+	if c.Effort != "" {
+		parts = append(parts, fmt.Sprintf("effort=%q", c.Effort))
+	}
+	if len(c.RequiresInputModalities) > 0 {
+		parts = append(parts, fmt.Sprintf("requires_input_modalities=%v", c.RequiresInputModalities))
+	}
+	if len(parts) == 0 {
+		return "match all"
+	}
+	return strings.Join(parts, " ")
 }
 
 // PolicyRule maps a condition to a routing target. Exactly one of Target
@@ -287,5 +329,5 @@ func (pr *PolicyRouter) routeViaAlias(rule PolicyRule, req *types.NormalizedRequ
 // signalsDescription renders the signal axes routing matches on, for log
 // lines and error messages.
 func signalsDescription(sig types.Signals) string {
-	return fmt.Sprintf("domain=%q effort=%q capabilities=%v cost_class=%q", sig.Domain, sig.Effort, sig.RequiredCapabilities, sig.CostClass)
+	return fmt.Sprintf("domain=%q difficulty=%q capabilities=%v cost_class=%q effort=%q", sig.Domain, sig.Difficulty, sig.RequiredCapabilities, sig.CostClass, sig.ClientEffort)
 }

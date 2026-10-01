@@ -89,6 +89,14 @@ type transcriptTurnView struct {
 	// conversation's order rather than of the row.
 	Seq int
 
+	// RequestKind is the internal request's kind when this turn is not a user
+	// turn — "title" or "subagent" today, empty for everything a client sent
+	// under its own prompt. The template uses it as its own test for "this row
+	// is internal", so it gates both the badge and the row's blue treatment;
+	// derive the "is internal" class from the same value rather than a second
+	// flag that could disagree with it.
+	RequestKind string
+
 	// Dot is the list row's status dot class: "err" for a failed turn, "user"
 	// when it introduced a user message, "ok" otherwise — the mockup's own
 	// three-way rule.
@@ -109,6 +117,61 @@ type transcriptTurnView struct {
 	Children []transcriptTurnView
 }
 
+// signalState is how a request's classification should read in the
+// inspector. It exists because the pane used to decide what to render from
+// three independent booleans (IsClassifier, HasVerdict, HasClassification)
+// that overlapped: HasVerdict meant "an axis or a confidence exists",
+// HasClassification meant "classification ran at all", and the template had
+// to interleave the two to work out which of three labels it was looking at.
+// One value describing the outcome says it once.
+type signalState int
+
+const (
+	// signalNone is a request nothing was recorded for: a row predating the
+	// signals columns, or an internal call that filled no axis. The pane
+	// still renders for a classifier call, which has a rationale worth
+	// showing even when it produced no axis.
+	signalNone signalState = iota
+	// signalPresent is a classification that carried at least one value —
+	// an axis or a capability. This is the case with something to list.
+	signalPresent
+	// signalEmpty is a classification that ran but named no axis and no
+	// capability. It is a real outcome ("nothing matched"), and the one the
+	// pane must not render as an absence of classification.
+	signalEmpty
+)
+
+// Label is the placeholder shown in place of values. Exported because
+// text/template resolves methods by reflection and can only see exported ones
+// — the same reason HasValues is.
+func (s signalState) Label() string {
+	if s == signalEmpty {
+		return "classified; no signals matched"
+	}
+	return "no axis reported"
+}
+
+// HasValues reports whether there are fields to list, as opposed to only a
+// label.
+func (s signalState) HasValues() bool { return s == signalPresent }
+
+// signalStateFor derives the state from what was recorded. The values are
+// what count: a confidence with no axis is still "nothing matched" (the pane
+// shows it alongside the label rather than pretending it is an axis), and a
+// capability with no axis is a value like any other — reading only the axes
+// was how a capability-only classification rendered as "no signals matched"
+// and hid the capability it had found.
+func signalStateFor(row store.RequestRow, confidence float64) signalState {
+	if row.Domain != "" || row.Difficulty != "" || row.CostClass != "" ||
+		len(row.RequiredCapabilities) > 0 {
+		return signalPresent
+	}
+	if row.HasClassification() || confidence > 0 {
+		return signalEmpty
+	}
+	return signalNone
+}
+
 // transcriptInspector is one turn's detail-pane content.
 type transcriptInspector struct {
 	// IsClassifier marks a call Arbiter made on its own behalf, which is
@@ -124,11 +187,18 @@ type transcriptInspector struct {
 
 	// Verdict is the classifier's own answer. Zero-valued for a client turn
 	// except for the rationale, which every request carries.
-	Domain     string
-	Effort     string
-	CostClass  string
-	Confidence float64
-	HasVerdict bool
+	Domain               string
+	Difficulty           string
+	CostClass            string
+	RequiredCapabilities []string
+	Confidence           float64
+
+	// Signals is the one description of what the classification produced;
+	// ShowSignals is whether the section belongs on the pane at all. Both are
+	// derived once in buildTurn — templates cannot call a method with an
+	// argument, so "is there a section" cannot be a method on Signals.
+	Signals     signalState
+	ShowSignals bool
 
 	// Content, split the way a reader scans it rather than the way it was
 	// stored: the user message(s), the assistant's reasoning, and the tool
@@ -560,15 +630,17 @@ func (h *Handler) buildTurn(r *http.Request, row store.RequestRow, seq int, page
 	ctx := r.Context()
 
 	turn := transcriptTurnView{
-		RequestRow: row,
-		Seq:        seq,
-		Dot:        "ok",
-		Badge:      row.RequestKind,
+		RequestRow:  row,
+		Seq:         seq,
+		Dot:         "ok",
+		Badge:       row.RequestKind,
+		RequestKind: row.RequestKind,
 		Inspector: transcriptInspector{
-			IsClassifier: row.Kind != "client",
-			Domain:       row.Domain,
-			Effort:       row.Effort,
-			CostClass:    row.CostClass,
+			IsClassifier:         row.Kind != "client",
+			Domain:               row.Domain,
+			Difficulty:           row.Difficulty,
+			CostClass:            row.CostClass,
+			RequiredCapabilities: row.RequiredCapabilities,
 		},
 	}
 	if turn.Badge == "" {
@@ -589,8 +661,14 @@ func (h *Handler) buildTurn(r *http.Request, row store.RequestRow, seq int, page
 	extra := page.extras[row.ID]
 	turn.Inspector.Confidence = extra.Confidence
 	turn.Inspector.Headers = extra.Headers
-	turn.Inspector.HasVerdict = row.Domain != "" || row.Effort != "" ||
-		row.CostClass != "" || extra.Confidence > 0
+	// Signals/ShowSignals replace what were three overlapping booleans
+	// (IsClassifier, HasClassification, HasVerdict). The section earns its
+	// place when there is an answer to show — a classifier's own call always
+	// has a rationale, even a rationale that says nothing matched — and a
+	// client turn only when something about its classification is worth
+	// reporting.
+	turn.Inspector.Signals = signalStateFor(row, extra.Confidence)
+	turn.Inspector.ShowSignals = turn.Inspector.IsClassifier || turn.Inspector.Signals != signalNone
 	if row.StatusCode >= 400 {
 		turn.Dot = "err"
 	}
@@ -666,7 +744,22 @@ func (h *Handler) splitBlocks(turn *transcriptTurnView, blocks []store.ContentBl
 // reasoning if there is any, else the tool calls, else a plain note. This is
 // the mockup's own precedence, and it is what makes a row scannable without
 // opening it.
+//
+// An internal request (title/subagent) is badged with its kind by the
+// template, which reads turn.RequestKind directly — so this only has to leave
+// that badge alone. The content branches below would otherwise overwrite it
+// with a description of what the turn *did* ("reasoning", a tool name), a
+// question nobody asks of a title-generation call, and the row then rendered
+// identical to any ordinary turn — the reason the list showed no trace of the
+// kind the request had been categorised by. The summary is still filled, so
+// the line reads "subagent — <what it did>" rather than a bare kind.
 func (h *Handler) summarizeTurn(turn *transcriptTurnView) {
+	if turn.RequestKind != "" {
+		if turn.Summary == "" {
+			turn.Summary = turn.contentSummary()
+		}
+		return
+	}
 	if len(turn.Inspector.Reasoning) > 0 {
 		turn.Badge = "reasoning"
 		turn.Summary = oneLine(turn.Inspector.Reasoning[0].Body, 110)
@@ -686,6 +779,25 @@ func (h *Handler) summarizeTurn(turn *transcriptTurnView) {
 		turn.Badge = "user"
 		turn.Summary = turn.UserPreview
 	}
+}
+
+// contentSummary is summarizeTurn's content precedence without the badge:
+// the assistant's reasoning, else its tool calls, else the user preview. An
+// internal request uses it to keep its kind as the badge while still carrying
+// a one-line description, so the two paths cannot drift.
+func (t *transcriptTurnView) contentSummary() string {
+	if len(t.Inspector.Reasoning) > 0 {
+		return oneLine(t.Inspector.Reasoning[0].Body, 110)
+	}
+	if len(t.Inspector.Calls) > 0 {
+		first := t.Inspector.Calls[0]
+		_, text := summarizeCallPair(first)
+		if len(t.Inspector.Calls) > 1 {
+			text = fmt.Sprintf("%d calls: %s", len(t.Inspector.Calls), text)
+		}
+		return text
+	}
+	return t.UserPreview
 }
 
 // summarizeCallPair renders one call's badge and one-line text for the list.

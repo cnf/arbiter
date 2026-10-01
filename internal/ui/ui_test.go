@@ -72,6 +72,7 @@ func serve(t *testing.T, h *Handler, method, target string, hx bool) *httptest.R
 	r.HandleFunc("/admin/ui/overview", h.OverviewHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/overview/node", h.OverviewNodeHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/overview/node/close", h.OverviewNodeCloseHandler).Methods("GET")
+	r.HandleFunc("/admin/ui/config", h.ConfigHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/content/repeated", h.DiscoveryHandler).Methods("GET")
 	r.HandleFunc("/admin/ui/content/repeated/state", h.DiscoverySetStateHandler).Methods("POST")
 	r.HandleFunc("/admin/ui/content/block", h.BlockRequestsHandler).Methods("GET")
@@ -172,6 +173,9 @@ var pageViews = map[string]viewEntry{
 	"block": {view: func(h *Handler, n string) interface{} {
 		return blockRequestsView{viewBase: h.base(context.Background(), n)}
 	}},
+	"config": {view: func(h *Handler, n string) interface{} {
+		return configView{viewBase: h.base(context.Background(), n), NoConfig: true}
+	}},
 
 	// error.html is parsed but rendered by nothing: Handler.fail builds its HTML
 	// inline, on purpose — a renderer failure must not be reported by the
@@ -196,6 +200,7 @@ var fragmentViews = map[string]viewEntry{
 	"session-turns":  {view: func(h *Handler, n string) interface{} { return sessionView{} }},
 	"repeated-rows":  {view: func(h *Handler, n string) interface{} { return discoveryView{} }},
 	"block-requests": {view: func(h *Handler, n string) interface{} { return blockRequestsView{} }},
+	"config-body":    {view: func(h *Handler, n string) interface{} { return configView{NoConfig: true} }},
 	"empty":          {view: func(h *Handler, n string) interface{} { return struct{ Message string }{} }},
 }
 

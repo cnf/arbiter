@@ -121,6 +121,7 @@ func reload(ctx context.Context, path string, handler *arbiterhttp.Handler, logg
 	// construct one just to satisfy this line.
 	if adminUI != nil {
 		adminUI.SetCaptureContent(cfg.Storage.CaptureContent)
+		adminUI.SetConfig(cfg)
 	}
 	slog.Info("config reloaded", "config", path, "providers", len(cfg.Providers), "models", len(models))
 	return nil

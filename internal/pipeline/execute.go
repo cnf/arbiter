@@ -57,6 +57,15 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 	// slightly earlier because affinityKey needs it before that assignment.
 	promptHash := PromptHash(req.SystemPrompt)
 
+	// The client's requested reasoning effort, captured once for the whole
+	// request and threaded into every route's signals below. Stamping it here
+	// — immediately after parsing, before any route short-circuit — is what
+	// makes it present on EVERY path (literal model, pinned/group alias,
+	// affinity pin, classify+rules), not just the ones that classify. It is
+	// recorded as a request fact, never as a routing input the classifiers
+	// produced, so it is stamped onto signals rather than filled by one.
+	clientEffort := req.OutputEffort
+
 	// The client's own system prompt, kept before any pre-guardrail can mutate
 	// it. A `system_prompt` guardrail with override:false PREPENDS its text, and
 	// a structural classifier matching req.SystemPrompt with mode prefix would
@@ -107,12 +116,11 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		content.RequestGuardrailed = store.CaptureRequest(req)
 	}
 
-	route, sig, err := p.resolveRoute(ctx, req, hasKey, promptHash, start)
+	route, sig, err := p.resolveRoute(ctx, req, hasKey, promptHash, start, clientEffort)
 	if err != nil {
-		// Routing failed (no rule matched and no fallback router, a config
-		// the request can't be routed under, or a deliberate `stop` rule).
-		// Same reasoning as a guardrail rejection (#5): give it a real row.
-		p.recordFailed(ctx, traceID, sessionKey, format, req.Model, start, err, content)
+		// The classifier ran before route selection, so retain its merged
+		// signals on a routing refusal as well as a successful route.
+		p.recordFailed(ctx, traceID, sessionKey, format, req.Model, start, err, content, sig)
 		return nil, err
 	}
 
@@ -129,24 +137,26 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 			provider = route.Provider
 		}
 		p.record(store.Event{
-			TraceID:          traceID,
-			SessionKey:       sessionKey,
-			Format:           format,
-			Provider:         provider,
-			Model:            req.Model,
-			AliasUsed:        p.aliasName(req.Model),
-			RoutingRationale: route.Rationale,
-			Domain:           sig.Domain,
-			RequestKind:      sig.RequestKind,
-			Effort:           sig.Effort,
-			CostClass:        sig.CostClass,
-			Confidence:       sig.Confidence,
-			ArrivalTs:        start,
-			LatencyMs:        time.Since(start).Milliseconds(),
-			StatusCode:       status,
-			Error:            err.Error(),
-			Content:          contentOrNil(content),
-			Headers:          headers,
+			TraceID:              traceID,
+			SessionKey:           sessionKey,
+			Format:               format,
+			Provider:             provider,
+			Model:                req.Model,
+			AliasUsed:            p.aliasName(req.Model),
+			RoutingRationale:     route.Rationale,
+			Domain:               sig.Domain,
+			RequestKind:          sig.RequestKind,
+			Difficulty:           sig.Difficulty,
+			CostClass:            sig.CostClass,
+			Confidence:           sig.Confidence,
+			RequiredCapabilities: sig.RequiredCapabilities,
+			ClientEffort:         sig.ClientEffort,
+			ArrivalTs:            start,
+			LatencyMs:            time.Since(start).Milliseconds(),
+			StatusCode:           status,
+			Error:                err.Error(),
+			Content:              contentOrNil(content),
+			Headers:              headers,
 		})
 		return nil, err
 	}
@@ -189,26 +199,28 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		content.Response = store.CaptureResponse(resp, "assistant")
 	}
 	p.record(store.Event{
-		TraceID:          traceID,
-		SessionKey:       sessionKey,
-		Format:           format,
-		Provider:         served.Provider,
-		Model:            served.Model,
-		ActualModel:      actualModel,
-		AliasUsed:        p.aliasName(req.Model),
-		RoutingRationale: served.Rationale,
-		Domain:           sig.Domain,
-		RequestKind:      sig.RequestKind,
-		Effort:           sig.Effort,
-		CostClass:        sig.CostClass,
-		Confidence:       sig.Confidence,
-		Usage:            usage,
-		Content:          contentOrNil(content),
-		ArrivalTs:        start,
-		LatencyMs:        time.Since(start).Milliseconds(),
-		StatusCode:       http.StatusOK,
-		ToolCalls:        toolCallNames(resp.Content),
-		Headers:          headers,
+		TraceID:              traceID,
+		SessionKey:           sessionKey,
+		Format:               format,
+		Provider:             served.Provider,
+		Model:                served.Model,
+		ActualModel:          actualModel,
+		AliasUsed:            p.aliasName(req.Model),
+		RoutingRationale:     served.Rationale,
+		Domain:               sig.Domain,
+		RequestKind:          sig.RequestKind,
+		Difficulty:           sig.Difficulty,
+		CostClass:            sig.CostClass,
+		Confidence:           sig.Confidence,
+		RequiredCapabilities: sig.RequiredCapabilities,
+		ClientEffort:         sig.ClientEffort,
+		Usage:                usage,
+		Content:              contentOrNil(content),
+		ArrivalTs:            start,
+		LatencyMs:            time.Since(start).Milliseconds(),
+		StatusCode:           http.StatusOK,
+		ToolCalls:            toolCallNames(resp.Content),
+		Headers:              headers,
 	})
 	return out, nil
 }

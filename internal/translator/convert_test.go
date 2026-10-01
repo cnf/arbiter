@@ -1,6 +1,8 @@
 package translator
 
 import (
+	"bytes"
+	"encoding/json"
 	"testing"
 
 	"github.com/cnf/arbiter/pkg/types"
@@ -199,5 +201,113 @@ func TestOpenAIResponseToNormalizedUsage(t *testing.T) {
 	}
 	if norm.StopReason != "end_turn" {
 		t.Fatalf("expected mapped stop reason, got %q", norm.StopReason)
+	}
+}
+
+// Anthropic's API requires `input` on every tool_use block, even {} for a
+// no-argument call — a block replayed as conversation history with the key
+// missing 400s the whole request (issue #78). This asserts the raw outbound
+// wire bytes, not a struct round-trip: a struct-shaped assertion can't see
+// an omitempty (or a type-dependent MarshalJSON) drop the key, since the Go
+// struct still "has" the field either way.
+func TestNoArgToolUseEmitsEmptyInputObjectOnWire(t *testing.T) {
+	tr := NewDefaultTranslator()
+	norm := &types.NormalizedRequest{
+		Model:     "claude-3-opus-20250219",
+		MaxTokens: 100,
+		Messages: []types.Message{
+			{Role: "assistant", Content: []types.ContentBlock{
+				{Type: "tool_use", ToolUseID: "toolu_01", ToolName: "kanban_show", ToolInput: nil},
+			}},
+		},
+	}
+
+	req, err := tr.NormalizedToAnthropicRequest(norm)
+	if err != nil {
+		t.Fatalf("NormalizedToAnthropicRequest: %v", err)
+	}
+
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	messages := decoded["messages"].([]interface{})
+	content := messages[0].(map[string]interface{})["content"].([]interface{})
+	block := content[0].(map[string]interface{})
+	input, present := block["input"]
+	if !present {
+		t.Fatalf("wire JSON = %s, want an \"input\" key present on the tool_use block", raw)
+	}
+	inputMap, ok := input.(map[string]interface{})
+	if !ok || len(inputMap) != 0 {
+		t.Fatalf("wire JSON = %s, want \"input\":{} exactly", raw)
+	}
+
+	if !bytes.Contains(raw, []byte(`"input":{}`)) {
+		t.Fatalf("wire JSON = %s, want it to contain the literal %q", raw, `"input":{}`)
+	}
+}
+
+// A tool_use block with real arguments must round-trip unchanged — this fix
+// only touches the nil/empty case (removing an always-false omitempty check
+// can't change behavior when the map is already non-empty), but the whole
+// point of asserting raw bytes above is that a regression here would be easy
+// to introduce by over-correcting (e.g. by forcing input non-nil elsewhere).
+func TestToolUseWithArgumentsStillEmitsThemOnWire(t *testing.T) {
+	tr := NewDefaultTranslator()
+	norm := &types.NormalizedRequest{
+		Model:     "claude-3-opus-20250219",
+		MaxTokens: 100,
+		Messages: []types.Message{
+			{Role: "assistant", Content: []types.ContentBlock{
+				{Type: "tool_use", ToolUseID: "toolu_02", ToolName: "get_weather", ToolInput: map[string]interface{}{"city": "NYC"}},
+			}},
+		},
+	}
+
+	req, err := tr.NormalizedToAnthropicRequest(norm)
+	if err != nil {
+		t.Fatalf("NormalizedToAnthropicRequest: %v", err)
+	}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"input":{"city":"NYC"}`)) {
+		t.Fatalf("wire JSON = %s, want the populated input preserved verbatim", raw)
+	}
+}
+
+// A non-tool_use block (text here) must never pick up an `input` key — the
+// MarshalJSON override that forces `input` onto a tool_use block is keyed on
+// block type specifically so it does not leak onto text/thinking/tool_result
+// blocks, which never carry one on the real Anthropic wire.
+func TestTextBlockNeverGetsAnInputKeyOnWire(t *testing.T) {
+	tr := NewDefaultTranslator()
+	norm := &types.NormalizedRequest{
+		Model:     "claude-3-opus-20250219",
+		MaxTokens: 100,
+		Messages: []types.Message{
+			{Role: "assistant", Content: []types.ContentBlock{
+				{Type: "text", Text: "hello"},
+			}},
+		},
+	}
+
+	req, err := tr.NormalizedToAnthropicRequest(norm)
+	if err != nil {
+		t.Fatalf("NormalizedToAnthropicRequest: %v", err)
+	}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(raw, []byte(`"input"`)) {
+		t.Fatalf("wire JSON = %s, a text block must never carry an \"input\" key", raw)
 	}
 }

@@ -201,6 +201,22 @@ aliases:
 	}
 }
 
+// The removed `effort` spelling is rejected with an error naming `difficulty`,
+// not the generic unknown-axis message — a stale key from the #79 rename.
+func TestAliasForceRejectsRenamedEffortNamingDifficulty(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+aliases:
+  coding-hard:
+    force: { effort: ["hard"] }
+`)
+	if err == nil {
+		t.Fatal("Load: expected an error for the removed `effort` spelling")
+	}
+	if !strings.Contains(err.Error(), "difficulty") || !strings.Contains(err.Error(), "effort") {
+		t.Fatalf("Load: want an error naming both `effort` and `difficulty`, got %v", err)
+	}
+}
+
 func TestAliasRejectsForceAndTypeTogether(t *testing.T) {
 	err := loadConfig(t, baseConfig+`
 aliases:

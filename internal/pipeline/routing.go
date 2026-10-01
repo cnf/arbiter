@@ -12,9 +12,10 @@ import (
 	"github.com/cnf/arbiter/pkg/types"
 )
 
-func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedRequest, hasKey bool, promptHash string, arrivalTs time.Time) (types.Route, types.Signals, error) {
+func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedRequest, hasKey bool, promptHash string, arrivalTs time.Time, clientEffort string) (types.Route, types.Signals, error) {
 	if route, ok := p.literalModelRoute(req.Model); ok {
 		sig := p.classifyLiteral(ctx, req, hasKey, promptHash, arrivalTs)
+		sig.ClientEffort = clientEffort
 		p.logger.LogRouting(ctx, route, sig, 0)
 		return route, sig, nil
 	}
@@ -33,6 +34,7 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 					if kind, stamped := p.stampAliasKind(req.Model); stamped {
 						sig.RequestKind = kind
 					}
+					sig.ClientEffort = clientEffort
 					p.logger.LogRouting(ctx, route, sig, 0)
 					return route, sig, nil
 				}
@@ -48,6 +50,7 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 		if kind, stamped := p.stampAliasKind(req.Model); stamped {
 			sig.RequestKind = kind
 		}
+		sig.ClientEffort = clientEffort
 		p.logger.LogRouting(ctx, route, sig, 0)
 		return route, sig, nil
 	}
@@ -71,6 +74,11 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 	}
 	p.recordClassifierCalls(req, sig, arrivalTs)
 	sig = p.applyForceAlias(req, sig)
+	// The client's requested effort is a request FACT, not a classifier
+	// verdict, so it is stamped here after the merge/force-alias rather than
+	// filled by a classifier. Phase 3's lock (a force-alias/rule overriding
+	// what goes upstream) is deliberately not implemented here.
+	sig.ClientEffort = clientEffort
 
 	routeStart := time.Now()
 	route, err := p.router.Route(ctx, req, sig)
@@ -83,9 +91,9 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 		// event-store status mapping below can both see the real type.
 		var stopErr *arbitererrors.StopError
 		if errors.As(err, &stopErr) {
-			return types.Route{}, types.Signals{}, err
+			return types.Route{}, sig, err
 		}
-		return types.Route{}, types.Signals{}, arbitererrors.NewRoutingError("route request", err)
+		return types.Route{}, sig, arbitererrors.NewRoutingError("route request", err)
 	}
 	p.logger.LogRouting(ctx, route, sig, time.Since(routeStart))
 	return route, sig, nil
@@ -208,7 +216,7 @@ func (p *Pipeline) aliasRoute(name string) (types.Route, bool) {
 // applyForceAlias overrides the axes named by a force-alias, when req.Model
 // names one. Only the axes the alias declares are overridden — an unforced
 // axis keeps whatever the classifiers produced (e.g. "coding" forces domain
-// but leaves effort to be classified normally). ok=false (req.Model isn't a
+// but leaves difficulty to be classified normally). ok=false (req.Model isn't a
 // force-alias, or no aliases are configured at all) returns sig unchanged.
 func (p *Pipeline) applyForceAlias(req *types.NormalizedRequest, sig types.Signals) types.Signals {
 	if p.aliasResolver == nil || req.Model == "" {
@@ -225,12 +233,12 @@ func (p *Pipeline) applyForceAlias(req *types.NormalizedRequest, sig types.Signa
 		switch axis {
 		case classifier.AxisDomain, "intent":
 			sig.Domain = values[0]
-		case classifier.AxisEffort:
-			sig.Effort = values[0]
+		case classifier.AxisDifficulty:
+			sig.Difficulty = values[0]
 		case classifier.AxisCostClass, "cost_sensitivity":
 			sig.CostClass = values[0]
 		case classifier.AxisCapabilities:
-			sig.RequiredCapabilities = values
+			sig.RequiredCapabilities = append([]string{}, values...)
 		}
 	}
 	// An alias-declared request kind OVERRIDES what classification produced:

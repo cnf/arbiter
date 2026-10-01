@@ -109,6 +109,9 @@ func main() {
 	// with capture off, and that is a different situation from tier 2
 	// running and finding nothing).
 	adminUI.SetCaptureContent(cfg.Storage.CaptureContent)
+	// See config.go's cfg field: the config page needs its own copy of the
+	// live config, same reasoning and same call sites as SetCaptureContent.
+	adminUI.SetConfig(cfg)
 
 	admin := arbiterhttp.NewAdminHandler(func(ctx context.Context) error {
 		return reload(ctx, *configPath, handler, logger, writer, cooldowns, reader, adminUI)

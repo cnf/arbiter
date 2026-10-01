@@ -182,7 +182,7 @@ classifiers:`+domainHeuristic+`
       alias: "jev"
       questions:
         effort:
-          axis: "effort"
+          axis: "difficulty"
           type: "score"
           labels: ["easy", "hard"]
       fallback: "domain-heuristic"

@@ -181,20 +181,27 @@ type RequestRow struct {
 	// ActualModel is the upstream-reported model, present only when it
 	// differs from Model (a meta-router alias like OpenRouter's
 	// "openrouter/auto" picked something concrete) — see store.Event.ActualModel.
-	ActualModel      string  `json:"actual_model,omitempty"`
-	AliasUsed        string  `json:"alias_used,omitempty"`
-	RoutingRationale string  `json:"routing_rationale"`
-	Domain           string  `json:"domain,omitempty"`
-	Effort           string  `json:"effort,omitempty"`
-	CostClass        string  `json:"cost_class,omitempty"`
-	InputTokens      int64   `json:"input_tokens"`
-	OutputTokens     int64   `json:"output_tokens"`
-	CostUSD          float64 `json:"cost_usd"`
-	LatencyMs        int64   `json:"latency_ms"`
-	StatusCode       int64   `json:"status_code"`
-	Error            string  `json:"error,omitempty"`
-	Stream           bool    `json:"stream"`
-	ConfigEpoch      string  `json:"config_epoch,omitempty"`
+	ActualModel      string `json:"actual_model,omitempty"`
+	AliasUsed        string `json:"alias_used,omitempty"`
+	RoutingRationale string `json:"routing_rationale"`
+	Domain           string `json:"domain,omitempty"`
+	Difficulty       string `json:"difficulty,omitempty"`
+	CostClass        string `json:"cost_class,omitempty"`
+	// ClientEffort is the reasoning effort the client requested
+	// (output_config.effort), recorded as a request fact (#79). Empty means
+	// the client asked for none.
+	ClientEffort string `json:"client_effort,omitempty"`
+	// RequiredCapabilities is nil when classification did not produce a result,
+	// and an empty non-nil slice when classification found no capabilities.
+	RequiredCapabilities []string `json:"required_capabilities"`
+	InputTokens          int64    `json:"input_tokens"`
+	OutputTokens         int64    `json:"output_tokens"`
+	CostUSD              float64  `json:"cost_usd"`
+	LatencyMs            int64    `json:"latency_ms"`
+	StatusCode           int64    `json:"status_code"`
+	Error                string   `json:"error,omitempty"`
+	Stream               bool     `json:"stream"`
+	ConfigEpoch          string   `json:"config_epoch,omitempty"`
 	// Kind is "client" (real traffic, the default) or one of Arbiter's own
 	// internal request kinds ("classifier", and later "subagent") — see
 	// store.Event.Kind.
@@ -204,6 +211,30 @@ type RequestRow struct {
 	// as opposed to Kind above, which is who sent it. See
 	// store.Event.RequestKind.
 	RequestKind string `json:"request_kind,omitempty"`
+}
+
+// HasClassification reports whether a classifier result was recorded for this
+// request at all — as opposed to a result that fills no axis, which is a real
+// and common outcome ("classified, nothing matched"). It is the ONE definition
+// of that predicate: the list projection, the detail projection and the
+// transcript inspector all call this rather than each testing their own subset
+// of columns, which is how the three of them drifted apart.
+//
+// RequiredCapabilities is the load-bearing field, not the axes: the merge
+// initializes it to an empty non-nil slice, so it is non-nil whenever
+// classification ran and stays nil when it never did (an unclassified row is
+// stored as SQL NULL). The axis checks are a fallback for rows written before
+// required_capabilities_json existed, where a filled axis is the only surviving
+// evidence that anything classified them.
+//
+// Confidence is deliberately NOT consulted. confidence is a non-nullable REAL
+// column written as a bare float64, so an unset confidence reads back as 0, not
+// NULL — `conf.Valid` is always false and a check on it would silently never
+// fire. RequestKind is likewise excluded: it is an identification stamp, not a
+// classification output, and a title request is recorded by the stamp alone.
+func (r RequestRow) HasClassification() bool {
+	return r.RequiredCapabilities != nil ||
+		r.Domain != "" || r.Difficulty != "" || r.CostClass != ""
 }
 
 // RequestDetail is the full record for one request. Unlike RequestRow it
@@ -245,9 +276,9 @@ type RequestDetail struct {
 // GetRequest so the two cannot drift into returning differently-shaped rows.
 const requestRowColumns = `
     id, trace_id, ts, CAST(ts AS TEXT), session_key, format, provider, model, actual_model, alias_used,
-    routing_rationale, domain, effort, cost_class, input_tokens, output_tokens,
+    routing_rationale, domain, difficulty, cost_class, input_tokens, output_tokens,
     cost_usd, latency_ms, status_code, error, stream, config_epoch, kind, request_kind, arrival_ts,
-    CAST(arrival_ts AS TEXT)`
+    CAST(arrival_ts AS TEXT), required_capabilities_json, client_effort`
 
 // ListRequests returns requests newest first, narrowed by f.
 //
@@ -335,11 +366,14 @@ func (r *Reader) ListRequests(ctx context.Context, f RequestFilter) ([]RequestRo
 	return out, rows.Err()
 }
 
-// RequestExtra is the subset of a request's detail row that is not already on
-// RequestRow: only what buildTurn actually reads out of GetRequest today
-// (confidence, headers). It exists so a transcript page can fetch this for
-// every turn in one round trip instead of one GetRequest call per turn — see
-// RequestExtras.
+// RequestExtra is the page-batched subset of a request row that the transcript
+// inspector needs beyond RequestRow: the confidence and captured headers that
+// live only on the detail row. It exists so a transcript page can fetch them
+// for every turn in one round trip instead of one GetRequest call per turn —
+// see RequestExtras. Whether a request was classified is NOT carried here: that
+// answer is fully determined by the row's own fields, so RequestRow.
+// HasClassification computes it rather than a second copy of the predicate
+// being shipped alongside every row.
 type RequestExtra struct {
 	Confidence float64
 	Headers    map[string]string
@@ -406,8 +440,10 @@ FROM requests WHERE id = ?`
 		actual       sql.NullString
 		alias        sql.NullString
 		domain       sql.NullString
-		effort       sql.NullString
+		difficulty   sql.NullString
 		costCl       sql.NullString
+		capabilities sql.NullString
+		clientEffort sql.NullString
 		errText      sql.NullString
 		epoch        sql.NullString
 		reqKind      sql.NullString
@@ -420,9 +456,9 @@ FROM requests WHERE id = ?`
 	)
 	err := r.db.QueryRowContext(ctx, q, id).Scan(
 		&d.ID, &d.TraceID, &tsRaw, &d.TsRaw, &session, &d.Format, &d.Provider, &d.Model, &actual, &alias,
-		&d.RoutingRationale, &domain, &effort, &costCl, &d.InputTokens, &d.OutputTokens,
+		&d.RoutingRationale, &domain, &difficulty, &costCl, &d.InputTokens, &d.OutputTokens,
 		&d.CostUSD, &d.LatencyMs, &d.StatusCode, &errText, &d.Stream, &epoch, &d.Kind, &reqKind,
-		&arrivalTs, &arrivalTsRaw,
+		&arrivalTs, &arrivalTsRaw, &capabilities, &clientEffort,
 		&conf, &d.CacheReadTokens, &d.CacheWriteTokens, &tools, &client, &headers)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RequestDetail{}, false, nil
@@ -438,8 +474,16 @@ FROM requests WHERE id = ?`
 	d.ActualModel = actual.String
 	d.AliasUsed = alias.String
 	d.Domain = domain.String
-	d.Effort = effort.String
+	d.Difficulty = difficulty.String
 	d.CostClass = costCl.String
+	d.ClientEffort = clientEffort.String
+	if capabilities.Valid {
+		if err := json.Unmarshal([]byte(capabilities.String), &d.RequiredCapabilities); err != nil {
+			// A malformed legacy value degrades to unavailable signals rather
+			// than failing the entire transcript detail request.
+			d.RequiredCapabilities = nil
+		}
+	}
 	d.Error = errText.String
 	d.ConfigEpoch = epoch.String
 	d.RequestKind = reqKind.String
@@ -469,18 +513,21 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 		actual       sql.NullString
 		alias        sql.NullString
 		domain       sql.NullString
-		effort       sql.NullString
+		difficulty   sql.NullString
 		costCl       sql.NullString
 		errText      sql.NullString
 		epoch        sql.NullString
 		reqKind      sql.NullString
 		arrivalTs    interface{}
 		arrivalTsRaw sql.NullString
+		capabilities sql.NullString
+		clientEffort sql.NullString
 	)
 	if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &s.TsRaw, &session, &s.Format, &s.Provider,
-		&s.Model, &actual, &alias, &s.RoutingRationale, &domain, &effort, &costCl,
+		&s.Model, &actual, &alias, &s.RoutingRationale, &domain, &difficulty, &costCl,
 		&s.InputTokens, &s.OutputTokens, &s.CostUSD, &s.LatencyMs, &s.StatusCode,
-		&errText, &s.Stream, &epoch, &s.Kind, &reqKind, &arrivalTs, &arrivalTsRaw); err != nil {
+		&errText, &s.Stream, &epoch, &s.Kind, &reqKind, &arrivalTs, &arrivalTsRaw, &capabilities,
+		&clientEffort); err != nil {
 		return RequestRow{}, fmt.Errorf("scan request row: %w", err)
 	}
 	s.Ts = formatTime(tsRaw)
@@ -490,8 +537,14 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 	s.ActualModel = actual.String
 	s.AliasUsed = alias.String
 	s.Domain = domain.String
-	s.Effort = effort.String
+	s.Difficulty = difficulty.String
 	s.CostClass = costCl.String
+	s.ClientEffort = clientEffort.String
+	if capabilities.Valid {
+		if err := json.Unmarshal([]byte(capabilities.String), &s.RequiredCapabilities); err != nil {
+			s.RequiredCapabilities = nil
+		}
+	}
 	s.Error = errText.String
 	s.ConfigEpoch = epoch.String
 	s.RequestKind = reqKind.String

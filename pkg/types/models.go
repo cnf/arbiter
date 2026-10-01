@@ -46,7 +46,7 @@ type ModelCost struct {
 // force-alias, so no axis is derived from another.
 type Signals struct {
 	Domain               string   // "code_generation", "reasoning", "debugging", "chat", "discovery"
-	Effort               string   // "easy", "medium", "hard"
+	Difficulty           string   // "easy", "medium", "hard"
 	RequiredCapabilities []string // "vision", "tool_use", "long_context"
 	EstimatedTokens      int
 	CostClass            string  // "free_only", "budget", "quality_first"
@@ -56,7 +56,7 @@ type Signals struct {
 	// "title" for a client's title-generation call, and later "subagent" for
 	// a delegated worker's own traffic.
 	//
-	// It is deliberately NOT an axis. Domain/Effort/CostClass are *routing*
+	// It is deliberately NOT an axis. Domain/Difficulty/CostClass are *routing*
 	// inputs — they are contested in the merge by confidence and a force-alias
 	// may override them — whereas a request's kind is a fact about the request
 	// that routing does not consume. So it carries no confidence, is not in
@@ -69,6 +69,23 @@ type Signals struct {
 	// ("client" traffic vs Arbiter's own "classifier" calls). A title request
 	// is a client request with kind "client" and RequestKind "title".
 	RequestKind string
+
+	// ClientEffort is the reasoning-effort knob the CLIENT actually sent,
+	// carried verbatim from the request. Either wire spelling feeds it:
+	// `output_config.effort` (Anthropic) or `reasoning_effort` (OpenAI).
+	//
+	// Like RequestKind it is deliberately NOT an axis: it is a fact about
+	// what the client asked for, not a contested classification, so it
+	// carries no confidence, is not in KnownAxes, and no classifier fills it.
+	// It is stamped from req.OutputEffort before routing so a `when: {effort:
+	// ...}` rule can match the client's own value.
+	//
+	// Distinct from OutputEffort on the request itself: that is the value
+	// that goes upstream, and a force-alias/policy rule may later LOCK it to
+	// something else. ClientEffort always records what the client sent,
+	// regardless of any lock, so the UI can show the client's intent next to
+	// what was actually served.
+	ClientEffort string
 
 	// AxisConfidence carries a confidence PER AXIS, for a classifier that fills
 	// more than one axis from a single call.
@@ -135,7 +152,7 @@ type ClassifierCallInfo struct {
 	// Per-call, not the merged Signals: a classifier row describes one upstream
 	// call, and the merged value mixes in whatever other classifiers concluded.
 	// Without this a multi-axis decisions call recorded only its domain, so
-	// cost_class and effort were visible in the rationale text but empty as
+	// cost_class and difficulty were visible in the rationale text but empty as
 	// fields — stored, and unqueryable.
 	Axes map[string]string
 
@@ -176,7 +193,7 @@ var KnownCapabilities = []string{CapToolUse, CapAttachment, CapVision, CapLongCo
 // (which it cannot reach).
 const (
 	AxisDomainName       = "domain"
-	AxisEffortName       = "effort"
+	AxisDifficultyName   = "difficulty"
 	AxisCostClassName    = "cost_class"
 	AxisCapabilitiesName = "capabilities"
 )
@@ -184,9 +201,9 @@ const (
 // KnownAxes lists the axis names a force-alias may target. Keys are the
 // canonical (current) names; the config layer also accepts the deprecated
 // spellings and maps them onto these.
-var KnownAxes = []string{AxisDomainName, AxisEffortName, AxisCostClassName, AxisCapabilitiesName}
+var KnownAxes = []string{AxisDomainName, AxisDifficultyName, AxisCostClassName, AxisCapabilitiesName}
 
-// UnmatchedValue is the reserved sentinel a scalar axis (domain, effort,
+// UnmatchedValue is the reserved sentinel a scalar axis (domain, difficulty,
 // cost_class) is filled with when a model-backed classifier reaches its
 // escape verdict — the configured `escape:` label, or the auto-added
 // `other` when a decisions classifier declares none. Before this existed,

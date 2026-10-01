@@ -66,8 +66,8 @@ func (p *Pipeline) recordClassifierCalls(req *types.NormalizedRequest, sig types
 			if sig.Domain != "" {
 				axes[classifier.AxisDomain] = sig.Domain
 			}
-			if sig.Effort != "" {
-				axes[classifier.AxisEffort] = sig.Effort
+			if sig.Difficulty != "" {
+				axes[classifier.AxisDifficulty] = sig.Difficulty
 			}
 			if sig.CostClass != "" {
 				axes[classifier.AxisCostClass] = sig.CostClass
@@ -83,7 +83,7 @@ func (p *Pipeline) recordClassifierCalls(req *types.NormalizedRequest, sig types
 			Model:            call.Model,
 			RoutingRationale: rationale,
 			Domain:           axes[classifier.AxisDomain],
-			Effort:           axes[classifier.AxisEffort],
+			Difficulty:       axes[classifier.AxisDifficulty],
 			CostClass:        axes[classifier.AxisCostClass],
 			Confidence:       confidence,
 			Usage:            call.Usage,
@@ -188,18 +188,29 @@ func (p *Pipeline) classifierContent(call *types.ClassifierCallInfo) *store.Capt
 // arbitererrors.StatusFor is the same status mapping internal/http uses to
 // answer the client, so the row's status_code always matches what the
 // client was actually told.
-func (p *Pipeline) recordFailed(ctx context.Context, traceID, sessionKey, format, model string, start time.Time, err error, content store.CapturedContent) {
+func (p *Pipeline) recordFailed(ctx context.Context, traceID, sessionKey, format, model string, start time.Time, err error, content store.CapturedContent, signals ...types.Signals) {
+	var sig types.Signals
+	if len(signals) > 0 {
+		sig = signals[0]
+	}
 	p.record(store.Event{
-		TraceID:    traceID,
-		SessionKey: sessionKey,
-		Format:     format,
-		Model:      model,
-		AliasUsed:  p.aliasName(model),
-		ArrivalTs:  start,
-		LatencyMs:  time.Since(start).Milliseconds(),
-		StatusCode: arbitererrors.StatusFor(err),
-		Error:      err.Error(),
-		Content:    contentOrNil(content),
-		Headers:    headersFromContext(ctx),
+		TraceID:              traceID,
+		SessionKey:           sessionKey,
+		Format:               format,
+		Model:                model,
+		AliasUsed:            p.aliasName(model),
+		Domain:               sig.Domain,
+		Difficulty:           sig.Difficulty,
+		CostClass:            sig.CostClass,
+		Confidence:           sig.Confidence,
+		RequestKind:          sig.RequestKind,
+		RequiredCapabilities: sig.RequiredCapabilities,
+		ClientEffort:         sig.ClientEffort,
+		ArrivalTs:            start,
+		LatencyMs:            time.Since(start).Milliseconds(),
+		StatusCode:           arbitererrors.StatusFor(err),
+		Error:                err.Error(),
+		Content:              contentOrNil(content),
+		Headers:              headersFromContext(ctx),
 	})
 }

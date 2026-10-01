@@ -207,7 +207,7 @@ type ClassifierConfig struct {
 	Name string `yaml:"name"`
 	Type string `yaml:"type"`
 	// Axis names the types.Signals field this classifier instance fills
-	// ("domain", "effort", "cost_class", "capabilities"). Empty defaults to
+	// ("domain", "difficulty", "cost_class", "capabilities"). Empty defaults to
 	// "domain" for type "heuristic" and "capabilities" for the legacy type
 	// "capability_detector" — matching pre-axis behavior so existing configs
 	// need no change.
@@ -410,6 +410,34 @@ var knownAxisSet = func() map[string]bool {
 	set["cost_sensitivity"] = true // deprecated spelling of "cost_class"
 	return set
 }()
+
+// renamedAxisSpelling maps an axis spelling that was REMOVED (not
+// deprecated-with-an-alias) onto the name that replaced it. It differs from
+// the intent->domain and cost_sensitivity->cost_class synonyms above on
+// purpose: those never meant anything but their canonical target, whereas
+// `effort` was the routing AXIS's own name and has been reassigned — the axis
+// is `difficulty` now, and the word `effort` means the client-facing
+// reasoning-effort knob instead.
+//
+// This map is consulted only on the FORCE-MAP path (and any other axis-named
+// validation that reads knownAxisSet): a force alias's keys name axes, and
+// `effort` is no longer an axis, so a stale `force: {effort: [...]}` must be
+// rejected by name rather than silently accepted as a non-axis key. It
+// deliberately does NOT apply to the `when` path — as of phase 2, `effort` is
+// a valid `when` key matching Signals.ClientEffort, so policybuild.go reads it
+// directly and never consults this map for it.
+var renamedAxisSpelling = map[string]string{
+	"effort": "difficulty",
+}
+
+// RenamedAxisSpelling reports whether old is a removed axis spelling and, if
+// so, the current name it was renamed to. Callers on the force/axis path use
+// it to fail a stale key with an error that names the replacement, instead of
+// the generic unknown-axis error.
+func RenamedAxisSpelling(old string) (string, bool) {
+	cur, ok := renamedAxisSpelling[old]
+	return cur, ok
+}
 
 // canonicalAxisSet is the subset of knownAxisSet that a classifier's `axis`
 // field may use. Deprecated spellings are accepted for force aliases and when
@@ -662,16 +690,9 @@ func (c *Config) mergeModelCatalogFile(configPath string) error {
 // accidental collisions across a hand-edited config are not a concern, short
 // enough to read in a log line or query filter.
 func (c *Config) Epoch() string {
-	redacted := *c
-	redacted.Providers = make(map[string]ProviderConfig, len(c.Providers))
-	for name, p := range c.Providers {
-		p.Key = ""
-		redacted.Providers[name] = p
-	}
-
 	// yaml.Marshal emits map keys in sorted order, so the same config always
 	// produces the same bytes regardless of map iteration order.
-	raw, err := yaml.Marshal(&redacted)
+	raw, err := yaml.Marshal(c.Redacted())
 	if err != nil {
 		// Marshaling a config that just decoded successfully cannot fail; if
 		// it somehow does, an empty epoch is better than panicking on the
@@ -680,6 +701,20 @@ func (c *Config) Epoch() string {
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+// Redacted returns a copy of c with every provider API key blanked, safe to
+// marshal, hash, or display. It is the single place that decides what counts
+// as secret in the config: Epoch hashes it, and the admin UI's config page
+// renders it, so the two can never disagree about what gets shown.
+func (c *Config) Redacted() *Config {
+	redacted := *c
+	redacted.Providers = make(map[string]ProviderConfig, len(c.Providers))
+	for name, p := range c.Providers {
+		p.Key = ""
+		redacted.Providers[name] = p
+	}
+	return &redacted
 }
 
 // normalizeEndpoints strips a trailing slash from each provider endpoint.

@@ -689,7 +689,7 @@ func TestTranscriptShowsClientEffortAsRequestFact(t *testing.T) {
 	now := time.Now().UTC()
 	events := []store.Event{
 		{TraceID: "effort-high", SessionKey: "client-effort", Kind: "client", Provider: "anthropic", Model: "claude-sonnet", StatusCode: 200,
-			Ts: now, AliasUsed: "claude", ClientEffort: "high"},
+			Ts: now, AliasUsed: "claude", ClientEffort: "high", ConfigEpoch: "cfg-abc123"},
 		{TraceID: "effort-none", SessionKey: "client-effort", Kind: "client", Provider: "anthropic", Model: "claude-sonnet", StatusCode: 200,
 			Ts: now.Add(time.Second), ClientEffort: ""},
 	}
@@ -705,6 +705,14 @@ func TestTranscriptShowsClientEffortAsRequestFact(t *testing.T) {
 	// The other half of the placement rule: it must not leak into the axis row.
 	if strings.Contains(body, `<span class="axis">effort=`) {
 		t.Error("client effort was rendered as a classifier axis; it is a request fact and belongs in the meta-grid")
+	}
+	// Config epoch moved out of the grid to a dim mention on the header line,
+	// so it is still shown but is no longer a meta-grid tile.
+	if !strings.Contains(body, `<span class="f-epoch"`) || !strings.Contains(body, "cfg-abc123") {
+		t.Error("config epoch was not rendered as a header mention")
+	}
+	if strings.Contains(body, `<span class="k">config epoch</span>`) {
+		t.Error("config epoch is still a meta-grid tile; it should be a dim header mention")
 	}
 }
 

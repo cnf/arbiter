@@ -27,6 +27,10 @@ trip (transcript.js moves the full text into the content modal). */}}
       <span class="touched-dot"></span>preamble
     </button>
     {{end}}
+    {{/* Config epoch is context, not a headline: a dim mention pushed to the
+    right of the header line keeps it available without the prominence it had
+    as its own meta-grid tile. */}}
+    <span class="f-epoch" title="the resolved config that served this request">{{if .ConfigEpoch}}{{.ConfigEpoch}}{{else}}no epoch{{end}}</span>
   </div>
   <div class="f-sub"><span title="{{ts .Ts}}">{{clock .Ts}} UTC</span> · trace <span title="{{.TraceID}}">{{trace8 .TraceID}}</span> · {{usd .CostUSD}} · {{dur .LatencyMs}}</div>
 
@@ -70,10 +74,10 @@ trip (transcript.js moves the full text into the content modal). */}}
       <div class="kv"><span class="k">model served</span><span class="v">{{.Model}}</span></div>
       <div class="kv"><span class="k">actual model (upstream-reported)</span><span class="v{{if and .ActualModel (ne .ActualModel .Model)}} changed{{end}}">{{if .ActualModel}}{{.ActualModel}}{{else}}same as served{{end}}</span></div>
       <div class="kv"><span class="k">provider</span><span class="v">{{.Provider}}</span></div>
-      <div class="kv"><span class="k">config epoch</span><span class="v">{{if .ConfigEpoch}}{{.ConfigEpoch}}{{else}}—{{end}}</span></div>
       {{/* The client's requested reasoning effort is a request FACT, shown
       here beside model/provider/alias — never in the classifier-verdict
-      `axes` span above, which is classification output only (#79). */}}
+      `axes` span above, which is classification output only (#79). It took
+      the slot config epoch vacated in the header. */}}
       <div class="kv"><span class="k">client effort</span><span class="v">{{if .ClientEffort}}{{.ClientEffort}}{{else}}(not requested){{end}}</span></div>
     </div>
   </div>

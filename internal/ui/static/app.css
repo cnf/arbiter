@@ -785,6 +785,13 @@ footer.appfoot .spacer {
 }
 .f-head .chip.err { border-color: var(--err); color: var(--err); }
 .f-head .chip.kind { border-color: var(--warn); color: var(--warn); }
+/* Config epoch: dim context at the right end of the header line, not a
+   headline tile. margin-left:auto pushes it right even when the row does not
+   wrap; flex-wrap on .f-head lets it drop to its own line on narrow panes. */
+.f-head .f-epoch {
+  margin-left: auto; font-family: var(--mono); font-size: 10.5px;
+  color: var(--text-faint);
+}
 .f-sub { color: var(--text-faint); font-size: 11.5px; font-family: var(--mono); margin-bottom: 16px; }
 .f-sub .mono { color: var(--text-dim); }
 

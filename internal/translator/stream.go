@@ -521,7 +521,10 @@ func NormalizedToOpenAIStreamEvent(evt *types.NormalizedStreamEvent, messageID s
 		Object:  "chat.completion.chunk",
 		Created: created,
 		Model:   evt.MessageModel,
-		Choices: []OpenAIStreamChoice{{Index: evt.BlockIndex}},
+		// A single completion means a single choice: index 0, always. This
+		// is NOT evt.BlockIndex — that's the Anthropic content-block index
+		// and means something unrelated on the OpenAI wire (see #36).
+		Choices: []OpenAIStreamChoice{{Index: 0}},
 	}
 
 	switch evt.Type {
@@ -536,7 +539,8 @@ func NormalizedToOpenAIStreamEvent(evt *types.NormalizedStreamEvent, messageID s
 		// argument fragments for a tool it could not name — and, since an
 		// OpenAI client keys its calls by index, no call to attach them to.
 		if evt.BlockType == "tool_use" {
-			openai.Choices[0].Index = evt.ToolCallIndex
+			// choices[0].Index stays 0 (single completion); only
+			// tool_calls[].Index below identifies which call this is.
 			openai.Choices[0].Delta.ToolCalls = []OpenAIStreamToolCall{{
 				Index:    evt.ToolCallIndex,
 				ID:       evt.ToolCallID,
@@ -588,7 +592,7 @@ func NormalizedToOpenAIStreamEvent(evt *types.NormalizedStreamEvent, messageID s
 			// The tool-call index is Anthropic's content-block index (the
 			// inbound parser carries it through). It is distinct and stable
 			// per call, which is all the client's concatenation contract
-			// needs; the choice index is left where it was.
+			// needs; the choice index stays 0 regardless.
 			openai.Choices[0].Delta.ToolCalls = []OpenAIStreamToolCall{{
 				Index: evt.ToolCallIndex,
 				ID:    evt.ToolCallID,
@@ -641,7 +645,7 @@ func NormalizedToOpenAIStreamEvent(evt *types.NormalizedStreamEvent, messageID s
 		// validate against a union that requires `choices` to be present. A
 		// choice-less chunk fails that validation and aborts the whole stream,
 		// so the empty-delta form is reproduced here rather than omitted.
-		openai.Choices = []OpenAIStreamChoice{{Index: evt.BlockIndex}}
+		openai.Choices = []OpenAIStreamChoice{{Index: 0}}
 		openai.Usage = &types.OpenAIUsage{
 			PromptTokens:     evt.InputTokens,
 			CompletionTokens: evt.OutputTokens,

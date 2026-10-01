@@ -461,3 +461,38 @@ func TestAnthropicOutboundMapsUsageEvent(t *testing.T) {
 		t.Errorf("cache counters not relayed: %+v", out.Usage)
 	}
 }
+
+// Regression for #36: choices[].index means "which candidate completion"
+// on the OpenAI wire, not "which content block". A reply whose first block
+// is reasoning (block 0) followed by text (block 1) and a tool call (block
+// 2) must still carry choices[0].index == 0 on every single chunk — Arbiter
+// only ever produces one completion. Each block here uses a distinct
+// BlockIndex/ToolCallIndex so a regression (stamping BlockIndex back onto
+// the choice) would be caught.
+func TestOpenAIStreamChoiceIndexAlwaysZeroAcrossBlocks(t *testing.T) {
+	events := []*types.NormalizedStreamEvent{
+		{Type: "message_start", MessageID: "msg_1", MessageModel: "m"},
+		// Block 0: reasoning.
+		{Type: "content_block_delta", DeltaType: "reasoning_delta", Reasoning: "thinking...", BlockIndex: 0},
+		// Block 1: visible text.
+		{Type: "content_block_delta", DeltaType: "text_delta", TextDelta: "Hello", BlockIndex: 1},
+		// Block 2: a tool call, with its own (non-zero) ToolCallIndex.
+		{Type: "content_block_start", BlockType: "tool_use", BlockIndex: 2, ToolCallIndex: 1, ToolCallID: "call_1", ToolCallName: "lookup"},
+		{Type: "content_block_delta", DeltaType: "tool_use_delta", BlockIndex: 2, ToolCallIndex: 1, ToolCallArgs: "{}"},
+		{Type: "message_stop", MessageStopReason: "end_turn"},
+		{Type: "usage", InputTokens: 10, OutputTokens: 5},
+	}
+
+	for i, evt := range events {
+		out := NormalizedToOpenAIStreamEvent(evt, "trace-1", 123)
+		if out == nil {
+			continue
+		}
+		if len(out.Choices) == 0 {
+			t.Fatalf("event %d (%s): no choices emitted", i, evt.Type)
+		}
+		if out.Choices[0].Index != 0 {
+			t.Errorf("event %d (%s): choices[0].Index = %d, want 0", i, evt.Type, out.Choices[0].Index)
+		}
+	}
+}

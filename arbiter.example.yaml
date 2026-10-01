@@ -5,11 +5,6 @@ providers:
     type: "openai"
     endpoint: "http://localhost:5665/v1"
     models: ["mock-llm"]
-  litellm:
-    type: "openai"
-    endpoint: "${LITELLM_URL}"
-    key: "${LITELLM_API_KEY}"
-    models: ["openrouter/free"]
 
   claude:
     type: "anthropic"
@@ -361,7 +356,6 @@ aliases:
     type: "group"
     select: "random"               # random | cheapest_input | cheapest_output | fastest
     members:
-      - { provider: "litellm", model: "openrouter/free" }
       - { provider: "local", model: "llama2" }
 
 # Static cost/latency catalog for the cost- and latency-aware group `select:`
@@ -380,11 +374,6 @@ aliases:
 # model_catalog_file: "catalog.yaml"
 #
 # model_catalog:
-#   - provider: "litellm"
-#     model: "openrouter/free"
-#     input_cost_per_mtok: 0
-#     output_cost_per_mtok: 0
-#     latency_ms_p50: 2500
 #   - provider: "claude"
 #     model: "claude-3-haiku-20250307"
 #     input_cost_per_mtok: 0.25
@@ -449,7 +438,7 @@ routers:
 # provider is skipped entirely — logged as upstream_cooldown.
 #
 # routing:
-#   fallback_providers: ["gpt4", "litellm"]
+#   fallback_providers: ["gpt4", "claude"]
 
 # Admin surface (/admin/*). All of it is read-only except POST /admin/reload,
 # which re-reads this file AND the model_catalog_file on demand — the latter

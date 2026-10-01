@@ -472,7 +472,12 @@ func validateClassifierMatch(cs []ClassifierConfig) error {
 	for _, cc := range cs {
 		// `detect` and `long_context_tokens` are only meaningful on the
 		// capabilities axis. On any other axis the structural hit would be
-		// discarded by fillAxis.
+		// discarded by fillAxis. The axis test is against the explicit
+		// capabilities NAME (not "not the default axis"): `tags` is a real
+		// axis name now, and `axis: tags` + `detect` is rejected by this
+		// check rather than silently falling through to Domain. The type
+		// test stays because a `capability_detector` needs no explicit
+		// `axis:` — the builder forces its axis to capabilities.
 		if raw, ok := cc.Config["detect"]; ok {
 			if cc.Type != "capability_detector" && cc.Axis != types.AxisCapabilitiesName {
 				return arbitererrors.NewConfigError(fmt.Sprintf(

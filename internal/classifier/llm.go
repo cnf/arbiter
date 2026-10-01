@@ -152,7 +152,11 @@ func (c *LLMClassifier) Classify(ctx context.Context, req *types.NormalizedReque
 // see types.UnmatchedValue's own doc for why.
 func (c *LLMClassifier) fillAxis(sig *types.Signals, label *types.Label) {
 	if label == nil {
-		if c.axis != AxisCapabilities {
+		// An escape verdict fills no value on an ADDITIVE axis: capabilities
+		// and tags are sets with no single "nothing matched" value (see
+		// types.UnmatchedValue's doc). Writing the sentinel onto a set axis
+		// would inject a bogus tag/capability named "unmatched".
+		if c.axis != AxisCapabilities && c.axis != AxisTags {
 			c.fillAxisValue(sig, types.UnmatchedValue)
 		}
 		return
@@ -171,6 +175,8 @@ func (c *LLMClassifier) fillAxisValue(sig *types.Signals, value string) {
 		sig.CostClass = value
 	case AxisCapabilities:
 		sig.RequiredCapabilities = []string{value}
+	case AxisTags:
+		sig.Tags = []string{value}
 	default:
 		sig.Domain = value
 	}

@@ -201,6 +201,28 @@ aliases:
 	}
 }
 
+// `tags` is a registered axis, so a force-alias may target it and an
+// `axis: tags` classifier may fill it — both ride on the KnownAxes entry
+// rather than needing their own config plumbing.
+func TestAliasForceAcceptsTagsAxis(t *testing.T) {
+	err := loadConfig(t, baseConfig+`
+aliases:
+  py:
+    force: { tags: ["python"] }
+classifiers:
+  - name: lang
+    type: heuristic
+    axis: tags
+    config:
+      keywords:
+        python: ["def "]
+        cpp: ["#include"]
+`)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
 // The removed `effort` spelling is rejected with an error naming `difficulty`,
 // not the generic unknown-axis message — a stale key from the #79 rename.
 func TestAliasForceRejectsRenamedEffortNamingDifficulty(t *testing.T) {

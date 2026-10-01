@@ -197,10 +197,11 @@ func (c *DecisionsClassifier) Classify(ctx context.Context, req *types.Normalize
 
 // fillAxis writes one answered axis onto Signals. An escape verdict arrives
 // here as an empty value, which is filled with the reserved sentinel
-// types.UnmatchedValue (except on the capabilities axis, an additive set with
-// no single "nothing matched" value — see types.UnmatchedValue's own doc) so
-// a policy router's `when: {domain: unmatched}` rule can match it explicitly,
-// instead of every wildcard rule matching a silently empty axis.
+// types.UnmatchedValue (except on the ADDITIVE axes — capabilities and tags —
+// which are sets with no single "nothing matched" value; see
+// types.UnmatchedValue's own doc) so a policy router's `when: {domain:
+// unmatched}` rule can match it explicitly, instead of every wildcard rule
+// matching a silently empty axis.
 //
 // Called only for a question resolveAnswers actually answered AND that wants
 // to fill something — a choice's escape arrives here (as an empty value), but
@@ -209,6 +210,18 @@ func (c *DecisionsClassifier) Classify(ctx context.Context, req *types.Normalize
 func fillAxis(sig *types.Signals, axis, value string, capabilities []string) {
 	if axis == AxisCapabilities {
 		sig.RequiredCapabilities = capabilities
+		return
+	}
+	// Tags are additive like capabilities, but filled one tag at a time (a
+	// question yields one string), so this APPENDS and an empty value adds
+	// nothing — a choice's escape verdict ("none of the options matched")
+	// means no tag, not the unmatched sentinel. Multiple tag questions in one
+	// call are rejected by config validation in phase 1; the append is the
+	// per-classifier accumulation phase 3 will allow.
+	if axis == AxisTags {
+		if value != "" {
+			sig.Tags = append(sig.Tags, value)
+		}
 		return
 	}
 	if value == "" {

@@ -21,6 +21,7 @@ const (
 	AxisDifficulty   = types.AxisDifficultyName
 	AxisCapabilities = types.AxisCapabilitiesName
 	AxisCostClass    = types.AxisCostClassName
+	AxisTags         = types.AxisTagsName
 )
 
 // HeuristicClassifier uses keyword matching against the last user message
@@ -235,12 +236,19 @@ func (hc *HeuristicClassifier) Classify(ctx context.Context, req *types.Normaliz
 	if bestValue != "" {
 		sig.AxisConfidence = map[string]float64{hc.axis: confidence}
 	}
-	if hc.axis == AxisCapabilities {
+	switch hc.axis {
+	case AxisCapabilities:
 		// Every matched group is a capability, not just the winner — a
 		// request can need vision and tool_use at once.
 		sig.RequiredCapabilities = matched
 		hc.detectCapabilities(req, &sig)
-	} else {
+	case AxisTags:
+		// Same additive rule as capabilities: a request can carry several
+		// tags at once, so every matched group contributes, not only the
+		// best-scoring one. Unlike capabilities there is no structural
+		// `detect:` counterpart — a tag is matched by keyword/text only.
+		sig.Tags = matched
+	default:
 		hc.fillAxis(&sig, bestValue)
 	}
 	return sig, nil
@@ -281,6 +289,13 @@ func (hc *HeuristicClassifier) detectCapabilities(req *types.NormalizedRequest, 
 // fillAxis writes one value onto whichever Signals field this instance fills.
 // An empty value leaves every axis empty, which is what a zero-hit heuristic
 // reports and what a matcher's escape-equivalent would mean.
+//
+// The tags case is the one that is NOT a single-value write: tags are an
+// additive set, so a value here is one MORE tag alongside whatever the
+// keyword pass already collected, never a replacement. Capabilities keeps its
+// historical replace-the-slice semantics for a bare `value:` (keyword hits
+// already set the whole set in Classify); tags append so a `match:` block and
+// the keyword groups can both contribute.
 func (hc *HeuristicClassifier) fillAxis(sig *types.Signals, value string) {
 	switch hc.axis {
 	case AxisDifficulty:
@@ -290,6 +305,10 @@ func (hc *HeuristicClassifier) fillAxis(sig *types.Signals, value string) {
 	case AxisCapabilities:
 		if value != "" {
 			sig.RequiredCapabilities = []string{value}
+		}
+	case AxisTags:
+		if value != "" {
+			sig.Tags = append(sig.Tags, value)
 		}
 	default:
 		sig.Domain = value
@@ -490,6 +509,7 @@ func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedR
 	merged.RequiredCapabilities = []string{}
 	axisConfidence := make(map[string]float64)
 	capSeen := make(map[string]bool)
+	tagSeen := make(map[string]bool)
 	sawAxisConfidence := false
 
 	for _, c := range mc.classifiers {
@@ -518,6 +538,16 @@ func (mc *MergedClassifier) Classify(ctx context.Context, req *types.NormalizedR
 			if !capSeen[capability] {
 				capSeen[capability] = true
 				merged.RequiredCapabilities = append(merged.RequiredCapabilities, capability)
+			}
+		}
+		// Tags union exactly like capabilities, but in their own seen-set:
+		// a tag and a capability may legitimately share a spelling, and
+		// merging the two fields would erase the contract difference
+		// between them (see Signals.Tags).
+		for _, tag := range sig.Tags {
+			if !tagSeen[tag] {
+				tagSeen[tag] = true
+				merged.Tags = append(merged.Tags, tag)
 			}
 		}
 		// RequestKind is first-non-empty-wins rather than a confidence

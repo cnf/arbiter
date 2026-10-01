@@ -78,6 +78,45 @@ func TestMergedClassifierUnionsCapabilities(t *testing.T) {
 	}
 }
 
+// Tags union across classifiers exactly like capabilities, and must land in
+// Signals.Tags — NOT RequiredCapabilities. Tags and capabilities are distinct
+// contracts (see types.Signals.Tags) sharing only the additive merge rule.
+func TestMergedClassifierUnionsTags(t *testing.T) {
+	lang := NewHeuristicClassifier("lang", AxisTags, map[string][]string{"python": {"def "}})
+	tone := NewHeuristicClassifier("tone", AxisTags, map[string][]string{"angry": {"ridiculous"}})
+	merged := NewMergedClassifier("merged", []Classifier{lang, tone})
+
+	sig, err := merged.Classify(context.Background(), req("why is this def broken, this is ridiculous"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(sig.Tags) != 2 {
+		t.Fatalf("Tags = %v, want both groups unioned", sig.Tags)
+	}
+	if len(sig.RequiredCapabilities) != 0 {
+		t.Fatalf("RequiredCapabilities = %v, want empty: tags must not leak into the capabilities set", sig.RequiredCapabilities)
+	}
+}
+
+// A tag and a capability may share a spelling; the merge must keep them in
+// separate sets rather than deduping one against the other.
+func TestMergedClassifierKeepsTagsAndCapabilitiesSeparate(t *testing.T) {
+	tagger := NewHeuristicClassifier("tagger", AxisTags, map[string][]string{"vision": {"screenshot"}})
+	capper := NewHeuristicClassifier("capper", AxisCapabilities, map[string][]string{"vision": {"screenshot"}})
+	merged := NewMergedClassifier("merged", []Classifier{tagger, capper})
+
+	sig, err := merged.Classify(context.Background(), req("here is a screenshot"))
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(sig.Tags) != 1 || sig.Tags[0] != "vision" {
+		t.Fatalf("Tags = %v, want [vision]", sig.Tags)
+	}
+	if len(sig.RequiredCapabilities) != 1 || sig.RequiredCapabilities[0] != "vision" {
+		t.Fatalf("RequiredCapabilities = %v, want [vision]", sig.RequiredCapabilities)
+	}
+}
+
 // An initialized-but-empty capability set is the merge's way of saying
 // "classification ran and nothing matched". Keeping it non-nil is what lets a
 // stored row distinguish that from a request classification never touched.

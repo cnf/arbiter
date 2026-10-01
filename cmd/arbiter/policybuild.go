@@ -96,6 +96,16 @@ func policyRules(cfg map[string]interface{}) ([]router.PolicyRule, error) {
 					}
 				}
 			}
+			// Tags are a subset requirement like capabilities, parsed the
+			// same way, but kept on their own field — see
+			// PolicyCondition.Tags for why the two are never merged.
+			if tags, ok := w["tags"].([]interface{}); ok {
+				for _, c := range tags {
+					if s, ok := c.(string); ok {
+						when.Tags = append(when.Tags, s)
+					}
+				}
+			}
 			// Guards the rule's target rather than matching the request — see
 			// PolicyCondition.RequiresInputModalities. Named distinctly from
 			// `capabilities` because the two vocabularies differ: signals say
@@ -146,6 +156,7 @@ var whenKeys = []string{
 	"difficulty",
 	"effort",
 	"capabilities",
+	"tags",
 	"cost_class", "cost_sensitivity",
 	"request_kind",
 	"requires_input_modalities",
@@ -183,7 +194,7 @@ func rejectUnknownWhenKeys(ruleIndex int, w map[string]interface{}) error {
 // wrote on purpose, and the two must not be treated alike.
 func whenSetsAnyPredicate(c router.PolicyCondition) bool {
 	return c.Domain != "" || c.Difficulty != "" || c.Effort != "" || c.CostClass != "" || c.RequestKind != "" ||
-		c.Capabilities != nil || c.RequiresInputModalities != nil
+		c.Capabilities != nil || c.Tags != nil || c.RequiresInputModalities != nil
 }
 
 // checkWhenValueShapes rejects a known key carrying a value of the wrong type.
@@ -200,7 +211,7 @@ func checkWhenValueShapes(ruleIndex int, w map[string]interface{}) error {
 			}
 		}
 	}
-	for _, key := range []string{"capabilities", "requires_input_modalities"} {
+	for _, key := range []string{"capabilities", "tags", "requires_input_modalities"} {
 		v, ok := w[key]
 		if !ok {
 			continue

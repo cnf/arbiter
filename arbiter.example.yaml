@@ -38,11 +38,18 @@ providers:
       - "llama2"
 
 # Each classifier fills exactly one axis of the routing signals, declared via
-# `axis` (domain | difficulty | cost_class | capabilities). Several instances of
+# `axis` (domain | difficulty | cost_class | capabilities | tags). Several instances of
 # the same "heuristic" type run side by side and are merged per axis, so a
 # high-confidence domain match can't starve the difficulty axis. `axis` may be
 # omitted on a "heuristic" classifier (defaults to domain, matching older
 # configs); the legacy "capability_detector" type always fills capabilities.
+#
+# `tags` is the freeform axis: unlike the others, Arbiter assigns its values no
+# meaning — whatever strings you declare are matched by policy rules via
+# `when: { tags: [...] }` (every listed tag must be present). Use it to express
+# splits the fixed axes can't (e.g. `domain: coding` plus `tags: [python]`).
+# Tags are additive like capabilities and are matched against their own signal
+# set, never conflated with capabilities.
 #
 # `only_if_unset` (classifier-level, not inside `config:`) gates a model-backed
 # classifier: when true, the classifier is skipped — no upstream call, no cost —

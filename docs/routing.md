@@ -357,6 +357,29 @@ rules:
     provider: "text-model"
 ```
 
+## Routing on freeform tags
+
+`tags` is the one axis Arbiter assigns **no meaning** to. Classifiers declare
+whatever strings an operator wants (`python`, `french`, `user_is_angry`) and a
+rule matches them by set membership:
+
+```yaml
+- when: { domain: "code_generation", tags: ["python"] }
+  target: "py-strong"
+```
+
+Like `capabilities` (and unlike `domain`/`difficulty`/`cost_class`), tags are
+**additive**: several classifiers may each contribute tags and the results
+union; there is no confidence contest and no `unmatched` sentinel. A tag rule
+requires **every** listed tag to be present (a subset requirement), and an
+unset `tags` on a rule is a wildcard.
+
+Tags are matched against their own signal set and never conflated with
+`capabilities` — the two may even share a spelling without one satisfying the
+other. The distinction is the contract: `capabilities` means "the model must be
+able to do X" (strict, and consumable by `requires_input_modalities`), while a
+tag asserts nothing and only selects which rules a request hits.
+
 Modalities come from the cost/latency catalog (`input_modalities` on a
 `model_catalog` row). A model with **no catalog row, or a row that states
 nothing about modalities, does not satisfy the requirement** — unknown is not

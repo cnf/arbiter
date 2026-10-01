@@ -24,7 +24,7 @@ Concretely, it gives you:
   difficulty="" capabilities=[] cost_class="" -> alias "cheap-claude" -> claude/haiku`),
   so a routing decision never has to be guessed from the response.
 - **Routing you write in config, not in code.** Classifiers turn a request into
-  independent axes (`domain`, `difficulty`, `cost_class`, `capabilities`); aliases
+  independent axes (`domain`, `difficulty`, `cost_class`, `capabilities`, `tags`); aliases
   name a target; policy rules match on the axes. Stacked conditions, not a
   bag of `if` statements.
 - **One endpoint in front of many providers.** OpenAI-shaped and Anthropic-shaped

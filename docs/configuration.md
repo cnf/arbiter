@@ -42,7 +42,7 @@ providers:
 classifiers:
   - name: "domain"
     type: "heuristic"
-    axis: "domain"                     # domain | difficulty | cost_class | capabilities
+    axis: "domain"                     # domain | difficulty | cost_class | capabilities | tags
     config:
       keywords: { code_generation: ["write", "refactor"] }
   - name: "difficulty"
@@ -92,6 +92,8 @@ routers:
           target: "cheap-claude"       # a rule target may name an alias
         - when: { capabilities: ["vision"] }
           provider: "gpt4"             # ...or a literal provider/model
+        - when: { tags: ["python"] }   # freeform operator-owned labels; every
+          target: "cheap-claude"       #   listed tag must be present
         - when: { requires_input_modalities: ["image"] }
           provider: "claude"           # skipped unless claude accepts images
         - when: { request_kind: "title" }  # who's asking, not what it's about

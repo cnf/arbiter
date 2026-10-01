@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS requests (
     cost_class            TEXT,
     confidence            REAL,
     required_capabilities_json TEXT,
+    tags_json             TEXT,                -- JSON array of freeform operator-owned tags (see types.Signals.Tags). NULL = classification never ran, [] = ran and found none.
     input_tokens          INTEGER NOT NULL DEFAULT 0,
     output_tokens         INTEGER NOT NULL DEFAULT 0,
     cache_read_tokens     INTEGER NOT NULL DEFAULT 0,

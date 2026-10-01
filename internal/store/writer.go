@@ -77,6 +77,13 @@ type Event struct {
 	// empty non-nil slice when it ran but detected none.
 	RequiredCapabilities []string
 
+	// Tags is the freeform operator-owned label set (see types.Signals.Tags).
+	// Same three-state encoding as RequiredCapabilities: nil never ran, an
+	// empty non-nil slice ran and found none. Kept as its OWN column rather
+	// than folded into required_capabilities_json — the two are separate
+	// signal sets and may even share a spelling.
+	Tags []string
+
 	// RequestKind is what the request IS ("title", later "subagent"), as
 	// opposed to who sent it — that is Kind below. See
 	// types.Signals.RequestKind for why the two are not the same column.
@@ -180,7 +187,7 @@ func NewSQLiteWriter(path string, logger logging.Logger) (*SQLiteWriter, error) 
 	// added to schema.sql after a database was first created never appears on
 	// it. Add the ones we know about explicitly; an insert referencing a
 	// missing column fails every time, which would silently lose events.
-	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT", "actual_model TEXT", "kind TEXT NOT NULL DEFAULT 'client'", "request_kind TEXT", "arrival_ts TIMESTAMP", "required_capabilities_json TEXT", "client_effort TEXT"} {
+	for _, col := range []string{"config_epoch TEXT", "headers_json TEXT", "actual_model TEXT", "kind TEXT NOT NULL DEFAULT 'client'", "request_kind TEXT", "arrival_ts TIMESTAMP", "required_capabilities_json TEXT", "client_effort TEXT", "tags_json TEXT"} {
 		if err := addColumnIfMissing(db, "requests", col); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate event store schema: %w", err)
@@ -499,12 +506,14 @@ func insertRequestTx(ctx context.Context, db execer, ev Event) (int64, error) {
 INSERT INTO requests (
     trace_id, session_key, client_id, ts, arrival_ts, format, provider, model, actual_model,
     alias_used, routing_rationale, domain, difficulty, cost_class, confidence, required_capabilities_json,
+    tags_json,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
     cost_usd, latency_ms, status_code, error, stream, tool_calls_json,
     config_epoch, headers_json, kind, request_kind, client_effort
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?,
+    ?,
     ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?
@@ -537,6 +546,7 @@ INSERT INTO requests (
 		nullStr(ev.CostClass),
 		ev.Confidence,
 		jsonList(ev.RequiredCapabilities),
+		jsonList(ev.Tags),
 		int64(ev.Usage.InputTokens),
 		int64(ev.Usage.OutputTokens),
 		int64(ev.Usage.CacheRead),

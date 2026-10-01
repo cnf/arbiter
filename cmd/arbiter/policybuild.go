@@ -87,6 +87,7 @@ func policyRules(cfg map[string]interface{}) ([]router.PolicyRule, error) {
 			when.CostClass = costClass
 
 			when.Difficulty, _ = w["difficulty"].(string)
+			when.Effort, _ = w["effort"].(string)
 			when.RequestKind, _ = w["request_kind"].(string)
 			if caps, ok := w["capabilities"].([]interface{}); ok {
 				for _, c := range caps {
@@ -143,6 +144,7 @@ func policyRules(cfg map[string]interface{}) ([]router.PolicyRule, error) {
 var whenKeys = []string{
 	"domain", "intent",
 	"difficulty",
+	"effort",
 	"capabilities",
 	"cost_class", "cost_sensitivity",
 	"request_kind",
@@ -180,18 +182,18 @@ func rejectUnknownWhenKeys(ruleIndex int, w map[string]interface{}) error {
 // condition ("matches requests needing no capabilities") that the operator
 // wrote on purpose, and the two must not be treated alike.
 func whenSetsAnyPredicate(c router.PolicyCondition) bool {
-	return c.Domain != "" || c.Difficulty != "" || c.CostClass != "" || c.RequestKind != "" ||
+	return c.Domain != "" || c.Difficulty != "" || c.Effort != "" || c.CostClass != "" || c.RequestKind != "" ||
 		c.Capabilities != nil || c.RequiresInputModalities != nil
 }
 
 // checkWhenValueShapes rejects a known key carrying a value of the wrong type.
-// The parser reads `domain`/`difficulty`/`cost_class`/`request_kind` as strings and
+// The parser reads `domain`/`difficulty`/`effort`/`cost_class`/`request_kind` as strings and
 // `capabilities`/`requires_input_modalities` as lists, and skips anything else
 // — so `capabilities: "vision"` (a bare string where a list belongs) set no
 // predicate at all and turned the rule into a catch-all. Unknown keys are
 // caught separately by rejectUnknownWhenKeys.
 func checkWhenValueShapes(ruleIndex int, w map[string]interface{}) error {
-	for _, key := range []string{"domain", "intent", "difficulty", "cost_class", "cost_sensitivity", "request_kind"} {
+	for _, key := range []string{"domain", "intent", "difficulty", "effort", "cost_class", "cost_sensitivity", "request_kind"} {
 		if v, ok := w[key]; ok {
 			if _, isString := v.(string); !isString {
 				return fmt.Errorf("rule %d: `%s` must be a string", ruleIndex, key)

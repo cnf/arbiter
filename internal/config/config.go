@@ -415,19 +415,25 @@ var knownAxisSet = func() map[string]bool {
 // deprecated-with-an-alias) onto the name that replaced it. It differs from
 // the intent->domain and cost_sensitivity->cost_class synonyms above on
 // purpose: those never meant anything but their canonical target, whereas
-// `effort` was the routing axis's own name and has been reassigned to mean the
-// client-facing reasoning-effort knob. Accepting it silently would let a stale
-// `effort:` key parse clean and match nothing (or, later, collide with the new
-// client-facing key), so config load rejects it by name via
-// RenamedAxisSpelling rather than mapping it.
+// `effort` was the routing AXIS's own name and has been reassigned — the axis
+// is `difficulty` now, and the word `effort` means the client-facing
+// reasoning-effort knob instead.
+//
+// This map is consulted only on the FORCE-MAP path (and any other axis-named
+// validation that reads knownAxisSet): a force alias's keys name axes, and
+// `effort` is no longer an axis, so a stale `force: {effort: [...]}` must be
+// rejected by name rather than silently accepted as a non-axis key. It
+// deliberately does NOT apply to the `when` path — as of phase 2, `effort` is
+// a valid `when` key matching Signals.ClientEffort, so policybuild.go reads it
+// directly and never consults this map for it.
 var renamedAxisSpelling = map[string]string{
 	"effort": "difficulty",
 }
 
 // RenamedAxisSpelling reports whether old is a removed axis spelling and, if
-// so, the current name it was renamed to. Callers use it to fail a stale key
-// with an error that names the replacement, instead of the generic
-// unknown-axis error.
+// so, the current name it was renamed to. Callers on the force/axis path use
+// it to fail a stale key with an error that names the replacement, instead of
+// the generic unknown-axis error.
 func RenamedAxisSpelling(old string) (string, bool) {
 	cur, ok := renamedAxisSpelling[old]
 	return cur, ok

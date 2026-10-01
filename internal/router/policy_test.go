@@ -355,3 +355,41 @@ func TestPolicyConditionSkipsRuleOnRequestKindMismatch(t *testing.T) {
 		t.Fatalf("provider = %q, want claude (ordinary request skips the title-only rule)", route.Provider)
 	}
 }
+
+// #79 phase 2: the client's requested reasoning effort (Signals.ClientEffort)
+// matches a `when: {effort: ...}` rule by exact string equality, like any
+// other condition field — first-match-wins over the wildcard catch-all.
+func TestPolicyConditionMatchesClientEffort(t *testing.T) {
+	rules := []PolicyRule{
+		{When: PolicyCondition{Effort: "high"}, Provider: "gpt4"},
+		{When: PolicyCondition{}, Provider: "claude"}, // wildcard catch-all
+	}
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
+
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{ClientEffort: "high"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if route.Provider != "gpt4" {
+		t.Fatalf("provider = %q, want gpt4 (matched on client effort)", route.Provider)
+	}
+}
+
+// No effort requested is a wildcard, not a required-empty: a request that
+// asked for nothing must skip an effort-guarded rule and fall through, exactly
+// as an unset field does everywhere else.
+func TestPolicyConditionSkipsRuleOnClientEffortMismatch(t *testing.T) {
+	rules := []PolicyRule{
+		{When: PolicyCondition{Effort: "high"}, Provider: "gpt4"},
+		{When: PolicyCondition{}, Provider: "claude"},
+	}
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
+
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{ClientEffort: "low"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if route.Provider != "claude" {
+		t.Fatalf("provider = %q, want claude (low-effort request skips the high-only rule)", route.Provider)
+	}
+}

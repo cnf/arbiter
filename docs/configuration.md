@@ -96,6 +96,8 @@ routers:
           provider: "claude"           # skipped unless claude accepts images
         - when: { request_kind: "title" }  # who's asking, not what it's about
           target: "cheap-claude"       # title-gen traffic never needs a big model
+        - when: { effort: "high" }     # the client's own output_config.effort
+          target: "cheap-claude"       # route a high-effort ask without overriding it
         - when: {}                     # catch-all
           provider: "claude"
         - when: { domain: "unmatched" }  # or refuse instead of degrading:

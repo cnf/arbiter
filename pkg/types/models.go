@@ -70,6 +70,22 @@ type Signals struct {
 	// is a client request with kind "client" and RequestKind "title".
 	RequestKind string
 
+	// ClientEffort is the reasoning-effort knob the CLIENT actually sent
+	// (`output_config.effort`), carried verbatim from the request.
+	//
+	// Like RequestKind it is deliberately NOT an axis: it is a fact about
+	// what the client asked for, not a contested classification, so it
+	// carries no confidence, is not in KnownAxes, and no classifier fills it.
+	// It is stamped from req.OutputEffort before routing so a `when: {effort:
+	// ...}` rule can match the client's own value.
+	//
+	// Distinct from OutputEffort on the request itself: that is the value
+	// that goes upstream, and a force-alias/policy rule may later LOCK it to
+	// something else. ClientEffort always records what the client sent,
+	// regardless of any lock, so the UI can show the client's intent next to
+	// what was actually served.
+	ClientEffort string
+
 	// AxisConfidence carries a confidence PER AXIS, for a classifier that fills
 	// more than one axis from a single call.
 	//

@@ -28,6 +28,18 @@ type PolicyCondition struct {
 	// whatever model the client happened to name.
 	RequestKind string
 
+	// Effort matches types.Signals.ClientEffort — the reasoning-effort knob
+	// the client itself sent. Like RequestKind it is a request FACT, not a
+	// contested axis (no confidence, no classifier fills it), but routing on
+	// it is legitimate: "a request that asked for high effort goes to the
+	// strong model" is a rule an operator may well want, and it does not
+	// require overriding what the client asked for.
+	//
+	// Note this is the NAME each client uses for its own scale (Anthropic
+	// "low"/"medium"/"high", Hermes' longer scale), matched verbatim — there
+	// is no cross-vocabulary ordering here, only equality.
+	Effort string
+
 	// RequiresInputModalities guards the rule's *target* rather than matching
 	// the request: every entry must be something the target model accepts
 	// ("text", "image", "file"). A rule whose target cannot satisfy it is
@@ -54,6 +66,9 @@ func (c PolicyCondition) Matches(sig types.Signals) bool {
 		return false
 	}
 	if c.RequestKind != "" && c.RequestKind != sig.RequestKind {
+		return false
+	}
+	if c.Effort != "" && c.Effort != sig.ClientEffort {
 		return false
 	}
 	for _, want := range c.Capabilities {
@@ -89,6 +104,9 @@ func (c PolicyCondition) String() string {
 	}
 	if c.RequestKind != "" {
 		parts = append(parts, fmt.Sprintf("request_kind=%q", c.RequestKind))
+	}
+	if c.Effort != "" {
+		parts = append(parts, fmt.Sprintf("effort=%q", c.Effort))
 	}
 	if len(c.RequiresInputModalities) > 0 {
 		parts = append(parts, fmt.Sprintf("requires_input_modalities=%v", c.RequiresInputModalities))
@@ -311,5 +329,5 @@ func (pr *PolicyRouter) routeViaAlias(rule PolicyRule, req *types.NormalizedRequ
 // signalsDescription renders the signal axes routing matches on, for log
 // lines and error messages.
 func signalsDescription(sig types.Signals) string {
-	return fmt.Sprintf("domain=%q difficulty=%q capabilities=%v cost_class=%q", sig.Domain, sig.Difficulty, sig.RequiredCapabilities, sig.CostClass)
+	return fmt.Sprintf("domain=%q difficulty=%q capabilities=%v cost_class=%q effort=%q", sig.Domain, sig.Difficulty, sig.RequiredCapabilities, sig.CostClass, sig.ClientEffort)
 }

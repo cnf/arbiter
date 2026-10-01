@@ -12,9 +12,10 @@ import (
 	"github.com/cnf/arbiter/pkg/types"
 )
 
-func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedRequest, hasKey bool, promptHash string, arrivalTs time.Time) (types.Route, types.Signals, error) {
+func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedRequest, hasKey bool, promptHash string, arrivalTs time.Time, clientEffort string) (types.Route, types.Signals, error) {
 	if route, ok := p.literalModelRoute(req.Model); ok {
 		sig := p.classifyLiteral(ctx, req, hasKey, promptHash, arrivalTs)
+		sig.ClientEffort = clientEffort
 		p.logger.LogRouting(ctx, route, sig, 0)
 		return route, sig, nil
 	}
@@ -33,6 +34,7 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 					if kind, stamped := p.stampAliasKind(req.Model); stamped {
 						sig.RequestKind = kind
 					}
+					sig.ClientEffort = clientEffort
 					p.logger.LogRouting(ctx, route, sig, 0)
 					return route, sig, nil
 				}
@@ -48,6 +50,7 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 		if kind, stamped := p.stampAliasKind(req.Model); stamped {
 			sig.RequestKind = kind
 		}
+		sig.ClientEffort = clientEffort
 		p.logger.LogRouting(ctx, route, sig, 0)
 		return route, sig, nil
 	}
@@ -71,6 +74,11 @@ func (p *Pipeline) resolveRoute(ctx context.Context, req *types.NormalizedReques
 	}
 	p.recordClassifierCalls(req, sig, arrivalTs)
 	sig = p.applyForceAlias(req, sig)
+	// The client's requested effort is a request FACT, not a classifier
+	// verdict, so it is stamped here after the merge/force-alias rather than
+	// filled by a classifier. Phase 3's lock (a force-alias/rule overriding
+	// what goes upstream) is deliberately not implemented here.
+	sig.ClientEffort = clientEffort
 
 	routeStart := time.Now()
 	route, err := p.router.Route(ctx, req, sig)

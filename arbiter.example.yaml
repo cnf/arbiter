@@ -378,10 +378,14 @@ routers:
 # router so unmatched requests fall through to a default instead of failing.
 # A rule's target is either `target:` (an alias name) or `provider:`/`model:`
 # (a literal provider/model) — not both. `when` keys are domain, difficulty,
-# cost_class, capabilities, and request_kind; the deprecated spellings
+# effort, cost_class, capabilities, and request_kind; the deprecated spellings
 # `intent` and `cost_sensitivity` are still accepted (but not alongside their
-# replacement on the same rule), and the removed spelling `effort` (renamed to
-# `difficulty`) is rejected with an error naming its replacement.
+# replacement on the same rule). The axis spelling `effort` was renamed to
+# `difficulty` in phase 1 of #79, but `effort` is a valid `when` key again as of
+# phase 2 — it now matches the reasoning-effort knob the CLIENT sent
+# (`output_config.effort`), verbatim, so it is a request fact rather than an
+# axis. On the force-map path `effort` was NOT reassigned and stays a hard
+# error naming `difficulty`; only `when` accepts it.
 # `request_kind` matches a request's kind
 # ("title", later "subagent") rather than what it's about — not an axis, but
 # still a legitimate routing condition; see the `request-kind` classifier
@@ -401,6 +405,8 @@ routers:
 #          provider: "local"
 #        - when: { request_kind: "title" }
 #          target: "cheap-claude"
+#        - when: { effort: "high" }
+#          target: "cheap-claude"      # route the client's own high-effort ask
 #  - name: "primary"
 #    type: "simple"
 #    config:

@@ -385,24 +385,47 @@ func TestPolicyRulesRejectsEveryUnknownWhenKey(t *testing.T) {
 	}
 }
 
-// A key removed by a rename is not just "unknown": the operator's config is
-// stale, and the useful error names the replacement rather than sending them
-// hunting through the recognized-keys list. Guards the #79 rename specifically.
-func TestPolicyRulesRejectsRenamedEffortKeyNamingDifficulty(t *testing.T) {
+// `effort` is a valid `when` key as of phase 2 — it matches the reasoning
+// effort the CLIENT requested (types.Signals.ClientEffort), now that phase 1
+// freed the word `effort` by renaming the classifier axis to `difficulty`.
+// This supersedes the phase-1 stopgap that rejected the `effort` spelling here
+// (the key is now current, not removed — the hard error still stands on the
+// force-map path, where `effort` never became a valid key).
+func TestPolicyRulesAcceptsEffortKeyForClientKnob(t *testing.T) {
 	cfg := map[string]interface{}{
 		"rules": []interface{}{
 			map[string]interface{}{
 				"target": "coding-hard",
-				"when":   map[string]interface{}{"effort": "hard"},
+				"when":   map[string]interface{}{"effort": "high"},
+			},
+		},
+	}
+	rules, err := policyRules(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rules) != 1 || rules[0].When.Effort != "high" {
+		t.Fatalf("rules = %+v, want one rule with Effort=high", rules)
+	}
+}
+
+// A near-miss spelling of the client-effort key is still an unknown key — the
+// rename hint applies to the classifier axis, not to a typo of the new key.
+func TestPolicyRulesRejectsMisspelledEffortKey(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"target": "coding-hard",
+				"when":   map[string]interface{}{"efort": "high"},
 			},
 		},
 	}
 	_, err := policyRules(cfg)
 	if err == nil {
-		t.Fatal("expected an error: `effort` was renamed to `difficulty`")
+		t.Fatal("expected an error for the misspelled key `efort`")
 	}
-	if !strings.Contains(err.Error(), "difficulty") || !strings.Contains(err.Error(), "effort") {
-		t.Errorf("error = %q, want it to name both the old key `effort` and the replacement `difficulty`", err)
+	if !strings.Contains(err.Error(), "efort") {
+		t.Errorf("error = %q, want it to name the offending key `efort`", err)
 	}
 }
 

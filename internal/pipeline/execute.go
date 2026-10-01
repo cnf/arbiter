@@ -57,6 +57,15 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 	// slightly earlier because affinityKey needs it before that assignment.
 	promptHash := PromptHash(req.SystemPrompt)
 
+	// The client's requested reasoning effort, captured once for the whole
+	// request and threaded into every route's signals below. Stamping it here
+	// — immediately after parsing, before any route short-circuit — is what
+	// makes it present on EVERY path (literal model, pinned/group alias,
+	// affinity pin, classify+rules), not just the ones that classify. It is
+	// recorded as a request fact, never as a routing input the classifiers
+	// produced, so it is stamped onto signals rather than filled by one.
+	clientEffort := req.OutputEffort
+
 	// The client's own system prompt, kept before any pre-guardrail can mutate
 	// it. A `system_prompt` guardrail with override:false PREPENDS its text, and
 	// a structural classifier matching req.SystemPrompt with mode prefix would
@@ -107,7 +116,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		content.RequestGuardrailed = store.CaptureRequest(req)
 	}
 
-	route, sig, err := p.resolveRoute(ctx, req, hasKey, promptHash, start)
+	route, sig, err := p.resolveRoute(ctx, req, hasKey, promptHash, start, clientEffort)
 	if err != nil {
 		// The classifier ran before route selection, so retain its merged
 		// signals on a routing refusal as well as a successful route.

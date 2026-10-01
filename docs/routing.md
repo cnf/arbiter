@@ -46,6 +46,17 @@ a title-generation call is identified by the `request-kind` classifier
 `when: { request_kind: "title" }` sends it to a cheap/fast alias instead of
 whatever model the client happened to name.
 
+A rule's `when` clause can also match `effort` — the reasoning-effort knob the
+**client itself sent** (`output_config.effort`), matched verbatim against
+`types.Signals.ClientEffort`. Like `request_kind` it is a request fact rather
+than a classification axis (no confidence, no classifier fills it, no
+force-alias targets it), and it is stamped on every path before routing, so a
+rule like `when: { effort: "high" }` can send a request that asked for high
+effort to the strong model *without* having to override what the client asked
+for. Note the value is matched by equality against whatever vocabulary the
+client uses (Anthropic's `low`/`medium`/`high`, another client's longer scale)
+— there is no cross-vocabulary ordering, only an exact string match.
+
 A rule's target is exactly one of: a named alias (`target: "…"`), a literal
 provider/model (`provider:`/`model:`), or a **terminal refusal**. A refusal rule
 matches like any other and then stops the request outright instead of routing

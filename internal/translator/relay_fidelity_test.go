@@ -1,6 +1,7 @@
 package translator
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -298,4 +299,26 @@ func upstreamEventCarriesContent(evt *AnthropicStreamEvent) bool {
 		return false
 	}
 	return evt.Usage != nil
+}
+
+// The streaming mirror of TestNoArgToolUseEmitsEmptyInputObjectOnWire: a
+// no-argument tool call's content_block_start must open with `"input":{}`
+// on the Anthropic client wire, not a missing key or `"input":null`. A real
+// Anthropic stream always opens a tool_use block this way, before any
+// input_json_delta fragments arrive — a client (or Arbiter itself, replaying
+// the reassembled block later) that saw the key missing here would hit the
+// same issue #78 400 on the next turn.
+func TestContentBlockStartForNoArgToolUseEmitsEmptyInputObjectOnWire(t *testing.T) {
+	start := NormalizedToAnthropicStreamEvent(&types.NormalizedStreamEvent{
+		Type: "content_block_start", BlockType: "tool_use", BlockIndex: 0,
+		ToolCallIndex: 0, ToolCallID: "toolu_01", ToolCallName: "kanban_show",
+	})
+
+	raw, err := json.Marshal(start)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"input":{}`)) {
+		t.Fatalf("content_block_start wire JSON = %s, want it to contain the literal %q", raw, `"input":{}`)
+	}
 }

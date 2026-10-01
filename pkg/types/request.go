@@ -468,8 +468,19 @@ type AnthropicContent struct {
 	// Arbiter marks.
 	CacheControl *AnthropicCacheControl `json:"cache_control,omitempty"`
 
-	ID    string                 `json:"id,omitempty"`    // tool_use
-	Name  string                 `json:"name,omitempty"`  // tool_use
+	ID   string `json:"id,omitempty"`   // tool_use
+	Name string `json:"name,omitempty"` // tool_use
+
+	// Input is kept behind the struct tag's omitempty for every block type
+	// EXCEPT tool_use, where MarshalJSON below forces the key to appear.
+	// Anthropic's API requires `input` to be present on every tool_use
+	// block, even as `{}` for a tool call with no arguments, and 400s a
+	// request that replays one with the key missing. A struct tag can't
+	// express "always for this type, never for the others" — omitempty
+	// would drop a nil/empty map on every type including tool_use, and
+	// dropping omitempty would add a spurious `"input":null`/`{}` to text,
+	// thinking, and tool_result blocks that never carried one on the real
+	// wire. See MarshalJSON.
 	Input map[string]interface{} `json:"input,omitempty"` // tool_use
 
 	ToolUseID string      `json:"tool_use_id,omitempty"` // tool_result
@@ -486,6 +497,30 @@ type AnthropicContent struct {
 	// data rather than failing the request (issue #23).
 	Source map[string]interface{} `json:"source,omitempty"`
 	Title  string                 `json:"title,omitempty"`
+}
+
+// MarshalJSON forces `input` onto the wire for a tool_use block even when
+// Input is nil/empty, defaulting to `{}` — Anthropic requires the key on
+// every tool_use block, including a no-argument call, and 400s a request
+// that omits it (issue #78). The plain `json:"input,omitempty"` tag on the
+// field stays in place for every other block type (text, thinking,
+// tool_result, image/document), where an `input` key never belongs and
+// omitempty is exactly right; a type alias plus a local override field is
+// the standard Go way to reuse the default encoding for everything except
+// one field that needs type-dependent handling.
+func (c AnthropicContent) MarshalJSON() ([]byte, error) {
+	type alias AnthropicContent
+	if c.Type != "tool_use" {
+		return json.Marshal(alias(c))
+	}
+	input := c.Input
+	if input == nil {
+		input = map[string]interface{}{}
+	}
+	return json.Marshal(struct {
+		alias
+		Input map[string]interface{} `json:"input"`
+	}{alias: alias(c), Input: input})
 }
 
 // AnthropicTool is a tool definition in Anthropic wire format.

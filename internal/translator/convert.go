@@ -137,6 +137,9 @@ func blockToAnthropicContent(cb types.ContentBlock) types.AnthropicContent {
 	case "text":
 		return types.AnthropicContent{Type: cb.Type, Text: cb.Text}
 	case "tool_use":
+		// Input may be nil here (a no-argument tool call); that's fine —
+		// AnthropicContent.MarshalJSON defaults a nil/empty Input to `{}`
+		// on the wire for tool_use blocks specifically (issue #78).
 		return types.AnthropicContent{Type: "tool_use", ID: cb.ToolUseID, Name: cb.ToolName, Input: cb.ToolInput}
 	case "tool_result":
 		return types.AnthropicContent{Type: "tool_result", ToolUseID: cb.ToolResultForID, Content: cb.ToolResult, IsError: cb.ToolIsError}

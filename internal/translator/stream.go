@@ -435,6 +435,10 @@ func NormalizedToAnthropicStreamEvent(evt *types.NormalizedStreamEvent) *Anthrop
 			anthropic.Index = intPtr(evt.ToolCallIndex)
 			anthropic.ContentBlock.ID = evt.ToolCallID
 			anthropic.ContentBlock.Name = evt.ToolCallName
+			// Input is left nil here; AnthropicContent.MarshalJSON
+			// defaults a nil Input to `{}` for a tool_use block, which is
+			// what a real Anthropic stream sends on content_block_start
+			// before any input_json_delta fragments arrive (issue #78).
 		}
 		if evt.TextDelta != "" {
 			anthropic.ContentBlock.Text = evt.TextDelta

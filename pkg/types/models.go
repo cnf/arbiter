@@ -52,6 +52,28 @@ type Signals struct {
 	CostClass            string  // "free_only", "budget", "quality_first"
 	Confidence           float64 // 0.0-1.0
 
+	// Tags is a freeform, operator-owned label set: arbitrary strings
+	// ("python", "french", "user_is_angry") Arbiter assigns NO meaning to.
+	// The router matches them by set membership (`when: {tags: [python]}`),
+	// and the operator decides what they mean; combined with a fixed axis
+	// (e.g. domain=coding + tags=[python]) this is how per-user splits are
+	// expressed without growing the fixed axis set.
+	//
+	// DISTINCT from RequiredCapabilities, and the distinction is subtractive
+	// rather than additive: capabilities mean "the model must be able to do
+	// X" — strict, and Arbiter knows it maps to a catalog property that
+	// `requires_input_modalities` consumes. Tags mean the opposite: "we
+	// assert nothing about X, match the string." Same additive mechanics
+	// (see below), different contract; the two are never merged into one
+	// field.
+	//
+	// Additive like RequiredCapabilities, not contested like Domain: tags
+	// union across classifiers with no confidence contest and no
+	// UnmatchedValue sentinel (a tag is "add this"; there is no winner).
+	// Deliberately NOT a target guard — a tag filters which rules/targets a
+	// request matches, never which models are viable.
+	Tags []string
+
 	// RequestKind says WHAT the request is, as opposed to what it is about:
 	// "title" for a client's title-generation call, and later "subagent" for
 	// a delegated worker's own traffic.
@@ -196,12 +218,42 @@ const (
 	AxisDifficultyName   = "difficulty"
 	AxisCostClassName    = "cost_class"
 	AxisCapabilitiesName = "capabilities"
+	AxisTagsName         = "tags"
 )
 
 // KnownAxes lists the axis names a force-alias may target. Keys are the
 // canonical (current) names; the config layer also accepts the deprecated
 // spellings and maps them onto these.
-var KnownAxes = []string{AxisDomainName, AxisDifficultyName, AxisCostClassName, AxisCapabilitiesName}
+//
+// Adding a name here is what makes it a usable axis everywhere at once: the
+// config layer builds canonicalAxisSet/knownAxisSet FROM this list, so a new
+// entry is accepted as a classifier `axis:`, as a force-alias `force:` key,
+// and (via policybuild's whenKeys) as a `when:` key. AxisTagsName is additive
+// like capabilities rather than contested like domain — see Signals.Tags.
+var KnownAxes = []string{AxisDomainName, AxisDifficultyName, AxisCostClassName, AxisCapabilitiesName, AxisTagsName}
+
+// AdditiveAxes names the axes whose values UNION rather than contest. A
+// contested axis (domain/difficulty/cost_class) holds one winner chosen by
+// confidence and a force-alias override; an additive axis is a set that every
+// contributor adds to, with no confidence contest and no `unmatched` sentinel
+// (see Signals.Tags and UnmatchedValue's doc).
+//
+// The distinction is load-bearing beyond the merge: several classifier
+// questions may fill the same additive axis in one call (each contributes),
+// and an escape verdict leaves an additive axis genuinely empty rather than
+// sentinel-filled. Derive membership from this list rather than re-listing the
+// axis names at each site.
+var AdditiveAxes = []string{AxisCapabilitiesName, AxisTagsName}
+
+// IsAdditiveAxis reports whether name is an additive (set-valued) axis.
+func IsAdditiveAxis(name string) bool {
+	for _, a := range AdditiveAxes {
+		if a == name {
+			return true
+		}
+	}
+	return false
+}
 
 // UnmatchedValue is the reserved sentinel a scalar axis (domain, difficulty,
 // cost_class) is filled with when a model-backed classifier reaches its

@@ -1,0 +1,114 @@
+# Policy router: match classifier signals against ordered rules — first
+# match wins — and error if nothing matches. Chain a "simple" router after it
+# (or add a catch-all `when: {}` rule) to degrade instead of failing.
+#
+# A rule's target is exactly one of:
+#   target:   a named alias
+#   provider:/model:  a literal provider/model (not both; not combined with target)
+#   target: {stop: {error, message}}   a terminal refusal (see below)
+#
+# `when` keys:
+#   domain, difficulty, cost_class, capabilities, tags   — classifier axes
+#   request_kind    — a request's KIND ("title", later "subagent"), not an
+#                     axis: no confidence, no force-alias target, but still a
+#                     legitimate routing condition (see
+#                     docs/examples/classifier-request-kind-match.yaml).
+#   effort          — the reasoning-effort knob the CLIENT itself sent
+#                     (Anthropic's output_config.effort, OpenAI's
+#                     reasoning_effort, both read into one signal), matched
+#                     by exact string equality against whatever vocabulary
+#                     the client used. Not an axis either.
+#   requires_input_modalities — demands the TARGET accept certain modalities
+#                     (text/image/file), read from model_catalog. This is the
+#                     opposite direction from `capabilities`, which matches
+#                     what the REQUEST needs. A rule whose target can't
+#                     satisfy this is SKIPPED (matching continues), which is
+#                     what makes "send image traffic to the vision model,
+#                     everything else here" work without writing the negative
+#                     case.
+#
+# A `stop` rule matches like any other and then refuses the request outright
+# instead of routing it — short-circuits the whole router chain (a later
+# fallback router can't override it), most useful in a catch-all position.
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/router-policy-rules.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-opus-20250219", "claude-3-haiku-20250307"]
+  gpt4:
+    type: "openai"
+    endpoint: "https://api.openai.com/v1"
+    key: "${OPENAI_API_KEY}"
+    models: ["gpt-4o"]
+  local:
+    type: "ollama"
+    endpoint: "http://localhost:11434/v1"
+    models: ["llama2"]
+
+aliases:
+  cheap-claude:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku-20250307"
+  py-strong:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-opus-20250219"
+
+classifiers:
+  - name: "domain"
+    type: "heuristic"
+    axis: "domain"
+    config:
+      keywords: { code_generation: ["write", "refactor"] }
+  - name: "difficulty"
+    type: "heuristic"
+    axis: "difficulty"
+    config:
+      keywords: { easy: ["quick"], hard: ["architecture"] }
+  - name: "language-tags"
+    type: "heuristic"
+    axis: "tags"
+    config:
+      keywords: { python: ["python", "pandas"] }
+
+model_catalog:
+  - provider: "claude"
+    model: "claude-3-opus-20250219"
+    input_modalities: ["text", "image"]
+
+routers:
+  - name: "policy"
+    type: "policy"
+    config:
+      rules:
+        - when: { domain: "code_generation", difficulty: "hard" }
+          target: "cheap-claude"           # a rule target may name an alias
+        - when: { domain: "code_generation", tags: ["python"] }
+          target: "py-strong"              # freeform tags; every listed tag must be present
+        - when: { capabilities: ["vision"] }
+          provider: "gpt4"                 # ...or a literal provider/model
+        - when: { requires_input_modalities: ["image"] }
+          provider: "claude"                # skipped unless claude's catalog row accepts images
+        - when: { request_kind: "title" }  # who's asking, not what it's about
+          target: "cheap-claude"           # title-gen traffic never needs a big model
+        - when: { effort: "high" }         # the client's own reasoning effort
+          target: "cheap-claude"           # route a high-effort ask without overriding it
+        - when: { domain: "unmatched" }    # refuse instead of degrading:
+          target:
+            stop:
+              error: 406
+              message: "requests in this domain are not supported"
+        - when: {}                        # catch-all
+          provider: "claude"
+  - name: "primary"
+    type: "simple"                        # chained after policy: last-resort default
+    config:
+      default_provider: "local"

@@ -56,6 +56,10 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 	// same value ClientSystemPrompt is about to be set to, just captured
 	// slightly earlier because affinityKey needs it before that assignment.
 	promptHash := PromptHash(req.SystemPrompt)
+	// Exposed on the request so a guardrail can clear the pin for exactly this
+	// prompt family (see guardrail.UnpinGuardrail). Affinity keys are
+	// (SessionKey, PromptHash), so a guardrail clearing a pin needs both.
+	req.PromptHash = promptHash
 
 	// The client's requested reasoning effort, captured once for the whole
 	// request and threaded into every route's signals below. Stamping it here
@@ -150,6 +154,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 			CostClass:            sig.CostClass,
 			Confidence:           sig.Confidence,
 			RequiredCapabilities: sig.RequiredCapabilities,
+			Tags:                 sig.Tags,
 			ClientEffort:         sig.ClientEffort,
 			ArrivalTs:            start,
 			LatencyMs:            time.Since(start).Milliseconds(),
@@ -213,6 +218,7 @@ func (p *Pipeline) Execute(ctx context.Context, payload []byte, format string, t
 		CostClass:            sig.CostClass,
 		Confidence:           sig.Confidence,
 		RequiredCapabilities: sig.RequiredCapabilities,
+		Tags:                 sig.Tags,
 		ClientEffort:         sig.ClientEffort,
 		Usage:                usage,
 		Content:              contentOrNil(content),

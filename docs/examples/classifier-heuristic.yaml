@@ -1,0 +1,55 @@
+# Heuristic classification: keyword matching, no upstream call.
+#
+# A "heuristic" classifier fills exactly one axis (declared via `axis:`) by
+# matching keywords against the first user turn that has text. Several
+# instances of the same type run side by side and are merged per axis, so a
+# high-confidence domain match can't starve the difficulty axis.
+#
+# `axis` may be omitted (defaults to "domain", matching older configs). The
+# known axes are domain | difficulty | cost_class | capabilities | tags.
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/classifier-heuristic.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-opus-20250219", "claude-3-haiku-20250307"]
+
+classifiers:
+  - name: "domain"
+    type: "heuristic"
+    axis: "domain"
+    config:
+      keywords:
+        code_generation: ["write", "generate", "refactor", "implement"]
+        reasoning: ["explain", "analyze", "debug", "understand"]
+        chat: ["hello", "hi", "hey"]
+
+  - name: "difficulty"
+    type: "heuristic"
+    axis: "difficulty"                 # a second instance, same type, own axis
+    config:
+      keywords:
+        easy: ["quick", "simple", "one-liner"]
+        hard: ["architecture", "design", "complex"]
+
+aliases:
+  cheap-claude:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku-20250307"
+
+routers:
+  - name: "policy"
+    type: "policy"
+    config:
+      rules:
+        - when: { domain: "code_generation", difficulty: "hard" }
+          target: "cheap-claude"
+        - when: {}                     # catch-all
+          provider: "claude"

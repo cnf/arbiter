@@ -48,6 +48,15 @@ func buildGuardrail(gc config.GuardrailConfig, counts guardrail.CountSource) (gu
 		}
 		return guardrail.NewPromptRewriteGuardrail(
 			gc.Name, match, mode, action, replacement, paragraphBoundary, blockStatus, where)
+	case "unpin":
+		// Clears the session-affinity pin when the request's LAST message
+		// carries a marker, so a pinned conversation re-classifies and
+		// re-routes. strip is optional and defaults to false: a guardrail
+		// whose job is to unpin must not silently edit the prompt.
+		match, _ := gc.Config["match"].(string)
+		mode, _ := gc.Config["mode"].(string)
+		strip, _ := gc.Config["strip"].(bool)
+		return guardrail.NewUnpinGuardrail(gc.Name, match, mode, strip)
 	default:
 		return nil, fmt.Errorf("unknown guardrail type %q", gc.Type)
 	}

@@ -171,6 +171,50 @@ func TestPolicyRulesKeepsModalitiesAndCapabilitiesSeparate(t *testing.T) {
 	}
 }
 
+// Tags parse like capabilities into their own PolicyCondition field — and
+// must NOT be confused with capabilities, since the two are matched against
+// separate signals (see types.Signals.Tags).
+func TestPolicyRulesParsesTags(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"provider": "claude",
+				"when": map[string]interface{}{
+					"tags":         []interface{}{"python", "french"},
+					"capabilities": []interface{}{"vision"},
+				},
+			},
+		},
+	}
+	rules, err := policyRules(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	when := rules[0].When
+	if len(when.Tags) != 2 || when.Tags[0] != "python" || when.Tags[1] != "french" {
+		t.Errorf("Tags = %v, want [python french]", when.Tags)
+	}
+	if len(when.Capabilities) != 1 || when.Capabilities[0] != "vision" {
+		t.Errorf("Capabilities = %v, want [vision] (must stay separate from tags)", when.Capabilities)
+	}
+}
+
+// A tag rule with a wrong-shaped value must be rejected, not silently parsed
+// to an empty predicate (which would turn the rule into a catch-all).
+func TestPolicyRulesRejectsWrongShapedTags(t *testing.T) {
+	cfg := map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"provider": "claude",
+				"when":     map[string]interface{}{"tags": "python"},
+			},
+		},
+	}
+	if _, err := policyRules(cfg); err == nil {
+		t.Fatal("expected an error for `tags: python` (a bare string where a list belongs), got none")
+	}
+}
+
 // TestPolicyRulesParsesStopTarget is #43 part 2's core parsing case:
 // `target: {stop: {error, message}}` must produce a rule with Stop set and
 // no Target/Provider — the terminal shape, not an alias/literal one.

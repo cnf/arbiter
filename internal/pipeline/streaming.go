@@ -196,6 +196,7 @@ func (p *Pipeline) executeStream(ctx context.Context, traceID string, route type
 			CostClass:            sig.CostClass,
 			Confidence:           sig.Confidence,
 			RequiredCapabilities: sig.RequiredCapabilities,
+			Tags:                 sig.Tags,
 			ClientEffort:         sig.ClientEffort,
 			ArrivalTs:            start,
 			LatencyMs:            time.Since(start).Milliseconds(),

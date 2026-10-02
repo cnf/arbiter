@@ -5,11 +5,6 @@ providers:
     type: "openai"
     endpoint: "http://localhost:5665/v1"
     models: ["mock-llm"]
-  litellm:
-    type: "openai"
-    endpoint: "${LITELLM_URL}"
-    key: "${LITELLM_API_KEY}"
-    models: ["openrouter/free"]
 
   claude:
     type: "anthropic"
@@ -38,11 +33,18 @@ providers:
       - "llama2"
 
 # Each classifier fills exactly one axis of the routing signals, declared via
-# `axis` (domain | difficulty | cost_class | capabilities). Several instances of
+# `axis` (domain | difficulty | cost_class | capabilities | tags). Several instances of
 # the same "heuristic" type run side by side and are merged per axis, so a
 # high-confidence domain match can't starve the difficulty axis. `axis` may be
 # omitted on a "heuristic" classifier (defaults to domain, matching older
 # configs); the legacy "capability_detector" type always fills capabilities.
+#
+# `tags` is the freeform axis: unlike the others, Arbiter assigns its values no
+# meaning — whatever strings you declare are matched by policy rules via
+# `when: { tags: [...] }` (every listed tag must be present). Use it to express
+# splits the fixed axes can't (e.g. `domain: coding` plus `tags: [python]`).
+# Tags are additive like capabilities and are matched against their own signal
+# set, never conflated with capabilities.
 #
 # `only_if_unset` (classifier-level, not inside `config:`) gates a model-backed
 # classifier: when true, the classifier is skipped — no upstream call, no cost —
@@ -100,13 +102,35 @@ providers:
 #     <name>:
 #                   axis:         which Signals axis it fills (required; two
 #                                 questions may not share an axis)
-#                   type:         "choice" (the only primitive built so far)
-#                   labels:       the option set, same shapes as `labels:` above
-#                   escape:       optional — names the label meaning "no option
-#                                 fits". It is sent under ITS OWN NAME (it is
-#                                 already one of `labels`), and choosing it fills
-#                                 no axis. With no escape configured, an `other`
-#                                 option is added instead.
+#                   type:         "choice", "noul" or "score"
+#                   labels:       "choice" only — the option set, same shapes
+#                                 as `labels:` above
+#                   escape:       "choice" only — optional, names the label
+#                                 meaning "no option fits". It is sent under
+#                                 ITS OWN NAME (it is already one of `labels`),
+#                                 and choosing it fills no axis. With no escape
+#                                 configured, an `other` option is added instead.
+#                   value:        "noul" only — the axis value applied when the
+#                                 model answers yes (probability > 0.5); "no"
+#                                 fills nothing and leaves the axis open for a
+#                                 later classifier — NOT the same as a choice's
+#                                 escape, which fills the reserved "unmatched"
+#                                 sentinel. "noul" does not support the
+#                                 capabilities axis yet. A "noul" answer has no
+#                                 confidence of its own, so max(p, 1-p) is
+#                                 recorded (a confident no is as confident as a
+#                                 confident yes).
+#                   levels:       "score" only — an ORDERED list, low -> high
+#                                 (a bare name, or {name, description}; a map is
+#                                 rejected — order IS the data). The answer is a
+#                                 fractional position along that order (e.g. 1.6
+#                                 sits between level 1 and level 2); it is
+#                                 snapped to the nearest level and that level's
+#                                 name fills the axis. Confidence is read
+#                                 directly from the answer, unlike "noul". At
+#                                 least two levels are required. Prefer "score"
+#                                 over "choice" when the axis is genuinely a
+#                                 scale rather than a set of categories.
 #                   instructions: optional — what is being decided between them
 #                 Each answer's probability becomes that axis's confidence
 #                 (Signals.AxisConfidence), so the merge scores every axis on
@@ -332,7 +356,6 @@ aliases:
     type: "group"
     select: "random"               # random | cheapest_input | cheapest_output | fastest
     members:
-      - { provider: "litellm", model: "openrouter/free" }
       - { provider: "local", model: "llama2" }
 
 # Static cost/latency catalog for the cost- and latency-aware group `select:`
@@ -351,11 +374,6 @@ aliases:
 # model_catalog_file: "catalog.yaml"
 #
 # model_catalog:
-#   - provider: "litellm"
-#     model: "openrouter/free"
-#     input_cost_per_mtok: 0
-#     output_cost_per_mtok: 0
-#     latency_ms_p50: 2500
 #   - provider: "claude"
 #     model: "claude-3-haiku-20250307"
 #     input_cost_per_mtok: 0.25
@@ -420,7 +438,7 @@ routers:
 # provider is skipped entirely — logged as upstream_cooldown.
 #
 # routing:
-#   fallback_providers: ["gpt4", "litellm"]
+#   fallback_providers: ["gpt4", "claude"]
 
 # Admin surface (/admin/*). All of it is read-only except POST /admin/reload,
 # which re-reads this file AND the model_catalog_file on demand — the latter
@@ -493,6 +511,20 @@ guardrails:
       config:
         per_minute: 100
         per_day: 10000
+
+    # Unpin: clears this conversation's session-affinity pin when the request's
+    # LAST message carries the marker, so the request re-classifies and
+    # re-routes instead of reusing the pinned provider. Only the newest message
+    # is checked, so a marker typed once fires once (the conversation is
+    # re-sent every turn; checking history would re-route forever). strip
+    # defaults to false — set true to remove the marker before it goes
+    # upstream, at the cost of hiding it from a classifier's `match:` block.
+    - name: "reclassify"
+      type: "unpin"
+      config:
+        match: "#reclassify"
+        mode: "prefix"
+        strip: false
 
   post: []
 

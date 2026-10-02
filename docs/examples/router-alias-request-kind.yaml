@@ -1,0 +1,56 @@
+# Declaring what an alias's traffic IS (`request_kind`), without the alias
+# itself being the destination.
+#
+# The canonical shape is a FORCE alias: the alias declares identity, and the
+# RULES decide where the traffic goes — the alias does not route.
+#
+#   force: {}                 forces nothing; axes classify as usual
+#   request_kind: "subagent"  what a request naming this alias IS
+#
+# request_kind is stamped at every path force-alias traffic travels:
+#   - the force-alias path (turn 1), where it OVERRIDES whatever a
+#     kind-only matcher (see docs/examples/classifier-request-kind-match.yaml)
+#     classified — the operator pointed this alias at this traffic, so the
+#     two sources must not disagree on the row;
+#   - the session-affinity pin, which serves turn 2 onward — the pin is
+#     recorded under the client's model string (the alias name, for alias
+#     traffic), so the stamp survives every turn even though classification
+#     never runs on the pin path.
+#
+# The three alias shapes are EXCLUSIVE: a pinned/group alias is a
+# destination, a request_kind is metadata, so declaring both on one alias is
+# rejected at config load. If an alias must both be a destination and label
+# its traffic, that's two aliases: a pinned one for the routing, a force one
+# declaring the kind for the label.
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/router-alias-request-kind.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-opus-20250219", "claude-3-haiku-20250307"]
+
+aliases:
+  subagent:
+    force: {}                    # force nothing; axes classify as usual
+    request_kind: "subagent"     # what a request naming this alias IS
+
+  cheap-claude:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku-20250307"
+
+routers:
+  - name: "policy"
+    type: "policy"
+    config:
+      rules:
+        - when: { request_kind: "subagent" }   # identity declared by the alias
+          target: "cheap-claude"               # routing decided by the rule
+        - when: {}
+          provider: "claude"

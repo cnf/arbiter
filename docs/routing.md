@@ -32,6 +32,10 @@ precedence order:
    policy router errors when nothing matches, so chain a `simple` router after
    it (or write a catch-all rule) to degrade instead of failing.
 
+A complete, loadable config showing all three alias shapes (`force`,
+`pinned`, `group`) side by side is in
+**[docs/examples/router-alias-shapes.yaml](examples/router-alias-shapes.yaml)**.
+
 Any alias — pinned, group or force — may also declare `request_kind:` (see
 [Aliases](#aliases) below), which stamps what a request naming it IS onto its
 stored row at every path the alias decides the route, including the
@@ -80,6 +84,12 @@ router chain — a later fallback router can't override an explicit refusal — 
 is most useful in a catch-all position (`when: {}`) to refuse everything that
 no earlier rule covers.
 
+A complete, loadable policy-router config — the full `when` vocabulary
+(`domain`, `difficulty`, `tags`, `capabilities`, `requires_input_modalities`,
+`request_kind`, `effort`), an alias target, a literal provider/model target, a
+`stop` refusal, and a `simple` router chained as the default — is in
+**[docs/examples/router-policy-rules.yaml](examples/router-policy-rules.yaml)**.
+
 Aliases are client-facing and appear in `/models` alongside provider models
 (listed with provider `"alias"`). Any rule `target` may name an alias, and a
 group member may itself be another alias; resolution is depth-limited and a
@@ -98,6 +108,10 @@ aliases:
     force: {}                    # force nothing; axes classify as usual
     request_kind: "subagent"     # what a request naming this alias IS
 ```
+
+A complete, loadable config (alias + a policy rule routing on the declared
+kind) is in
+**[docs/examples/router-alias-request-kind.yaml](examples/router-alias-request-kind.yaml)**.
 
 A request naming `subagent` falls through to classify + rules exactly like a
 force alias always does — its axes classify normally, and a rule like
@@ -136,6 +150,10 @@ A `group` alias's `select:` decides which member becomes the primary:
 | `cheapest_input` | lowest `input_cost_per_mtok` |
 | `cheapest_output` | lowest `output_cost_per_mtok` |
 | `fastest` | lowest `latency_ms_p50` |
+
+A complete, loadable config (three members, `model_catalog` with cost and
+capability fields) is in
+**[docs/examples/router-group-select.yaml](examples/router-group-select.yaml)**.
 
 The cost/latency strategies read the `model_catalog` block — static figures,
 keyed by provider+model, in USD per million tokens and milliseconds. Members
@@ -357,6 +375,36 @@ rules:
     provider: "text-model"
 ```
 
+## Routing on freeform tags
+
+`tags` is the one axis Arbiter assigns **no meaning** to. Classifiers declare
+whatever strings an operator wants (`python`, `french`, `user_is_angry`) and a
+rule matches them by set membership:
+
+```yaml
+- when: { domain: "code_generation", tags: ["python"] }
+  target: "py-strong"
+```
+
+Like `capabilities` (and unlike `domain`/`difficulty`/`cost_class`), tags are
+**additive**: several classifiers may each contribute tags and the results
+union; there is no confidence contest and no `unmatched` sentinel. A tag rule
+requires **every** listed tag to be present (a subset requirement), and an
+unset `tags` on a rule is a wildcard.
+
+Tags are matched against their own signal set and never conflated with
+`capabilities` — the two may even share a spelling without one satisfying the
+other. The distinction is the contract: `capabilities` means "the model must be
+able to do X" (strict, and consumable by `requires_input_modalities`), while a
+tag asserts nothing and only selects which rules a request hits.
+
+A tag named in a `when: {tags: [...]}` rule must be producible by SOME
+classifier or force-alias — a heuristic's keyword group name, an `llm`/
+`choice`-question label, a `noul` question's `value`, or a `force: {tags:
+[...]}` entry. A tag nothing can ever emit is rejected at config load: it is
+almost always a typo, and the alternative (the rule silently never matching on
+that condition) is a far worse place to discover it.
+
 Modalities come from the cost/latency catalog (`input_modalities` on a
 `model_catalog` row). A model with **no catalog row, or a row that states
 nothing about modalities, does not satisfy the requirement** — unknown is not
@@ -371,35 +419,11 @@ router chained after it (a `simple` router, say) still takes over.
 
 A `type: "llm"` classifier asks an upstream model to classify a request
 instead of guessing from keywords — real semantic understanding, at the cost
-of a real upstream call:
+of a real upstream call.
 
-```yaml
-classifiers:
-  - name: "domain-heuristic"
-    type: "heuristic"
-    config:
-      keywords: { code_generation: ["write", "refactor"] }
-  - name: "domain-llm"
-    type: "llm"
-    axis: "domain"                      # only "domain" is built today
-    only_if_unset: true                 # skip unless the heuristic left domain empty
-    config:
-      alias: "cheap-classifier"         # routes the classification call — any pinned or group alias
-                                       # (or model: "provider/model" — address a declared model directly)
-      labels:                           # bare names, or name -> rubric description
-        code_generation: >-
-          the user wants code written, modified, refactored, or reviewed —
-          an implementation task with a concrete code artifact as the answer.
-        reasoning: >-
-          the user wants something explained, analyzed or debugged — an
-          answer in prose, with no code artifact as the deliverable.
-        chat: "greeting or small talk with no artifact expected."
-        none: "none of the other categories apply."
-      escape: "none"                    # this label's verdict fills no axis
-      instructions: "Pick the category that best describes the request."  # optional
-      fallback: "domain-heuristic"      # another classifier, declared anywhere in this list
-      timeout: "5s"                     # optional, defaults to 10s
-```
+A complete, loadable config showing a heuristic-first, LLM-fallback pair
+(`only_if_unset`, rubric `labels`, `escape`, `fallback`) is in
+**[docs/examples/classifier-llm.yaml](examples/classifier-llm.yaml)**.
 
 `labels` accepts either shape and both may be mixed freely in one list: a plain
 list of names (`labels: ["code_generation", "chat"]`, unchanged from before
@@ -535,57 +559,32 @@ A partially-answered call is not a failed call: an unanswered or off-list
 question is dropped (and recorded on the call's row) while the axes that were
 answered stand, since each axis is resolved independently.
 
-```yaml
-providers:
-  claude:
-    type: "anthropic"
-    endpoint: "https://api.anthropic.com"
-    models: ["claude-3-haiku-20250307"]
-  openrouter-decisions:                   # same vendor, a different API surface
-    type: "decisions"
-    endpoint: "https://openrouter.ai/api/alpha/decisions"   # the COMPLETE URL
-    key: "${OPENROUTER_API_KEY}"
-    models: ["~typesafe/jev-latest"]
-aliases:
-  jev:
-    type: "pinned"
-    provider: "openrouter-decisions"
-    model: "~typesafe/jev-latest"
-routers:
-  - name: "primary"
-    type: "simple"
-    config:
-      default_provider: "claude"
-classifiers:
-  - name: "domain-heuristic"
-    type: "heuristic"
-    config: { keywords: { code_generation: ["write", "refactor"] } }
-  - name: "routing-decisions"
-    type: "decisions"
-    only_if_unset: true              # skip unless every axis it fills is still empty
-    config:
-      alias: "jev"                        # routes the decision call (or model: "or-decisions/~typesafe/jev-latest")
-      questions:                          # ALL asked in ONE call
-        domain:
-          axis: "domain"                  # which Signals axis it fills
-          type: "choice"                  # the only primitive built so far
-          labels:                         # bare names, or name -> rubric
-            code_generation: "wants code written, modified or reviewed."
-            reasoning: "wants something explained or debugged."
-            chat: "small talk with no artifact expected."
-            none: "none of the other categories apply."
-          escape: "none"                  # sent as the `other` option
-          instructions: "Pick the category that best describes the request."
-        cost_class:
-          axis: "cost_class"
-          type: "choice"
-          labels:
-            budget: "a cheap model is fine."
-            quality_first: "spend more for a better answer."
-          instructions: "How much is this request worth spending on?"
-      fallback: "domain-heuristic"        # may name an `llm` classifier too
-      timeout: "5s"                       # optional, defaults to 10s
-```
+Three primitives are built: `choice` (pick one of several labels, shown above
+for `domain` and `cost_class`), `noul` (a bare yes/no), and `score` (a
+fractional position on an ordered rubric). A `noul` question declares `value`
+instead of `labels`: answering "yes" (probability > 0.5) applies that value to
+the axis; answering "no" applies nothing and leaves the axis exactly as it
+was, open for a later classifier or the fallback to fill — this is
+deliberately NOT the same as a `choice`'s escape, which fills the axis with
+the reserved `unmatched` sentinel. A `noul` answer carries no confidence of
+its own (a confident "no" and a confident "yes" are equally confident), so the
+confidence recorded is `max(p, 1-p)`. On an additive axis (`capabilities`,
+`tags`) `noul`'s "yes" adds `value` as one set member and "no" adds nothing —
+there is no single-value special case there.
+
+A `score` question declares `levels` instead of `labels`: an ORDERED list,
+low -> high (order is the data — a map would lose it to randomized iteration,
+so only a list is accepted). The answer is a fractional position along that
+order (e.g. `1.6` sits between level 1 and level 2); the classifier snaps it
+to the nearest level and fills the axis with that level's name. Confidence is
+read directly from the answer, unlike `noul`. Prefer `score` over `choice`
+when the axis is genuinely a scale rather than a set of categories — effort or
+cost class, for instance, is arguably better asked as a score than a choice.
+
+A complete, loadable config showing all three question types (`choice`,
+`score`, `noul`), the `decisions` provider type, and an `only_if_unset`
+guard is in
+**[docs/examples/classifier-decisions.yaml](examples/classifier-decisions.yaml)**.
 
 **A `type: "decisions"` provider's `endpoint` is the complete URL**, and nothing
 is appended to it. Every other provider type treats `endpoint` as an API root
@@ -685,26 +684,9 @@ unmatched, it was invisible by construction.
 
 `match` searches the request's own text instead, on **any** classifier type. This
 is the shipped `request-kind` classifier, and the three patterns are the **real**
-prompts, read out of the live store rather than invented:
-
-```yaml
-classifiers:
-  - name: "request-kind"
-    type: "heuristic"
-    config:
-      match:                            # OR-ed; any hit wins
-        # Hermes
-        - mode: "regex"
-          pattern: "(?i)^\\s*You name chat sessions\\."
-        # opencode
-        - mode: "regex"
-          pattern: "(?i)^\\s*You are a title generator\\."
-        # Claude Code CLI — buried in the system prompt, so not anchored at the start
-        - mode: "regex"
-          pattern: "(?i)Generate a concise, sentence-case title"
-      request_kind: "title"             # the request kind a hit records
-      decisive: true                    # optional — see below
-```
+prompts, read out of the live store rather than invented. A complete, loadable
+config is in
+**[docs/examples/classifier-request-kind-match.yaml](examples/classifier-request-kind-match.yaml)**.
 
 **The three signatures, verbatim from the store** (each is the opening of that
 client's system prompt):

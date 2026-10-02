@@ -298,6 +298,39 @@ func buildDecisionsClassifier(cc config.ClassifierConfig, resolver *router.Alias
 		if axis == "" {
 			return nil, fmt.Errorf("question %q requires \"axis\"", qname)
 		}
+		qtype, _ := q["type"].(string)
+		if qtype == "" {
+			qtype = types.DecisionChoice
+		}
+		instructions, _ := q["instructions"].(string)
+
+		if qtype == types.DecisionNoul {
+			value, _ := q["value"].(string)
+			questions = append(questions, classifier.DecisionQuestionConfig{
+				Name: qname, Axis: axis, Type: qtype,
+				Value: value, Instructions: instructions,
+			})
+			continue
+		}
+
+		if qtype == types.DecisionScore {
+			// The same parser config validation uses, so the two cannot
+			// disagree about what a levels block means (see
+			// types.ParseScoreLevels).
+			levels, err := types.ParseScoreLevels(q["levels"])
+			if err != nil {
+				return nil, fmt.Errorf("question %q: invalid levels: %w", qname, err)
+			}
+			if len(levels) < 2 {
+				return nil, fmt.Errorf("question %q requires at least two \"levels\"", qname)
+			}
+			questions = append(questions, classifier.DecisionQuestionConfig{
+				Name: qname, Axis: axis, Type: qtype,
+				Levels: levels, Instructions: instructions,
+			})
+			continue
+		}
+
 		// The same parser config validation uses, so the two cannot disagree
 		// about what a labels block means (see types.ParseLabels).
 		labels, err := types.ParseLabels(q["labels"])
@@ -307,12 +340,7 @@ func buildDecisionsClassifier(cc config.ClassifierConfig, resolver *router.Alias
 		if len(labels) == 0 {
 			return nil, fmt.Errorf("question %q requires a non-empty \"labels\" list", qname)
 		}
-		qtype, _ := q["type"].(string)
-		if qtype == "" {
-			qtype = types.DecisionChoice
-		}
 		escape, _ := q["escape"].(string)
-		instructions, _ := q["instructions"].(string)
 		questions = append(questions, classifier.DecisionQuestionConfig{
 			Name: qname, Axis: axis, Type: qtype,
 			Labels: labels, Escape: escape, Instructions: instructions,

@@ -113,6 +113,49 @@ func TestPolicyRouterCapabilitiesRequireAll(t *testing.T) {
 	}
 }
 
+func TestPolicyRouterTagsRequireAll(t *testing.T) {
+	rules := []PolicyRule{
+		{When: PolicyCondition{Tags: []string{"python", "french"}}, Provider: "gpt4"},
+	}
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
+
+	// only one of two required tags present -> no match
+	_, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Tags: []string{"python"}})
+	if err == nil {
+		t.Fatal("expected no match with partial tags, got a route")
+	}
+
+	// both present -> match
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{Tags: []string{"python", "french", "extra"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if route.Provider != "gpt4" {
+		t.Errorf("provider = %q, want gpt4", route.Provider)
+	}
+}
+
+// A `when: {tags: [...]}` rule must match Signals.Tags and Signals.Tags only:
+// a capability of the same spelling must not satisfy it, or the two
+// vocabularies would silently become interchangeable (see Signals.Tags).
+func TestPolicyRouterTagsDoNotMatchCapabilities(t *testing.T) {
+	rules := []PolicyRule{
+		{When: PolicyCondition{Tags: []string{"vision"}}, Provider: "gpt4"},
+		{When: PolicyCondition{}, Provider: "claude"},
+	}
+	pr := NewPolicyRouter("test", rules, testProviders(), nil, nil)
+
+	// capabilities hold "vision" but tags are empty -> the tag rule must not
+	// match, so the catch-all serves.
+	route, err := pr.Route(context.Background(), &types.NormalizedRequest{}, types.Signals{RequiredCapabilities: []string{"vision"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if route.Provider != "claude" {
+		t.Errorf("provider = %q, want claude (tag rule must not match a capability)", route.Provider)
+	}
+}
+
 func TestPolicyRouterModelOverride(t *testing.T) {
 	rules := []PolicyRule{
 		{When: PolicyCondition{}, Provider: "claude", Model: "claude-3-haiku-20250307"},

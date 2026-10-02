@@ -228,6 +228,10 @@ its warm prompt cache instead of re-routing every turn. The pin is keyed by:
 cheaper, exact, and immune to the two failure modes below. Without it, the
 derived key is what you get.
 
+A complete, loadable config (`header`, `default_ttl`, a per-provider
+`cache_ttl` override, and `no_pin`) is in
+**[docs/examples/session-affinity.yaml](examples/session-affinity.yaml)**.
+
 Two properties of the derived key are load-bearing:
 
 - **It is computed before pre-guardrails**, from the request as the client sent

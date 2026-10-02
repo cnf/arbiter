@@ -87,12 +87,19 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 	mainRouter := combineRouters(routers)
 
 	preGuardrails := make([]guardrail.Guardrail, 0, len(cfg.Guardrails.Pre))
+	// pinClearers collects pre-guardrails that clear session-affinity pins (an
+	// unpin directive). They are wired to the pipeline's affinity store after
+	// it is built, below — the store does not exist yet here.
+	var pinClearers []guardrail.PinClearer
 	for _, gc := range cfg.Guardrails.Pre {
 		g, err := buildGuardrail(gc, countSource(reader))
 		if err != nil {
 			return nil, fmt.Errorf("guardrail %q: %w", gc.Name, err)
 		}
 		preGuardrails = append(preGuardrails, g)
+		if c, ok := g.(guardrail.PinClearer); ok {
+			pinClearers = append(pinClearers, c)
+		}
 	}
 	postGuardrails := make([]guardrail.Guardrail, 0, len(cfg.Guardrails.Post))
 	for _, gc := range cfg.Guardrails.Post {
@@ -130,6 +137,10 @@ func buildPipeline(cfg *config.Config, logger logging.Logger, writer store.Write
 	// per-request computation, so it is set once here rather than threaded
 	// through the constructor.
 	p.SetNoPin(cfg.SessionAffinity.NoPin)
+	// A pre-guardrail that clears pins (unpin) needs the pipeline's affinity
+	// store, which only exists once the pipeline is built — so it is handed
+	// over here, after construction, not through the guardrail constructors.
+	p.SetGuardrailPins(pinClearers...)
 	return p, nil
 }
 

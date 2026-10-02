@@ -1,0 +1,71 @@
+# Virtual model aliases: the three shapes a client's `model` field can name.
+#
+#   - force:   overrides only the axes it lists, then rules decide. An empty
+#              `force: {}` is the "full auto" alias (classify + rules, no
+#              axis locked in). A force alias is an ENTRY POINT, never a
+#              destination — a policy rule's `target:` naming one still falls
+#              through to classify + rules, so a force alias can't be the
+#              last stop in a chain by itself.
+#   - pinned:  names one concrete provider/model. A routing rule's `target:`
+#              naming a pinned alias routes straight to it.
+#   - group:   an ordered candidate set; the selected member becomes the
+#              primary and the rest are its fallback chain (see
+#              docs/examples/router-group-select.yaml for how `select:`
+#              picks).
+#
+# An alias may not share a name with a configured provider (rejected at
+# config load). Any rule `target` may name an alias, and a group member may
+# itself be another alias; resolution is depth-limited and a cycle is
+# rejected at config load.
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/router-alias-shapes.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-opus-20250219", "claude-3-haiku-20250307"]
+  local:
+    type: "ollama"
+    endpoint: "http://localhost:11434/v1"
+    models: ["llama2"]
+
+aliases:
+  auto:                               # force: full auto — classify + rules, nothing locked in
+    force: {}
+  coding:                             # force: overrides only the axes it lists
+    force: { domain: ["code_generation"] }
+  coding-hard:                        # force: several axes at once
+    force: { domain: ["code_generation"], difficulty: ["hard"] }
+
+  cheap-claude:                       # pinned: one concrete provider/model
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku-20250307"
+
+  free-search:                        # group: ordered candidates + fallback chain
+    type: "group"
+    select: "random"
+    members:
+      - { provider: "local", model: "llama2" }
+
+classifiers:
+  - name: "domain"
+    type: "heuristic"
+    axis: "domain"
+    config:
+      keywords: { code_generation: ["write", "refactor"] }
+
+routers:
+  - name: "policy"
+    type: "policy"
+    config:
+      rules:
+        - when: { domain: "code_generation", difficulty: "hard" }
+          target: "cheap-claude"
+        - when: {}
+          target: "free-search"

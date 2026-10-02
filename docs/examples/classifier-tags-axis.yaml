@@ -1,0 +1,61 @@
+# Routing on freeform tags: the one axis Arbiter assigns NO meaning to.
+#
+# Classifiers declare whatever strings an operator wants (python, french,
+# user_is_angry) and a rule matches them by set membership. Like
+# `capabilities` (and unlike domain/difficulty/cost_class), tags are
+# ADDITIVE: several classifiers may each contribute tags and the results
+# union; there is no confidence contest and no `unmatched` sentinel. A tag
+# rule requires EVERY listed tag to be present (a subset requirement), and an
+# unset `tags` on a rule is a wildcard.
+#
+# A tag named in a `when: {tags: [...]}` rule must be producible by SOME
+# classifier or force-alias — a heuristic's keyword group name, an
+# llm/choice-question label, a noul question's `value`, or a
+# `force: {tags: [...]}` entry. A tag nothing can ever emit is rejected at
+# config load (almost always a typo).
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/classifier-tags-axis.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-opus-20250219", "claude-3-haiku-20250307"]
+
+classifiers:
+  - name: "domain"
+    type: "heuristic"
+    axis: "domain"
+    config:
+      keywords: { code_generation: ["write", "refactor"] }
+
+  - name: "language-tags"
+    type: "heuristic"
+    axis: "tags"                       # the freeform axis
+    config:
+      keywords:
+        python: ["python", "pandas", "django"]
+        french: ["bonjour", "merci"]
+
+aliases:
+  py-strong:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-opus-20250219"
+  # A force alias may also declare tags directly, bypassing the classifier:
+  py:
+    force: { tags: ["python"] }
+
+routers:
+  - name: "policy"
+    type: "policy"
+    config:
+      rules:
+        - when: { domain: "code_generation", tags: ["python"] }
+          target: "py-strong"
+        - when: {}
+          provider: "claude"

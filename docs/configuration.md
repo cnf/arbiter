@@ -29,10 +29,10 @@ providers:
     endpoint: "https://api.openai.com/v1"
     key: "${OPENAI_API_KEY}"
     models: ["gpt-4o"]
-  litellm:
+  openrouter:
     type: "openai"
-    endpoint: "${LITELLM_URL}"
-    key: "${LITELLM_API_KEY}"
+    endpoint: "${OPENROUTER_URL}"
+    key: "${OPENROUTER_API_KEY}"
     models: ["openrouter/free"]
   local:
     type: "ollama"                     # OpenAI-compatible transport, own identity
@@ -42,7 +42,7 @@ providers:
 classifiers:
   - name: "domain"
     type: "heuristic"
-    axis: "domain"                     # domain | difficulty | cost_class | capabilities
+    axis: "domain"                     # domain | difficulty | cost_class | capabilities | tags
     config:
       keywords: { code_generation: ["write", "refactor"] }
   - name: "difficulty"
@@ -56,6 +56,8 @@ aliases:
     force: {}
   coding:
     force: { domain: ["code_generation"] }
+  py:
+    force: { tags: ["python"] }         # a force-alias can declare tags too
   cheap-claude:                        # pinned: one concrete provider/model
     type: "pinned"
     provider: "claude"
@@ -64,11 +66,11 @@ aliases:
     type: "group"
     select: "random"                   # random | cheapest_input | cheapest_output | fastest
     members:
-      - { provider: "litellm", model: "openrouter/free" }
+      - { provider: "openrouter", model: "openrouter/free" }
       - { provider: "local", model: "llama2" }
 
 model_catalog:                         # feeds the cost/latency select strategies
-  - provider: "litellm"
+  - provider: "openrouter"
     model: "openrouter/free"
     input_cost_per_mtok: 0
     output_cost_per_mtok: 0
@@ -92,6 +94,8 @@ routers:
           target: "cheap-claude"       # a rule target may name an alias
         - when: { capabilities: ["vision"] }
           provider: "gpt4"             # ...or a literal provider/model
+        - when: { tags: ["python"] }   # freeform operator-owned labels; every
+          target: "cheap-claude"       #   listed tag must be present
         - when: { requires_input_modalities: ["image"] }
           provider: "claude"           # skipped unless claude accepts images
         - when: { request_kind: "title" }  # who's asking, not what it's about
@@ -112,7 +116,7 @@ routers:
       # fallback_provider: "gpt4"
 
 guardrails:
-  pre: []                              # system_prompt, rate_limit, prompt_rewrite
+  pre: []                              # system_prompt, rate_limit, prompt_rewrite, unpin
   post: []
 
 routing:
@@ -139,3 +143,10 @@ config reload are documented in **[docs/clients.md](clients.md)**. Guardrails
 are documented in **[docs/guardrails.md](guardrails.md)**. The event store,
 admin surface, and admin UI are documented in
 **[docs/observability.md](observability.md)**.
+
+**[docs/examples/](examples/)** holds one complete, loadable config per
+feature (heuristic/llm/decisions classifiers, `match`/`detect`, tags,
+guardrails, router aliases/group-select/policy rules, session affinity,
+storage/admin) — copy one whole file to try a feature in isolation, rather
+than assembling it from prose fragments. `arbiter.example.yaml` at the
+repository root remains the single everything-in-one-file reference.

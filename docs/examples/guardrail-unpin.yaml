@@ -1,0 +1,56 @@
+# Unpinning a conversation: let a user ask for a fresh routing decision
+# mid-conversation by typing a marker, instead of being stuck on the same
+# pinned provider for the rest of the session.
+#
+# `type: "unpin"` config:
+#   match:   required — the marker text.
+#   mode:    exact | prefix | line_* | paragraph_* | regex (default prefix)
+#   strip:   optional bool, default false — remove the marker before it goes
+#            upstream. Defaults to false so the guardrail never silently
+#            edits the prompt; the trade is that a stripped marker is also
+#            invisible to a classifier's `match:` block (pre-guardrails run
+#            before classification). Use strip: false (or a second,
+#            non-stripped marker) when you also want a classifier to route
+#            on the marker itself.
+#
+# Only the request's LAST message is checked, never conversation history —
+# the whole conversation is re-sent every turn, so a marker that lived in
+# history would keep matching and re-route forever. Checking only the newest
+# message makes the marker fire once: the turn it's typed, not again.
+#
+# `unpin` is deliberately not a classifier: its whole vocabulary is "clear the
+# pin", a pre-request mutation like system_prompt/prompt_rewrite. Anything
+# that produces routing SIGNALS belongs to a classifier's own `match:` block
+# (see docs/examples/classifier-request-kind-match.yaml).
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/guardrail-unpin.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-opus-20250219"]
+
+routers:
+  - name: "primary"
+    type: "simple"
+    config:
+      default_provider: "claude"
+
+guardrails:
+  pre:
+    - name: "reclassify"
+      type: "unpin"
+      config:
+        match: "#reclassify"         # the marker text
+        mode: "prefix"
+        strip: false                 # leave the marker visible to a classifier's match: block
+  post: []
+
+session_affinity:
+  header: "X-Session-Id"             # unpin only matters once a conversation is pinned
+  default_ttl: "25h"

@@ -102,7 +102,8 @@ type DecisionAnswer struct {
 	// Noul is the yes/no primitive's answer: the probability of "yes", 0..1.
 	// A Noul answer carries NO confidence field — a confident "no" and a
 	// confident "yes" are equally confident, so a caller that wants a gate
-	// derives one (max(p, 1-p), which never falls below 0.5).
+	// derives one (max(p, 1-p), which never falls below 0.5). This is what
+	// DecisionsClassifier does — see noulConfidence.
 	Noul float64 `json:"noul,omitempty"`
 
 	// Choice is the option the model picked, for a "choice" question. The

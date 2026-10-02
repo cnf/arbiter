@@ -275,7 +275,12 @@ func TestMigrationAddsRequestKindToAnExistingTable(t *testing.T) {
 		Model:            "@preset/deepseek-flash",
 		RoutingRationale: `explicit model "@preset/deepseek-flash" -> provider "openrouter"`,
 		RequestKind:      "title",
-		StatusCode:       502,
+		// tags_json also rides the addColumnIfMissing pass; the legacy table
+		// below predates it, so this insert is itself a guard that the
+		// column pass ran (an insert naming a missing column fails every
+		// time — the event-loss failure mode the loop warns about).
+		Tags:       []string{"python"},
+		StatusCode: 502,
 	})
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -288,6 +293,9 @@ func TestMigrationAddsRequestKindToAnExistingTable(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].RequestKind != "title" {
 		t.Fatalf("after migration rows = %+v, want one row with request_kind=title", rows)
+	}
+	if len(rows[0].Tags) != 1 || rows[0].Tags[0] != "python" {
+		t.Fatalf("after migration tags = %v, want [python]", rows[0].Tags)
 	}
 }
 
@@ -583,6 +591,109 @@ func TestCapabilitiesRoundTrip(t *testing.T) {
 	}
 	if detail.RequiredCapabilities != nil {
 		t.Errorf("detail: NULL capabilities read back as %v, want nil", detail.RequiredCapabilities)
+	}
+}
+
+// TestTagsRoundTrip is the store half of the tags axis: tags_json has the same
+// three meaningful states as required_capabilities_json, and all three must
+// survive a write and a read through BOTH projections. Tags get their own
+// column rather than sharing the capabilities one, so this also guards that
+// the two never bleed into each other.
+func TestTagsRoundTrip(t *testing.T) {
+	db := openMemory(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		trace string
+		tags  []string
+		raw   string // stored JSON text; "NULL" means SQL NULL
+	}{
+		{"tags-nil", nil, "NULL"},
+		{"tags-empty", []string{}, "[]"},
+		{"tags-present", []string{"python", "french"}, `["python","french"]`},
+	}
+	for _, tc := range cases {
+		ev := Event{
+			TraceID: tc.trace, Format: "openai", Provider: "p", Model: "m",
+			StatusCode: 200, Tags: tc.tags,
+			// capabilities deliberately set on the same row to prove the two
+			// columns are independent.
+			RequiredCapabilities: []string{"vision"},
+		}
+		if err := insertRequest(ctx, db, ev); err != nil {
+			t.Fatalf("insert %s: %v", tc.trace, err)
+		}
+		var raw sql.NullString
+		if err := db.QueryRowContext(ctx,
+			`SELECT tags_json FROM requests WHERE trace_id = ?`, tc.trace).Scan(&raw); err != nil {
+			t.Fatalf("read %s: %v", tc.trace, err)
+		}
+		if tc.raw == "NULL" {
+			if raw.Valid {
+				t.Errorf("%s stored %q, want SQL NULL", tc.trace, raw.String)
+			}
+			continue
+		}
+		if !raw.Valid || raw.String != tc.raw {
+			t.Errorf("%s stored %q (valid %v), want %s", tc.trace, raw.String, raw.Valid, tc.raw)
+		}
+	}
+
+	// Both projections: the list row and the detail row are separate scans
+	// with separate column lists, so a column dropped from either would
+	// silently flatten the distinction the write side keeps.
+	r := &Reader{db: db}
+	rows, err := r.ListRequests(ctx, RequestFilter{})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	byTrace := make(map[string]RequestRow, len(rows))
+	for _, row := range rows {
+		byTrace[row.TraceID] = row
+	}
+	for _, tc := range cases {
+		if _, ok := byTrace[tc.trace]; !ok {
+			t.Fatalf("ListRequests did not return %s", tc.trace)
+		}
+	}
+
+	if got := byTrace["tags-nil"].Tags; got != nil {
+		t.Errorf("list: NULL tags read back as %v, want nil", got)
+	}
+	if got := byTrace["tags-empty"].Tags; got == nil || len(got) != 0 {
+		t.Errorf("list: [] tags read back as %v (nil %v), want empty non-nil", got, got == nil)
+	}
+	if got := byTrace["tags-present"].Tags; len(got) != 2 || got[0] != "python" || got[1] != "french" {
+		t.Errorf("list: tags = %v, want [python french]", got)
+	}
+	// The capabilities column on the same rows must be untouched by tags.
+	if got := byTrace["tags-nil"].RequiredCapabilities; len(got) != 1 || got[0] != "vision" {
+		t.Errorf("list: capabilities = %v, want [vision] (tags must not clobber it)", got)
+	}
+
+	detail, ok, err := r.GetRequest(ctx, byTrace["tags-empty"].ID)
+	if err != nil || !ok {
+		t.Fatalf("GetRequest(empty) = ok %v, err %v", ok, err)
+	}
+	if detail.Tags == nil {
+		t.Error("detail: [] tags read back as nil, want empty non-nil")
+	}
+	detail, ok, err = r.GetRequest(ctx, byTrace["tags-present"].ID)
+	if err != nil || !ok {
+		t.Fatalf("GetRequest(present) = ok %v, err %v", ok, err)
+	}
+	if len(detail.Tags) != 2 || detail.Tags[0] != "python" || detail.Tags[1] != "french" {
+		t.Errorf("detail: tags = %v, want [python french]", detail.Tags)
+	}
+	if len(detail.RequiredCapabilities) != 1 || detail.RequiredCapabilities[0] != "vision" {
+		t.Errorf("detail: capabilities = %v, want [vision] (tags must not clobber it)", detail.RequiredCapabilities)
+	}
+	detail, ok, err = r.GetRequest(ctx, byTrace["tags-nil"].ID)
+	if err != nil || !ok {
+		t.Fatalf("GetRequest(nil) = ok %v, err %v", ok, err)
+	}
+	if detail.Tags != nil {
+		t.Errorf("detail: NULL tags read back as %v, want nil", detail.Tags)
 	}
 }
 

@@ -680,6 +680,34 @@ func TestTranscriptShowsClassifierSignals(t *testing.T) {
 	}
 }
 
+func TestTranscriptShowsTagAxis(t *testing.T) {
+	now := time.Now().UTC()
+	events := []store.Event{
+		{TraceID: "tagged", SessionKey: "tag-axis", Kind: "client", Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now, Domain: "code_generation", Tags: []string{"python", "french"}},
+		// A classification that named ONLY tags, no axis and no capability.
+		// Tags must count as a value like capabilities do, or this turn
+		// renders as "no signals matched" and hides the tags it found.
+		{TraceID: "tag-only", SessionKey: "tag-axis", Kind: "client", Provider: "p", Model: "m", StatusCode: 200,
+			Ts: now.Add(time.Second), RequiredCapabilities: []string{}, Tags: []string{"python"}},
+	}
+	h, _ := newSeededHandler(t, events...)
+	body := serve(t, h, "GET", "/admin/ui/session?key=tag-axis", false).Body.String()
+
+	// Exact rendered span, in the classifier-verdict axes row.
+	if !strings.Contains(body, `<span class="axis">tags=python, french</span>`) {
+		t.Errorf("tags axis span not rendered exactly; body lacks the expected span")
+	}
+	// A tags-only classification must render as present, not as the empty
+	// label — the same rule the capability-only case follows.
+	if !strings.Contains(body, `<span class="axis">tags=python</span>`) {
+		t.Error("tags-only classification did not render its tags as a standalone value")
+	}
+	if strings.Count(body, "classified; no signals matched") != 0 {
+		t.Errorf("tag turns rendered the empty label %d times, want 0 (tags count as a value)", strings.Count(body, "classified; no signals matched"))
+	}
+}
+
 // #79 phase 4: the effort the CLIENT requested is a request FACT and belongs
 // in the "routing & model" meta-grid next to alias/model/provider — NOT in the
 // classifier-verdict `axes` span (domain=/difficulty=/cost_class=), which is

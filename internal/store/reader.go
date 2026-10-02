@@ -194,14 +194,17 @@ type RequestRow struct {
 	// RequiredCapabilities is nil when classification did not produce a result,
 	// and an empty non-nil slice when classification found no capabilities.
 	RequiredCapabilities []string `json:"required_capabilities"`
-	InputTokens          int64    `json:"input_tokens"`
-	OutputTokens         int64    `json:"output_tokens"`
-	CostUSD              float64  `json:"cost_usd"`
-	LatencyMs            int64    `json:"latency_ms"`
-	StatusCode           int64    `json:"status_code"`
-	Error                string   `json:"error,omitempty"`
-	Stream               bool     `json:"stream"`
-	ConfigEpoch          string   `json:"config_epoch,omitempty"`
+	// Tags is the freeform operator-owned label set (see types.Signals.Tags),
+	// with the same nil-vs-empty encoding as RequiredCapabilities.
+	Tags         []string `json:"tags"`
+	InputTokens  int64    `json:"input_tokens"`
+	OutputTokens int64    `json:"output_tokens"`
+	CostUSD      float64  `json:"cost_usd"`
+	LatencyMs    int64    `json:"latency_ms"`
+	StatusCode   int64    `json:"status_code"`
+	Error        string   `json:"error,omitempty"`
+	Stream       bool     `json:"stream"`
+	ConfigEpoch  string   `json:"config_epoch,omitempty"`
 	// Kind is "client" (real traffic, the default) or one of Arbiter's own
 	// internal request kinds ("classifier", and later "subagent") — see
 	// store.Event.Kind.
@@ -278,7 +281,7 @@ const requestRowColumns = `
     id, trace_id, ts, CAST(ts AS TEXT), session_key, format, provider, model, actual_model, alias_used,
     routing_rationale, domain, difficulty, cost_class, input_tokens, output_tokens,
     cost_usd, latency_ms, status_code, error, stream, config_epoch, kind, request_kind, arrival_ts,
-    CAST(arrival_ts AS TEXT), required_capabilities_json, client_effort`
+    CAST(arrival_ts AS TEXT), required_capabilities_json, tags_json, client_effort`
 
 // ListRequests returns requests newest first, narrowed by f.
 //
@@ -443,6 +446,7 @@ FROM requests WHERE id = ?`
 		difficulty   sql.NullString
 		costCl       sql.NullString
 		capabilities sql.NullString
+		tags         sql.NullString
 		clientEffort sql.NullString
 		errText      sql.NullString
 		epoch        sql.NullString
@@ -458,7 +462,7 @@ FROM requests WHERE id = ?`
 		&d.ID, &d.TraceID, &tsRaw, &d.TsRaw, &session, &d.Format, &d.Provider, &d.Model, &actual, &alias,
 		&d.RoutingRationale, &domain, &difficulty, &costCl, &d.InputTokens, &d.OutputTokens,
 		&d.CostUSD, &d.LatencyMs, &d.StatusCode, &errText, &d.Stream, &epoch, &d.Kind, &reqKind,
-		&arrivalTs, &arrivalTsRaw, &capabilities, &clientEffort,
+		&arrivalTs, &arrivalTsRaw, &capabilities, &tags, &clientEffort,
 		&conf, &d.CacheReadTokens, &d.CacheWriteTokens, &tools, &client, &headers)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RequestDetail{}, false, nil
@@ -482,6 +486,11 @@ FROM requests WHERE id = ?`
 			// A malformed legacy value degrades to unavailable signals rather
 			// than failing the entire transcript detail request.
 			d.RequiredCapabilities = nil
+		}
+	}
+	if tags.Valid {
+		if err := json.Unmarshal([]byte(tags.String), &d.Tags); err != nil {
+			d.Tags = nil
 		}
 	}
 	d.Error = errText.String
@@ -521,13 +530,14 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 		arrivalTs    interface{}
 		arrivalTsRaw sql.NullString
 		capabilities sql.NullString
+		tags         sql.NullString
 		clientEffort sql.NullString
 	)
 	if err := rows.Scan(&s.ID, &s.TraceID, &tsRaw, &s.TsRaw, &session, &s.Format, &s.Provider,
 		&s.Model, &actual, &alias, &s.RoutingRationale, &domain, &difficulty, &costCl,
 		&s.InputTokens, &s.OutputTokens, &s.CostUSD, &s.LatencyMs, &s.StatusCode,
 		&errText, &s.Stream, &epoch, &s.Kind, &reqKind, &arrivalTs, &arrivalTsRaw, &capabilities,
-		&clientEffort); err != nil {
+		&tags, &clientEffort); err != nil {
 		return RequestRow{}, fmt.Errorf("scan request row: %w", err)
 	}
 	s.Ts = formatTime(tsRaw)
@@ -543,6 +553,11 @@ func scanRequestRow(rows *sql.Rows) (RequestRow, error) {
 	if capabilities.Valid {
 		if err := json.Unmarshal([]byte(capabilities.String), &s.RequiredCapabilities); err != nil {
 			s.RequiredCapabilities = nil
+		}
+	}
+	if tags.Valid {
+		if err := json.Unmarshal([]byte(tags.String), &s.Tags); err != nil {
+			s.Tags = nil
 		}
 	}
 	s.Error = errText.String

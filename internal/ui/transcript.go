@@ -163,7 +163,7 @@ func (s signalState) HasValues() bool { return s == signalPresent }
 // and hid the capability it had found.
 func signalStateFor(row store.RequestRow, confidence float64) signalState {
 	if row.Domain != "" || row.Difficulty != "" || row.CostClass != "" ||
-		len(row.RequiredCapabilities) > 0 {
+		len(row.RequiredCapabilities) > 0 || len(row.Tags) > 0 {
 		return signalPresent
 	}
 	if row.HasClassification() || confidence > 0 {
@@ -191,7 +191,12 @@ type transcriptInspector struct {
 	Difficulty           string
 	CostClass            string
 	RequiredCapabilities []string
-	Confidence           float64
+	// Tags is the freeform operator-owned label set (see types.Signals.Tags).
+	// Rendered in the same axes span as the other classifier verdicts: like
+	// capabilities it is classification OUTPUT, not a client-sent request
+	// fact (those live in the "routing & model" meta-grid).
+	Tags       []string
+	Confidence float64
 
 	// Signals is the one description of what the classification produced;
 	// ShowSignals is whether the section belongs on the pane at all. Both are
@@ -641,6 +646,7 @@ func (h *Handler) buildTurn(r *http.Request, row store.RequestRow, seq int, page
 			Difficulty:           row.Difficulty,
 			CostClass:            row.CostClass,
 			RequiredCapabilities: row.RequiredCapabilities,
+			Tags:                 row.Tags,
 		},
 	}
 	if turn.Badge == "" {

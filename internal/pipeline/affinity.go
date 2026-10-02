@@ -248,3 +248,16 @@ func (s *affinityStore) forget(ctx context.Context, sessionKey, promptHash strin
 		_ = s.pinner.DeletePin(ctx, sessionKey, promptHash)
 	}
 }
+
+// ForgetPin implements guardrail.PinForgetter — it drops one prompt family's
+// pin so the next resolveRoute for that family re-routes instead of reusing
+// the pin. Exported because a guardrail (in another package) drives it; the
+// in-package expiry paths keep calling forget directly.
+//
+// Best-effort by design: a persistence error is swallowed the same way save
+// swallows one, because failing a client request over a pin that could not be
+// cleared would be the worse outcome — the cache entry is already gone, so
+// this process re-routes regardless.
+func (s *affinityStore) ForgetPin(ctx context.Context, sessionKey, promptHash string) {
+	s.forget(ctx, sessionKey, promptHash)
+}

@@ -1,0 +1,96 @@
+# Decision-model classification: ask a decision model (TypeSafe's System One
+# / Jev) typed questions in ONE call, instead of asking a chat model for one
+# word. Nothing is parsed, so an off-list answer is impossible, and every
+# answer carries a real probability.
+#
+# A `type: "decisions"` classifier's `config:` takes:
+#   alias/model:  exactly one — same two forms as an "llm" classifier's, but
+#                 the target must resolve to a provider of type "decisions"
+#                 (a chat provider there is a config-load error).
+#   question:     required — ALL asked in one call. Each question declares:
+#     axis:         which Signals axis it fills (required; two questions may
+#                   not share an axis).
+#     type:         "choice", "noul", or "score".
+#     labels:       "choice" only — same shapes as an llm classifier's.
+#     escape:       "choice" only — optional, names the label meaning "no
+#                   option fits"; sent under its OWN name. With no escape
+#                   configured, an `other` option is added instead.
+#     value:        "noul" only — the axis value applied when the model
+#                   answers yes (probability > 0.5); "no" fills nothing.
+#     levels:       "score" only — an ORDERED list, low -> high. The answer
+#                   is a fractional position, snapped to the nearest level.
+#     instructions: optional — what is being decided between.
+#   fallback:     required — another classifier; MAY name an "llm" one,
+#                 unlike an llm classifier's own fallback.
+#   timeout:      optional, defaults to 10s.
+#
+# Each answer's probability becomes that axis's confidence
+# (Signals.AxisConfidence), so the merge scores every axis on its own number
+# rather than one figure for the whole call.
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/classifier-decisions.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-haiku-20250307"]
+  openrouter-decisions:                   # same vendor, a different API surface
+    type: "decisions"
+    endpoint: "https://openrouter.ai/api/alpha/decisions"   # the COMPLETE URL
+    key: "${OPENROUTER_API_KEY}"
+    models: ["~typesafe/jev-latest"]
+
+aliases:
+  jev:
+    type: "pinned"
+    provider: "openrouter-decisions"
+    model: "~typesafe/jev-latest"
+
+routers:
+  - name: "primary"
+    type: "simple"
+    config:
+      default_provider: "claude"
+
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config: { keywords: { code_generation: ["write", "refactor"] } }
+
+  - name: "routing-decisions"
+    type: "decisions"
+    only_if_unset: true              # skip unless every axis it fills is still empty
+    config:
+      alias: "jev"                        # routes the decision call (or model: "or-decisions/~typesafe/jev-latest")
+      questions:                          # ALL asked in ONE call
+        domain:
+          axis: "domain"                  # which Signals axis it fills
+          type: "choice"                  # "choice", "noul" or "score"
+          labels:                         # bare names, or name -> rubric
+            code_generation: "wants code written, modified or reviewed."
+            reasoning: "wants something explained or debugged."
+            chat: "small talk with no artifact expected."
+            none: "none of the other categories apply."
+          escape: "none"                  # sent as the `other` option
+          instructions: "Pick the category that best describes the request."
+        cost_class:
+          axis: "cost_class"
+          type: "score"                   # ordered rubric, no labels/value
+          levels:                         # low -> high; order IS the data
+            - name: "budget"
+              description: "a cheap model is fine."
+            - name: "quality_first"
+              description: "spend more for a better answer."
+          instructions: "How much is this request worth spending on?"
+        is_urgent:
+          axis: "difficulty"
+          type: "noul"                    # bare yes/no, no labels
+          value: "hard"                   # applied to the axis on "yes"; "no" leaves it unset
+          instructions: "Does this request have a hard deadline or urgent tone?"
+      fallback: "domain-heuristic"        # may name an `llm` classifier too
+      timeout: "5s"                       # optional, defaults to 10s

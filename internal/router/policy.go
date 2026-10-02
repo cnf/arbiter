@@ -19,6 +19,15 @@ type PolicyCondition struct {
 	Capabilities []string // every entry must appear in signals.RequiredCapabilities
 	CostClass    string
 
+	// Tags matches signals.Tags as a SUBSET requirement, exactly like
+	// Capabilities: every listed tag must be present. An unset Tags is a
+	// wildcard. Tags are freeform operator-owned labels Arbiter assigns no
+	// meaning to — distinct from Capabilities ("the model must be able to do
+	// X"); the two are matched against separate signal fields and never
+	// conflated. A tag selects which rules a request hits; it never filters
+	// which models are viable (that is Capabilities/requires_input_modalities).
+	Tags []string
+
 	// RequestKind matches types.Signals.RequestKind exactly ("title", later
 	// "subagent"). Unlike Domain/Difficulty/CostClass this is not a contested
 	// routing axis — it carries no confidence and no force-alias can
@@ -83,6 +92,22 @@ func (c PolicyCondition) Matches(sig types.Signals) bool {
 			return false
 		}
 	}
+	// Tags are a subset requirement exactly like capabilities: every listed
+	// tag must be present, and an unset Tags field is a wildcard (the loop
+	// does not run). Tags and capabilities are matched against their OWN
+	// signal set — the two are never conflated, see types.Signals.Tags.
+	for _, want := range c.Tags {
+		found := false
+		for _, have := range sig.Tags {
+			if want == have {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
 	return true
 }
 
@@ -98,6 +123,9 @@ func (c PolicyCondition) String() string {
 	}
 	if len(c.Capabilities) > 0 {
 		parts = append(parts, fmt.Sprintf("capabilities=%v", c.Capabilities))
+	}
+	if len(c.Tags) > 0 {
+		parts = append(parts, fmt.Sprintf("tags=%v", c.Tags))
 	}
 	if c.CostClass != "" {
 		parts = append(parts, fmt.Sprintf("cost_class=%q", c.CostClass))

@@ -1,0 +1,79 @@
+# Matching a request's own text (`match`), identifying a title-generation
+# request by its system prompt rather than classifying its content.
+#
+# A classifier's input is normally one user message — but some requests are
+# identified by text that lives somewhere else: a title generator's system
+# prompt carries its signature, and the user message it sees is the
+# conversation being titled, which looks like ordinary chat.
+#
+# `match` searches the request's OWN text instead, on ANY classifier type:
+#   match:        required for the block — a pattern, a list of patterns
+#                 (OR-ed), or {mode, pattern}.
+#     mode:       exact | prefix | line_* | paragraph_* | regex (default prefix)
+#     pattern:    the text to look for.
+#   value:        the axis value a hit fills. One of value/request_kind is
+#                 required.
+#   request_kind: the request KIND a hit records ("title", later "subagent").
+#                 Not an axis: no confidence, no force-alias target. Same
+#                 spelling as a policy rule's `when: {request_kind: ...}`.
+#   where:        system | messages | all (default system).
+#   decisive:     optional bool — a HIT ends classification, so classifiers
+#                 declared after this one do not run. A MISS falls through
+#                 normally.
+#
+# The three patterns below are the REAL prompts of Hermes, opencode, and
+# Claude Code CLI's title generators (see docs/routing.md#matching-a-requests-own-text-match
+# for how they were found and why a loose pattern is dangerous here).
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/classifier-request-kind-match.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-opus-20250219", "claude-3-haiku-20250307"]
+
+classifiers:
+  - name: "request-kind"
+    type: "heuristic"
+    config:
+      match:                            # OR-ed; any hit wins
+        # Hermes — "You name chat sessions. Given the user's opening message..."
+        - mode: "regex"
+          pattern: "(?i)^\\s*You name chat sessions\\."
+        # opencode — "You are a title generator. You output ONLY a thread title."
+        - mode: "regex"
+          pattern: "(?i)^\\s*You are a title generator\\."
+        # Claude Code CLI — buried in the system prompt, so anchored on the
+        # instruction itself rather than on the start of the block.
+        - mode: "regex"
+          pattern: "(?i)Generate a concise, sentence-case title"
+      request_kind: "title"             # the request kind a hit records
+      decisive: true                    # a hit stops classification here
+
+  - name: "domain"
+    type: "heuristic"
+    axis: "domain"
+    config:
+      keywords:
+        code_generation: ["write", "refactor"]
+
+aliases:
+  cheap-claude:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku-20250307"
+
+routers:
+  - name: "policy"
+    type: "policy"
+    config:
+      rules:
+        - when: { request_kind: "title" }  # title-gen traffic never needs a big model
+          target: "cheap-claude"
+        - when: {}
+          provider: "claude"

@@ -1,0 +1,79 @@
+# LLM-backed classification: ask an upstream model to classify, instead of
+# guessing from keywords.
+#
+# A `type: "llm"` classifier's `config:` takes:
+#   alias/model:  exactly one — where the classification call goes.
+#     alias:      a configured alias (a group alias's fallback siblings apply
+#                 to it too).
+#     model:      a declared "provider/model" name, addressed directly with
+#                 no alias — the form to use when this classifier is ITSELF a
+#                 fallback target for another classifier.
+#   labels:       required — bare names, or a map of name -> description. The
+#                 description is the category's BOUNDARY and is the single
+#                 biggest lever on accuracy.
+#   escape:       optional — the label meaning "none of these apply". Its
+#                 verdict fills NO axis, so a policy router's rules simply
+#                 don't match and a chained router takes over.
+#   fallback:     required — another (non-llm) classifier to defer to
+#                 whenever the call fails outright.
+#   timeout:      optional, defaults to 10s.
+#
+# `only_if_unset` (classifier-level, not inside `config:`) skips a
+# model-backed classifier entirely — no upstream call, no cost — unless its
+# axis is still empty after every classifier declared before it. That's the
+# "cheap first, model only if needed" shape below: the heuristic always runs,
+# and the llm classifier fires only when the heuristic left `domain` empty.
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/classifier-llm.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-haiku-20250307"]
+
+aliases:
+  cheap-classifier:
+    type: "pinned"
+    provider: "claude"
+    model: "claude-3-haiku-20250307"
+
+classifiers:
+  - name: "domain-heuristic"
+    type: "heuristic"
+    config:
+      keywords: { code_generation: ["write", "refactor"] }
+
+  - name: "domain-llm"
+    type: "llm"
+    axis: "domain"                      # only "domain" is built today
+    only_if_unset: true                 # skip unless the heuristic left domain empty
+    config:
+      alias: "cheap-classifier"
+      labels:                           # bare names, or name -> rubric description
+        code_generation: >-
+          the user wants code written, modified, refactored, or reviewed —
+          an implementation task with a concrete code artifact as the answer.
+        reasoning: >-
+          the user wants something explained, analyzed or debugged — an
+          answer in prose, with no code artifact as the deliverable.
+        chat: "greeting or small talk with no artifact expected."
+        none: "none of the other categories apply."
+      escape: "none"                    # this label's verdict fills no axis
+      instructions: "Pick the category that best describes the request."  # optional
+      fallback: "domain-heuristic"      # another classifier, declared anywhere in this list
+      timeout: "5s"                     # optional, defaults to 10s
+
+routers:
+  - name: "policy"
+    type: "policy"
+    config:
+      rules:
+        - when: { domain: "code_generation" }
+          target: "cheap-classifier"
+        - when: {}
+          provider: "claude"

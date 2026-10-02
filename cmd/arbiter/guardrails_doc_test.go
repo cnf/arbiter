@@ -43,6 +43,7 @@ func TestGuardrailDocTypesAreBuildable(t *testing.T) {
 		"system_prompt":  {"prompt": "test"},
 		"rate_limit":     {"per_minute": 1},
 		"prompt_rewrite": {"match": "test", "mode": "prefix", "action": "strip"},
+		"unpin":          {"match": "#reclassify"},
 	}
 
 	for _, m := range matches {

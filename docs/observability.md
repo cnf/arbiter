@@ -80,6 +80,9 @@ storage:
   path: "arbiter.db"
 ```
 
+A complete, loadable config (`path`, `capture_content`, `content_ttl`) is in
+**[docs/examples/storage-event-store.yaml](examples/storage-event-store.yaml)**.
+
 The writer is opened once at startup and shared across config reloads, so
 `storage.path` is fixed for the process lifetime (a reload changing it is
 ignored for the store; every other config change still applies). Streams record
@@ -125,6 +128,9 @@ presence-only gate:
 admin:
   forward_auth_header: "X-Forwarded-User"
 ```
+
+A complete, loadable config (the gate plus the event store it reads from) is
+in **[docs/examples/admin-surface.yaml](examples/admin-surface.yaml)**.
 
 When set, a request to `/admin/*` without that header gets **401**; when unset,
 `/admin/*` is ungated (a development convenience). Arbiter checks only that

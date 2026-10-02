@@ -54,6 +54,7 @@ trip (transcript.js moves the full text into the content modal). */}}
           {{if .Difficulty}}<span class="axis">difficulty={{.Difficulty}}</span>{{end}}
           {{if .CostClass}}<span class="axis">cost_class={{.CostClass}}</span>{{end}}
           {{if .RequiredCapabilities}}<span class="axis">capabilities={{range $i, $cap := .RequiredCapabilities}}{{if $i}}, {{end}}{{$cap}}{{end}}</span>{{end}}
+          {{if .Tags}}<span class="axis">tags={{range $i, $t := .Tags}}{{if $i}}, {{end}}{{$t}}{{end}}</span>{{end}}
         {{else}}
           <span class="axis none">{{.Inspector.Signals.Label}}</span>
         {{end}}

@@ -239,6 +239,8 @@ func (p *Pipeline) applyForceAlias(req *types.NormalizedRequest, sig types.Signa
 			sig.CostClass = values[0]
 		case classifier.AxisCapabilities:
 			sig.RequiredCapabilities = append([]string{}, values...)
+		case classifier.AxisTags:
+			sig.Tags = append([]string{}, values...)
 		}
 	}
 	// An alias-declared request kind OVERRIDES what classification produced:

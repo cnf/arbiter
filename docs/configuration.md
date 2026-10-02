@@ -56,6 +56,8 @@ aliases:
     force: {}
   coding:
     force: { domain: ["code_generation"] }
+  py:
+    force: { tags: ["python"] }         # a force-alias can declare tags too
   cheap-claude:                        # pinned: one concrete provider/model
     type: "pinned"
     provider: "claude"

@@ -385,6 +385,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateTagsVocabulary(); err != nil {
+		return err
+	}
+
 	if err := c.validateModelCatalog(); err != nil {
 		return err
 	}

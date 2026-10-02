@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -612,4 +613,198 @@ func containsString(xs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// validateTagsVocabulary checks that every tag a policy router's `when:
+// {tags: [...]}` rule requires is actually producible by SOME classifier or
+// force-alias. Tags are deliberately freeform — Arbiter assigns them no
+// meaning — but a rule naming a tag nothing can ever emit is not creative
+// freedom, it is a typo: the rule silently never matches on that condition,
+// which is exactly the class of mistake this package exists to catch at load
+// time rather than let the operator discover it by a routing decision that
+// never happens.
+//
+// This is necessarily a conservative (false-negative-prone, never
+// false-positive) check: a heuristic/LLM/decisions-choice classifier always
+// declares its tag vocabulary up front (keywords, a match block's `value`, or
+// labels), so every tag they can emit is enumerable from config alone — no
+// request needs to run. A classifier's "escape" verdict never produces a tag
+// (additive axes add nothing on escape; see fillAxis's doc in
+// internal/classifier), so it contributes no vocabulary.
+func (c *Config) validateTagsVocabulary() error {
+	required := requiredTags(c.Routers)
+	if len(required) == 0 {
+		return nil
+	}
+	producible := producibleTags(c.Classifiers, c.Aliases)
+	for _, want := range required {
+		if !producible[want] {
+			return arbitererrors.NewConfigError(fmt.Sprintf(
+				"a `when: {tags: [...]}` rule requires tag %q, but no classifier or force-alias can ever produce it (declared tags: %v) — this is almost always a typo", want, sortedTagList(producible)), nil)
+		}
+	}
+	return nil
+}
+
+// requiredTags collects every tag named by any policy router's `when:
+// {tags: [...]}` rule, across every router (not just the ones actually
+// reachable — a rule behind an earlier catch-all is still a config the
+// operator wrote and almost certainly wants validated, not silently ignored
+// because another rule would shadow it).
+func requiredTags(routers []RouterConfig) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, rc := range routers {
+		if rc.Type != "policy" {
+			continue
+		}
+		rules, _ := rc.Config["rules"].([]interface{})
+		for _, item := range rules {
+			rule, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			when, ok := rule["when"].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			tags, ok := when["tags"].([]interface{})
+			if !ok {
+				continue
+			}
+			for _, t := range tags {
+				if s, ok := t.(string); ok {
+					add(s)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// producibleTags enumerates every tag value SOME classifier or force-alias
+// can emit, read straight from config without building or running anything:
+//
+//   - A heuristic classifier filling "tags" (or capabilities, irrelevant
+//     here): every keyword GROUP NAME is a producible tag — the group name is
+//     the value HeuristicClassifier.Classify assigns on a hit — plus a
+//     match block's "value", when present.
+//   - An "llm" classifier filling "tags": every declared label name.
+//   - A "decisions" classifier: every "choice" question on the tags axis
+//     contributes its label names; every "noul" question on the tags axis
+//     contributes its single "value"; a "score" question cannot fill tags
+//     today (see fillAxis — score always writes an axis via the scalar
+//     switch) and is not walked here. An escape verdict adds nothing (see
+//     this function's own doc) so escape labels are deliberately excluded.
+//   - A force-alias (`force: {tags: [...]}`): every listed value.
+//
+// Malformed config (wrong types, missing fields) is not re-validated here —
+// every shape this reads is independently checked elsewhere (validateLLMClassifiers,
+// validateDecisionsClassifiers, validateClassifierMatch, validateAliases) and
+// those run as part of the same Validate() call; this function only needs to
+// not panic on a shape another check will already reject, which `, ok :=`
+// throughout guarantees.
+func producibleTags(ccs []ClassifierConfig, aliases map[string]AliasConfig) map[string]bool {
+	out := map[string]bool{}
+	for _, cc := range ccs {
+		switch cc.Type {
+		case "heuristic":
+			if cc.Axis != types.AxisTagsName {
+				continue
+			}
+			if kws, _ := stringListMapKeys(cc.Config, "keywords", "detectors"); kws != nil {
+				for _, k := range kws {
+					out[k] = true
+				}
+			}
+			if m, ok := cc.Config["match"].(map[string]interface{}); ok {
+				if v, ok := m["value"].(string); ok && v != "" {
+					out[v] = true
+				}
+			}
+			if v, ok := cc.Config["value"].(string); ok && v != "" {
+				out[v] = true
+			}
+		case "llm":
+			if cc.Axis != types.AxisTagsName {
+				continue
+			}
+			labels, _ := types.ParseLabels(cc.Config["labels"])
+			for _, l := range labels {
+				out[l.Name] = true
+			}
+		case "decisions":
+			raw, _ := cc.Config["questions"].(map[string]interface{})
+			for _, rawQ := range raw {
+				q, ok := rawQ.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if axis, _ := q["axis"].(string); axis != types.AxisTagsName {
+					continue
+				}
+				qtype, _ := q["type"].(string)
+				if qtype == "" {
+					qtype = types.DecisionChoice
+				}
+				switch qtype {
+				case types.DecisionNoul:
+					if v, ok := q["value"].(string); ok && v != "" {
+						out[v] = true
+					}
+				case types.DecisionChoice:
+					labels, _ := types.ParseLabels(q["labels"])
+					for _, l := range labels {
+						out[l.Name] = true
+					}
+				}
+			}
+		}
+	}
+	for _, a := range aliases {
+		for _, v := range a.Force[types.AxisTagsName] {
+			out[v] = true
+		}
+	}
+	return out
+}
+
+// stringListMapKeys returns the GROUP NAMES of a classifier's `keywords`
+// (or `detectors`) block — the values a hit fills the axis with — without
+// needing the keyword lists themselves. Mirrors stringListMap's key lookup
+// (cmd/arbiter/guardrail.go) and its "try keywords, then detectors" fallback,
+// duplicated here rather than shared because that helper lives in `main` and
+// this package must not import it.
+func stringListMapKeys(cfg map[string]interface{}, keys ...string) ([]string, error) {
+	for _, k := range keys {
+		raw, ok := cfg[k]
+		if !ok {
+			continue
+		}
+		m, ok := raw.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("%s must be a map of group -> keywords", k)
+		}
+		out := make([]string, 0, len(m))
+		for group := range m {
+			out = append(out, group)
+		}
+		return out, nil
+	}
+	return nil, nil
+}
+
+func sortedTagList(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

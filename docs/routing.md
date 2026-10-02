@@ -380,6 +380,13 @@ other. The distinction is the contract: `capabilities` means "the model must be
 able to do X" (strict, and consumable by `requires_input_modalities`), while a
 tag asserts nothing and only selects which rules a request hits.
 
+A tag named in a `when: {tags: [...]}` rule must be producible by SOME
+classifier or force-alias — a heuristic's keyword group name, an `llm`/
+`choice`-question label, a `noul` question's `value`, or a `force: {tags:
+[...]}` entry. A tag nothing can ever emit is rejected at config load: it is
+almost always a typo, and the alternative (the rule silently never matching on
+that condition) is a far worse place to discover it.
+
 Modalities come from the cost/latency catalog (`input_modalities` on a
 `model_catalog` row). A model with **no catalog row, or a row that states
 nothing about modalities, does not satisfy the requirement** — unknown is not

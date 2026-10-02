@@ -91,17 +91,9 @@ inflate token counts, defeat prompt caching across clients, and can silently
 override your own instructions. The `prompt_rewrite` guardrail matches and
 strips, replaces, or blocks that text.
 
-```yaml
-guardrails:
-  pre:
-    - name: "strip-opencode-preamble"
-      type: "prompt_rewrite"
-      config:
-        match: "You are opencode, the best coding agent"
-        mode: "prefix"          # exact | prefix | line_exact | line_prefix | paragraph_exact | paragraph_prefix | regex
-        action: "strip"         # strip | replace | block | strip_paragraph
-        where: ["system"]       # system | messages | all
-```
+A complete, loadable config showing `strip`, `replace`, and `block` side by
+side is in
+**[docs/examples/guardrail-prompt-rewrite.yaml](examples/guardrail-prompt-rewrite.yaml)**.
 
 **Matching is on the text, not on a client identity.** A per-client key would let
 you write "this client injects X"; matching X directly is simpler and survives a
@@ -174,18 +166,9 @@ preview, before you write a rule for it. See
 A pinned conversation is served by the same provider/model on every turn, which
 is what keeps its prompt cache warm — but it also means classification and rule
 matching are skipped entirely for the rest of the session. `unpin` lets a user
-ask for a fresh routing decision mid-conversation by typing a marker:
-
-```yaml
-guardrails:
-  pre:
-    - name: "reclassify"
-      type: "unpin"
-      config:
-        match: "#reclassify"     # the marker text
-        mode: "prefix"           # exact | prefix | line_* | paragraph_* | regex (default: prefix)
-        strip: false             # remove the marker before it goes upstream (default: false)
-```
+ask for a fresh routing decision mid-conversation by typing a marker. A
+complete, loadable config is in
+**[docs/examples/guardrail-unpin.yaml](examples/guardrail-unpin.yaml)**.
 
 When the request's **last message** carries the marker, Arbiter clears the
 conversation's affinity pin. The request then falls through to normal

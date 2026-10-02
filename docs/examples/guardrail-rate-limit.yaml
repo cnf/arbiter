@@ -1,0 +1,43 @@
+# Rate limiting: per-minute / per-day request caps.
+#
+# `type: "rate_limit"` config:
+#   per_minute:  requests allowed per rolling minute. 0 means unlimited, and
+#                a 0 window is not even queried.
+#   per_day:     requests allowed per rolling day. Same 0-means-unlimited rule.
+#
+# Counting deliberately includes Arbiter's OWN internal requests (classifier
+# and title-generation calls) — a cap that mirrors an upstream's published
+# limit has to see them. The counters are seeded from the event store when
+# one is configured (storage.path below), which is what makes a cap survive
+# a config reload or a restart; with no store, the cap counts only what this
+# process has seen since it started.
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/guardrail-rate-limit.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-opus-20250219"]
+
+routers:
+  - name: "primary"
+    type: "simple"
+    config:
+      default_provider: "claude"
+
+guardrails:
+  pre:
+    - name: "rl"
+      type: "rate_limit"
+      config:
+        per_minute: 60               # 0 means unlimited
+        per_day: 1000
+  post: []
+
+storage:
+  path: "arbiter.db"                 # seeds the counters across reloads/restarts

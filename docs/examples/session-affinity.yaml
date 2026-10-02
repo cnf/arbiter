@@ -1,0 +1,63 @@
+# Session affinity: once a request is routed, its conversation is pinned to
+# whichever provider/model actually served it, so later turns reuse the same
+# upstream (and its warm prompt cache) instead of re-routing every turn. See
+# docs/clients.md#session-affinity for the full derivation and persistence
+# story — this file is the config surface only.
+#
+# The pin is keyed by, in order:
+#   1. The inbound header named by `header` below, when the client sends one.
+#      This is the supported path for a client that cares: cheaper, exact,
+#      and immune to the two failure modes of the fallback key.
+#   2. Otherwise a hash of system-prompt + first user turn, computed before
+#      pre-guardrails run and excluding the first assistant reply (see
+#      docs/clients.md for why both exclusions are load-bearing). A
+#      conversation that opens with too little text is never pinned, on any
+#      turn.
+#
+# `default_ttl` is deliberately sized to a WORKING SESSION, not a cache
+# window: a short idle timeout drops the pin the moment a user pauses to
+# read or run a build, and the next turn re-routes to a cold provider at full
+# price. A per-provider `cache_ttl` (see the `claude` provider below)
+# overrides it for pins served by that provider, e.g. to match its own
+# prompt-cache expiry.
+#
+# `no_pin` excludes specific request_kind values (an alias's declared
+# request_kind, or the classifier's — see
+# docs/examples/router-alias-request-kind.yaml) from ever being pinned. The
+# pin key already separates every kind from every other, so this is a cost
+# knob (skip a write that would never be read, e.g. a one-shot title call
+# that never repeats a route), not a correctness fix — nothing collides even
+# with `no_pin` left at its default `[]`.
+#
+# Pins persist across a config reload and a restart when a store is
+# configured (see docs/observability.md for the event-store block); without
+# one, pins live in memory only.
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/session-affinity.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-opus-20250219", "claude-3-haiku-20250307"]
+    cache_ttl: "1h"                  # overrides session_affinity.default_ttl for this provider's pins
+
+aliases:
+  title:
+    force: {}
+    request_kind: "title"            # a one-shot call that never repeats a route
+
+routers:
+  - name: "primary"
+    type: "simple"
+    config:
+      default_provider: "claude"
+
+session_affinity:
+  header: "X-Session-Id"             # default if unset; a client sending this skips the hash fallback
+  default_ttl: "25h"                 # sized to a working session, not a cache window
+  no_pin: ["title"]                  # pure hygiene: this kind's pin would never be read

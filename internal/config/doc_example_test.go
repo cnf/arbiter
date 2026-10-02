@@ -27,15 +27,20 @@ func TestDocExampleConfigLoads(t *testing.T) {
 	loadReadmeFragment(t, example)
 }
 
-// TestDocGuardrailExamplesLoad checks the guardrail snippets in
-// docs/guardrails.md (the Guardrails and Prompt rewriting sections) against the
-// config schema.
+// TestDocGuardrailExamplesLoad checks the guardrail snippet in docs/guardrails.md's
+// top-level "Guardrails" section (the pre/post shape every type sits inside)
+// against the config schema.
 //
-// These are separate from the main example because they are *fragments*: they
-// show only the `guardrails:` block, which is what a reader adds to an existing
-// config. Each is grafted onto the main example (replacing its empty guardrails
-// block) and loaded, so a documented config *key* the loader would reject fails
-// here rather than in a reader's config.
+// The "Prompt rewriting" and "Unpinning a conversation" sections no longer
+// embed their own fenced configs — they link to
+// docs/examples/guardrail-prompt-rewrite.yaml and
+// docs/examples/guardrail-unpin.yaml, loaded by TestDocExamplesLoad (see
+// doc_examples_dir_test.go) alongside every other docs/examples/*.yaml file.
+//
+// This is a *fragment*: it shows only the `guardrails:` block, which is what a
+// reader adds to an existing config. It is grafted onto the main example
+// (replacing its empty guardrails block) and loaded, so a documented config
+// *key* the loader would reject fails here rather than in a reader's config.
 //
 // What this does NOT check: the `type` strings. Guardrail types are resolved in
 // cmd/arbiter's buildGuardrail, not in config.Validate, so a doc block naming a
@@ -63,8 +68,6 @@ func TestDocGuardrailExamplesLoad(t *testing.T) {
 		section string // heading the fragment lives under, level-agnostic
 	}{
 		{"guardrails section", guardrails, "#+ Guardrails"},
-		{"prompt rewriting section", guardrails, "#+ Prompt rewriting"},
-		{"unpin section", guardrails, "#+ Unpinning a conversation"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Level-agnostic: the section is a top-level heading in this doc,
@@ -81,30 +84,19 @@ func TestDocGuardrailExamplesLoad(t *testing.T) {
 	}
 }
 
-// TestDocDecisionsClassifierExampleLoads keeps the decisions classifier
-// section's config honest.
-//
-// It cannot use the fragment-grafting helper above: that helper replaces the
-// base example's empty `guardrails:` block, and this section documents a whole
-// config (providers, aliases and classifiers together — a decisions classifier
-// is meaningless without the provider type and the alias it routes through), so
-// grafting it would duplicate three top-level keys. It is loaded verbatim
-// instead, which still catches the failure that matters: a reader copying this
-// block and adding it to their config must not get a load error.
-func TestDocDecisionsClassifierExampleLoads(t *testing.T) {
-	routing := readDoc(t, "routing.md")
-	re := regexp.MustCompile("(?s)#+ Decision-model classification.*?```yaml\\n(.*?)```")
-	m := re.FindSubmatch(routing)
-	if m == nil {
-		t.Fatal("could not find the ```yaml example under 'Decision-model classification' in docs/routing.md")
-	}
-	loadReadmeFragment(t, string(m[1]))
-}
+// The decisions classifier section in docs/routing.md no longer embeds its
+// own fenced config: it links to docs/examples/classifier-decisions.yaml,
+// which is a complete standalone config loaded by TestDocExamplesLoad (see
+// doc_examples_dir_test.go) alongside every other docs/examples/*.yaml file.
 
-// TestDocClassifierMatchExamplesLoad checks the `match` and `detect` snippets
-// in docs/routing.md's classifier sections against the config schema.
+// TestDocClassifierMatchExamplesLoad checks the `detect` snippet in
+// docs/routing.md's "Structural capability detection" section against the
+// config schema. The sibling "Matching a request's own text" section no
+// longer embeds its own fenced config — it links to
+// docs/examples/classifier-request-kind-match.yaml, loaded by TestDocExamplesLoad (see
+// doc_examples_dir_test.go) alongside every other docs/examples/*.yaml file.
 //
-// Like the guardrail fragments, these show only a `classifiers:` block, so each
+// Like the guardrail fragments, this shows only a `classifiers:` block, so it
 // is grafted onto the base example (replacing its classifiers block). Without
 // this the section could document a top-level classifier key the loader
 // rejects — which is exactly how the Guardrails section once came to document
@@ -145,7 +137,6 @@ func TestDocClassifierMatchExamplesLoad(t *testing.T) {
 		name    string
 		section string // heading the fragment lives under, level-agnostic
 	}{
-		{"match section", "#+ Matching a request's own text"},
 		{"detect section", "#+ Structural capability detection"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

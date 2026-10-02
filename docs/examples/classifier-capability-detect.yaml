@@ -1,0 +1,50 @@
+# Structural capability detection (`detect`): prove capabilities from the
+# request's SHAPE rather than guessing from its words.
+#
+#   detect:               tool_use | attachment | long_context
+#   long_context_tokens:  required when long_context is detected — without a
+#                         threshold it could never fire.
+#
+# These are facts about the request, not inferences from its text: whether a
+# request carries an attachment is countable, whereas the keyword detector
+# was guessing from the word "image". A structural hit is therefore certain
+# (confidence 1.0) and is unioned with whatever keywords also matched — a
+# request can need vision and tool_use at once. Keywords still work alongside
+# `detect`, for what shape cannot prove (e.g. "vision" from the word
+# "screenshot" below).
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/classifier-capability-detect.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-opus-20250219"]
+  gpt4:
+    type: "openai"
+    endpoint: "https://api.openai.com/v1"
+    key: "${OPENAI_API_KEY}"
+    models: ["gpt-4o"]
+
+classifiers:
+  - name: "capability"
+    type: "capability_detector"
+    config:
+      detect: ["tool_use", "attachment", "long_context"]
+      long_context_tokens: 100000          # required because long_context is detected
+      keywords:                            # still works, for what shape cannot prove
+        vision: ["screenshot"]
+
+routers:
+  - name: "policy"
+    type: "policy"
+    config:
+      rules:
+        - when: { capabilities: ["vision"] }
+          provider: "gpt4"
+        - when: {}
+          provider: "claude"

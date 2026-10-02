@@ -1,0 +1,82 @@
+# Prompt rewriting: match client-injected prompt text and strip, replace,
+# block, or strip_paragraph it.
+#
+# `type: "prompt_rewrite"` config:
+#   match:        required — the pattern to search for.
+#   mode:         exact | prefix | line_exact | line_prefix |
+#                 paragraph_exact | paragraph_prefix | regex (default prefix)
+#     exact/prefix anchor to the WHOLE field (byte 0 / the entire string),
+#     ignoring case and surrounding whitespace. The moment a system prompt is
+#     a concatenation of several sources, the target text is no longer at
+#     offset 0, so exact/prefix silently never match — use line_prefix /
+#     paragraph_prefix (or their _exact counterparts) when the target is a
+#     whole line or paragraph but not the first thing in the field, or regex
+#     (unanchored) for anything else. regex is case-sensitive, unlike the
+#     others — write (?i) yourself for case-insensitivity.
+#   action:       strip | replace | block | strip_paragraph (default strip)
+#     strip:            removes the matched span.
+#     replace:          substitutes `replacement:` for the matched span.
+#     block:            refuses the request with `block_status:` (403 default).
+#     strip_paragraph:  removes the WHOLE paragraph containing the match,
+#                       split on `paragraph_boundary:` (default newline) —
+#                       use this over plain strip when a pattern matches part
+#                       of a sentence and would otherwise leave a dangling
+#                       fragment.
+#   replacement:        required when action is "replace".
+#   block_status:       optional, used only when action is "block" (default 403).
+#   paragraph_boundary: optional, used only when action is "strip_paragraph"
+#                       (default "\n").
+#   where:        system | messages | all (default system). Only TEXT blocks
+#                 are rewritten — a tool_use or attachment block is untouched.
+#
+# A typo'd mode/action/where is a config-load error, not a silent no-op.
+#
+# Three guardrails below show strip, replace, and block side by side — in a
+# real config you would normally need only one.
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/guardrail-prompt-rewrite.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-opus-20250219"]
+
+routers:
+  - name: "primary"
+    type: "simple"
+    config:
+      default_provider: "claude"
+
+guardrails:
+  pre:
+    - name: "strip-opencode-preamble"
+      type: "prompt_rewrite"
+      config:
+        match: "You are opencode, the best coding agent"
+        mode: "prefix"
+        action: "strip"
+        where: ["system"]
+
+    - name: "replace-vendor-name"
+      type: "prompt_rewrite"
+      config:
+        match: "(?i)Acme Corp Assistant"
+        mode: "regex"
+        action: "replace"
+        replacement: "Arbiter"
+        where: ["system"]
+
+    - name: "block-jailbreak-attempt"
+      type: "prompt_rewrite"
+      config:
+        match: "ignore all previous instructions"
+        mode: "line_prefix"
+        action: "block"
+        block_status: 403
+        where: ["messages"]
+  post: []

@@ -143,3 +143,10 @@ config reload are documented in **[docs/clients.md](clients.md)**. Guardrails
 are documented in **[docs/guardrails.md](guardrails.md)**. The event store,
 admin surface, and admin UI are documented in
 **[docs/observability.md](observability.md)**.
+
+**[docs/examples/](examples/)** holds one complete, loadable config per
+feature (heuristic/llm/decisions classifiers, `match`/`detect`, tags,
+guardrails, router aliases/group-select/policy rules, session affinity,
+storage/admin) — copy one whole file to try a feature in isolation, rather
+than assembling it from prose fragments. `arbiter.example.yaml` at the
+repository root remains the single everything-in-one-file reference.

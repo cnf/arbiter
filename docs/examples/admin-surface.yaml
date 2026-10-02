@@ -1,0 +1,48 @@
+# Admin surface access: Arbiter implements NO authentication of its own.
+# Access control is the network's (a tailnet, a loopback/unix-socket bind)
+# and the fronting proxy's (Caddy's `forward_auth`). See
+# docs/observability.md#admin-surface-and-access for the full story.
+#
+# `admin.forward_auth_header` is the one in-app affordance: when set, a
+# request to /admin/* without that header gets 401; when unset, /admin/* is
+# UNGATED (a development convenience, not a safe default for a listener
+# reachable from anywhere). Arbiter checks only that the header is PRESENT —
+# it cannot verify the proxy actually set it — so this is sound only while
+# Arbiter is unreachable except through that proxy. That's also why Arbiter
+# binds loopback by default (`--bind 127.0.0.1`, or `--socket /path`): set
+# `--bind 0.0.0.0` only when something else (Caddy, a tailnet ACL) is
+# actually enforcing reachability.
+#
+# POST /admin/reload re-reads the config and `model_catalog_file` on demand
+# — the same path the file watcher uses, so a regenerated catalog.yaml
+# (inert on write by design) is picked up by calling it. A rejected reload
+# returns 500 and leaves the previously-running config serving; nothing is
+# torn down on a bad reload.
+#
+# The /admin/stats* and /admin/requests JSON endpoints need storage.path set
+# (see docs/examples/storage-event-store.yaml) — without a store they return
+# 503, not an empty result.
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/admin-surface.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-opus-20250219"]
+
+routers:
+  - name: "primary"
+    type: "simple"
+    config:
+      default_provider: "claude"
+
+storage:
+  path: "arbiter.db"       # /admin/stats* and /admin/requests need this set
+
+admin:
+  forward_auth_header: "X-Forwarded-User"   # unset = /admin/* is ungated

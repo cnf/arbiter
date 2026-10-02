@@ -1,0 +1,45 @@
+# System prompt injection: prepend or replace the system prompt the client
+# sent.
+#
+# `type: "system_prompt"` config:
+#   prompt:    required — the text to inject.
+#   override:  optional, default false.
+#     false (default, and the useful one): PREPENDS the configured prompt
+#              ahead of whatever the client sent, so Arbiter's baseline
+#              instructions always apply while the client's own are still
+#              there.
+#     true:    REPLACES the client's system prompt entirely — occasionally
+#              what you want for a fixed-purpose deployment, and otherwise a
+#              good way to break a coding agent that relies on its own
+#              system prompt (tool definitions, conventions, etc).
+#
+# Capture runs BEFORE pre-guardrails, so this injected text is never stored
+# as though the client had sent it, and the session-affinity key is hashed
+# before this guardrail runs — editing `prompt` does not invalidate live pins.
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/guardrail-system-prompt.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-opus-20250219"]
+
+routers:
+  - name: "primary"
+    type: "simple"
+    config:
+      default_provider: "claude"
+
+guardrails:
+  pre:
+    - name: "baseline"
+      type: "system_prompt"
+      config:
+        prompt: "You are a helpful assistant. Be direct and concise."
+        override: false               # prepend ahead of the client's own prompt
+  post: []

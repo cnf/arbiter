@@ -1,0 +1,54 @@
+# The sqlite event store: one row per completed request, off by default.
+# See docs/observability.md#event-store for the full schema story — this
+# file is the config surface only.
+#
+# Setting `storage.path` is the only thing that turns the store on; every
+# other key below is meaningless without it.
+#
+#   path             the sqlite file (created if missing). Empty (the
+#                    default) means NO event store at all: requests still
+#                    serve, but nothing is persisted and `/admin/stats*`
+#                    returns 503 rather than an empty result, so "store
+#                    disabled" and "no traffic yet" stay distinguishable.
+#   capture_content  off by default — the ONE setting that writes
+#                    conversation text to disk. Captured bodies are
+#                    content-addressed at message-block granularity
+#                    (hashed once, deduplicated across every request that
+#                    repeats the same block, e.g. a client re-sending its
+#                    whole history every turn) and captured BEFORE
+#                    pre-guardrails run, so what's stored is the request as
+#                    the client actually sent it. It also unlocks:
+#                      - /admin/requests/{id}'s `content` array
+#                      - title-generation -> parent-session linking's
+#                        content-hash fallback tier (docs/observability.md)
+#                      - /admin/content/repeated ("Discovery")
+#   content_ttl      a Go duration ("72h" — "7d" is NOT valid). Governs
+#                    captured BODIES only; request metadata (routing, cost,
+#                    epoch) is never on this clock. Empty or "0" (the
+#                    default) means never expire — retention is opt-in, so
+#                    an upgrade cannot silently start deleting data. Expiry
+#                    is enforced by a sweep on startup and hourly
+#                    thereafter, not a per-request check.
+#
+# Load this file directly to see it work:
+#   go run ./cmd/arbiter --config docs/examples/storage-event-store.yaml
+
+version: "1.0"
+
+providers:
+  claude:
+    type: "anthropic"
+    endpoint: "https://api.anthropic.com"
+    key: "${ANTHROPIC_API_KEY}"
+    models: ["claude-3-opus-20250219"]
+
+routers:
+  - name: "primary"
+    type: "simple"
+    config:
+      default_provider: "claude"
+
+storage:
+  path: "arbiter.db"       # unset (the default) disables the store entirely
+  capture_content: true    # off by default; this is what writes bodies to disk
+  content_ttl: "168h"      # 7 days, expressed as hours — "7d" is rejected

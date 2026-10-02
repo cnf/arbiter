@@ -116,7 +116,7 @@ routers:
       # fallback_provider: "gpt4"
 
 guardrails:
-  pre: []                              # system_prompt, rate_limit, prompt_rewrite
+  pre: []                              # system_prompt, rate_limit, prompt_rewrite, unpin
   post: []
 
 routing:

@@ -264,6 +264,24 @@ func (p *Pipeline) pins(requestKind string) bool {
 	return requestKind == "" || !p.noPin[requestKind]
 }
 
+// SetGuardrailPins wires the affinity store into every pre-guardrail that can
+// clear pins (an unpin directive), so such a guardrail's SetPinForgetter sees
+// the SAME store resolveRoute consults. Called once by the wiring code after
+// the pipeline exists — the guardrail needs a collaborator the pipeline owns,
+// so a constructor argument would require building the pipeline first.
+//
+// Takes the guardrails themselves rather than a closure per call site: a
+// variadic []func(...) would hide which call paths wire a guardrail and invite
+// a site that silently passes nothing. A no-op when no clearer is supplied,
+// which is the correct degradation for a pipeline built without one.
+func (p *Pipeline) SetGuardrailPins(clearers ...guardrail.PinClearer) {
+	for _, c := range clearers {
+		if c != nil {
+			c.SetPinForgetter(p.affinity)
+		}
+	}
+}
+
 // headersContextKey is the context key WithHeaders/headersFromContext share.
 // Headers ride on ctx rather than as an Execute parameter because they are
 // metadata rather than routing input — attached to the stored row, like trace

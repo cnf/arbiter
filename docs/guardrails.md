@@ -29,6 +29,7 @@ Types, in the order you are likely to reach for them:
 | `system_prompt` | prepends (or with `override: true`, replaces) the system prompt |
 | `rate_limit` | per-minute / per-day request caps |
 | `prompt_rewrite` | matches client-injected prompt text and strips, replaces or blocks it (see Prompt rewriting) |
+| `unpin` | clears this conversation's session-affinity pin when the request's **last message** carries a marker, so it re-classifies and re-routes (see Unpinning a conversation) |
 
 A typo'd `type` is caught at build time by a test that reads this table out of
 this file and asks the real `buildGuardrail` to construct each one, so the table
@@ -167,3 +168,45 @@ injected text is stripped while every request still carries it.
 many requests and sessions — the client's own preamble shows up there, with a
 preview, before you write a rule for it. See
 [observability.md](observability.md#discovery-the-blocks-that-recur).
+
+## Unpinning a conversation (re-route on demand)
+
+A pinned conversation is served by the same provider/model on every turn, which
+is what keeps its prompt cache warm — but it also means classification and rule
+matching are skipped entirely for the rest of the session. `unpin` lets a user
+ask for a fresh routing decision mid-conversation by typing a marker:
+
+```yaml
+guardrails:
+  pre:
+    - name: "reclassify"
+      type: "unpin"
+      config:
+        match: "#reclassify"     # the marker text
+        mode: "prefix"           # exact | prefix | line_* | paragraph_* | regex (default: prefix)
+        strip: false             # remove the marker before it goes upstream (default: false)
+```
+
+When the request's **last message** carries the marker, Arbiter clears the
+conversation's affinity pin. The request then falls through to normal
+classification and rule matching, and the fresh result is pinned in turn — so
+the unpin is a one-shot re-route, not a lasting change.
+
+**Only the last message is examined, never the conversation history.** The
+whole conversation is re-sent on every turn, so a marker that lived in history
+would keep matching and re-route on every later turn. Checking only the newest
+message makes `#reclassify` fire once: the turn you type it, and not again.
+
+`strip` decides whether the marker is removed before the request goes upstream.
+It defaults to `false`, so the guardrail never silently edits the prompt. The
+trade is worth knowing: pre-guardrails run **before** classification, so a
+stripped marker is also invisible to a classifier's `match:` block. Use
+`strip: false` (or a second, non-stripped marker) when you also want a
+classifier to route on the marker — e.g. `#code` triggering a force onto a
+coding lane on the turns it applies.
+
+`unpin` is deliberately **not** a classifier. Its whole vocabulary is "clear the
+pin", which is a pre-request mutation of the same kind `system_prompt` and
+`prompt_rewrite` perform. Anything that produces routing *signals* belongs to a
+classifier; the `match` block on a classifier ([routing.md](routing.md)) is how
+a marker forces an axis.

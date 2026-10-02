@@ -512,6 +512,20 @@ guardrails:
         per_minute: 100
         per_day: 10000
 
+    # Unpin: clears this conversation's session-affinity pin when the request's
+    # LAST message carries the marker, so the request re-classifies and
+    # re-routes instead of reusing the pinned provider. Only the newest message
+    # is checked, so a marker typed once fires once (the conversation is
+    # re-sent every turn; checking history would re-route forever). strip
+    # defaults to false — set true to remove the marker before it goes
+    # upstream, at the cost of hiding it from a classifier's `match:` block.
+    - name: "reclassify"
+      type: "unpin"
+      config:
+        match: "#reclassify"
+        mode: "prefix"
+        strip: false
+
   post: []
 
 # Session affinity: once a request is routed, the conversation is pinned to

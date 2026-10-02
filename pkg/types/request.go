@@ -40,6 +40,15 @@ type NormalizedRequest struct {
 	TraceID         string
 	SessionKey      string // set by the pipeline after guardrails; "" if no usable session key
 
+	// PromptHash identifies the prompt FAMILY within a session — the main
+	// thread, a title-generation call, a subagent run each hash differently —
+	// so a session-affinity pin cannot let one family silently overwrite
+	// another's target. Set by the pipeline, BEFORE pre-guardrails, from the
+	// client's own system prompt (see pipeline.PromptHash). A guardrail that
+	// clears a pin needs it, because a pin is keyed by (SessionKey,
+	// PromptHash) and only this family's pin must be cleared.
+	PromptHash string
+
 	// Thinking and OutputEffort are the client's extended-reasoning request,
 	// carried through to an Anthropic-speaking upstream. They are pointers so
 	// "the client asked for adaptive thinking" is distinguishable from "the

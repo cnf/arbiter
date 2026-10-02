@@ -51,7 +51,7 @@ func TestDocGuardrailExamplesLoad(t *testing.T) {
 	if base == nil {
 		t.Fatal("could not find the base example under 'Configuration' in docs/configuration.md")
 	}
-	const emptyGuardrails = "guardrails:\n  pre: []                              # system_prompt, rate_limit, prompt_rewrite\n  post: []"
+	const emptyGuardrails = "guardrails:\n  pre: []                              # system_prompt, rate_limit, prompt_rewrite, unpin\n  post: []"
 	if !strings.Contains(string(base[1]), emptyGuardrails) {
 		t.Fatalf("the base example's empty guardrails block changed shape; update this test.\n" +
 			"Expected to find:\n" + emptyGuardrails)
@@ -64,6 +64,7 @@ func TestDocGuardrailExamplesLoad(t *testing.T) {
 	}{
 		{"guardrails section", guardrails, "#+ Guardrails"},
 		{"prompt rewriting section", guardrails, "#+ Prompt rewriting"},
+		{"unpin section", guardrails, "#+ Unpinning a conversation"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Level-agnostic: the section is a top-level heading in this doc,

@@ -29,10 +29,10 @@ providers:
     endpoint: "https://api.openai.com/v1"
     key: "${OPENAI_API_KEY}"
     models: ["gpt-4o"]
-  litellm:
+  openrouter:
     type: "openai"
-    endpoint: "${LITELLM_URL}"
-    key: "${LITELLM_API_KEY}"
+    endpoint: "${OPENROUTER_URL}"
+    key: "${OPENROUTER_API_KEY}"
     models: ["openrouter/free"]
   local:
     type: "ollama"                     # OpenAI-compatible transport, own identity
@@ -66,11 +66,11 @@ aliases:
     type: "group"
     select: "random"                   # random | cheapest_input | cheapest_output | fastest
     members:
-      - { provider: "litellm", model: "openrouter/free" }
+      - { provider: "openrouter", model: "openrouter/free" }
       - { provider: "local", model: "llama2" }
 
 model_catalog:                         # feeds the cost/latency select strategies
-  - provider: "litellm"
+  - provider: "openrouter"
     model: "openrouter/free"
     input_cost_per_mtok: 0
     output_cost_per_mtok: 0

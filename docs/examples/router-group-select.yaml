@@ -36,10 +36,10 @@ providers:
     endpoint: "https://api.anthropic.com"
     key: "${ANTHROPIC_API_KEY}"
     models: ["claude-3-haiku-20250307"]
-  litellm:
+  openrouter:
     type: "openai"
-    endpoint: "${LITELLM_URL}"
-    key: "${LITELLM_API_KEY}"
+    endpoint: "${OPENROUTER_URL}"
+    key: "${OPENROUTER_API_KEY}"
     models: ["openrouter/free"]
   local:
     type: "ollama"
@@ -51,12 +51,12 @@ aliases:
     type: "group"
     select: "cheapest_input"           # random | cheapest_input | cheapest_output | fastest
     members:
-      - { provider: "litellm", model: "openrouter/free" }
+      - { provider: "openrouter", model: "openrouter/free" }
       - { provider: "claude", model: "claude-3-haiku-20250307" }
       - { provider: "local", model: "llama2" }   # no catalog row: ranks last, never errors
 
 model_catalog:                         # hand-managed; wins on conflict with model_catalog_file
-  - provider: "litellm"
+  - provider: "openrouter"
     model: "openrouter/free"
     input_cost_per_mtok: 0
     output_cost_per_mtok: 0

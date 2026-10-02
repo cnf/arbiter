@@ -142,7 +142,8 @@ type SessionAffinityConfig struct {
 	Header string `yaml:"header,omitempty"`
 	// DefaultTTL is how long a pin survives without being reused (idle
 	// timeout, refreshed on every hit), parsed as a Go duration. Defaults to
-	// 5m if unset.
+	// 25h if unset — sized to a working session (an overnight gap), not a
+	// cache window (see pipeline.defaultAffinityTTL).
 	DefaultTTL string `yaml:"default_ttl,omitempty"`
 	// NoPin lists request_kind values that must never be pinned — the
 	// request still classifies and routes normally, it just never writes or

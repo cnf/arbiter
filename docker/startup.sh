@@ -37,7 +37,7 @@ showHelp() {
     log "  PORT        - Port to bind the arbiter server (default: 8080)"
     log "  BINDHOST    - Host to bind the arbiter server (default: 0.0.0.0)"
     log "  CONFIGDIR   - Directory where the configuration file is located (default: /config)"
-    log "  CONFIGFILE  - Path to the configuration file (default: \${CONFIGDIR}/arbiter.yaml)"
+    log "  CONFIG_FILE - Path to the configuration file (default: \${CONFIGDIR}/arbiter.yaml)"
     log "  DATADIR     - Directory where the data is stored (default: /data)"
     log "                still need to use this in the config file!"
     log

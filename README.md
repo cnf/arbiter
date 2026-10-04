@@ -99,7 +99,7 @@ reader does not discover them as surprises.
 
 - **New to this?** **[docs/getting-started.md](docs/getting-started.md)** — build
   it, give it a provider, send a request, see the row it left.
-- **Running the container image:** **[CONTAINER.md](CONTAINER.md)** — image
+- **Running the container image:** **[CONTAINER.md](docs/CONTAINER.md)** — image
   behavior, environment variables, and the Compose quick start.
 - **Pointing a client at it:** **[docs/clients.md](docs/clients.md)** — endpoints,
   streaming, attachments, session affinity, prompt caching.

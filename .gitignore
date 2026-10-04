@@ -72,3 +72,6 @@ support/design/
 .secrets/
 .cache/
 .local/
+
+# Compose mounts /data here
+arbiter-data/

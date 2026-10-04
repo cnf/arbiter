@@ -20,8 +20,7 @@ and a session's turn-by-turn transcript are three views onto the same store.
 Concretely, it gives you:
 
 - **Every request recorded, with the reason it was routed that way.** Each row
-  carries a one-line rationale (`policy router "policy": domain="code_generation"
-  difficulty="" capabilities=[] cost_class="" -> alias "cheap-claude" -> claude/haiku`),
+  carries a one-line rationale (`policy router "policy": domain="code_generation" difficulty="" capabilities=[] cost_class="" -> alias "cheap-claude" -> claude/haiku`),
   so a routing decision never has to be guessed from the response.
 - **Routing you write in config, not in code.** Classifiers turn a request into
   independent axes (`domain`, `difficulty`, `cost_class`, `capabilities`, `tags`); aliases
@@ -75,19 +74,19 @@ Real gaps, tracked on the issue board rather than silently dropped. Listed so a
 reader does not discover them as surprises.
 
 - **`/v1/responses`** (the OpenAI Responses API). Codex CLI v0.116+ uses it
-  *exclusively* and no longer calls `/chat/completions`, so Codex cannot use
+  _exclusively_ and no longer calls `/chat/completions`, so Codex cannot use
   Arbiter as a backend today. HTTP/SSE is sufficient — no WebSocket server is
   needed — but it is a real protocol adapter (its own `input` request shape, its
   own typed event stream, `previous_response_id` continuity), not an alias.
 - **Anthropic client-facing parsing of attachments.** Images and documents
   arriving on the Anthropic endpoint are dropped by the translator today. The
-  Anthropic *upstream* direction works; this is the inbound client direction.
+  Anthropic _upstream_ direction works; this is the inbound client direction.
 - **Cache counters on the wire.** The store records cache-read and cache-write
   tokens, but neither outbound usage object carries a cache breakdown back to
-  the client, and the inbound Anthropic *streaming* parser does not read the
+  the client, and the inbound Anthropic _streaming_ parser does not read the
   cache counters (the non-streaming one does). So a streamed Claude reply is
   recorded with zero cache tokens, and a client cannot see caching working.
-- **Empirical cost and latency.** Provider-*reported* cost is captured; latency
+- **Empirical cost and latency.** Provider-_reported_ cost is captured; latency
   is recorded per request. The interface for an empirical cost/latency lookup
   exists and is the seam a measured implementation would fill.
 - **Sub-agent attribution.** Linking a child request to the parent that spawned
@@ -100,6 +99,8 @@ reader does not discover them as surprises.
 
 - **New to this?** **[docs/getting-started.md](docs/getting-started.md)** — build
   it, give it a provider, send a request, see the row it left.
+- **Running the container image:** **[CONTAINER.md](docs/CONTAINER.md)** — image
+  behavior, environment variables, and the Compose quick start.
 - **Pointing a client at it:** **[docs/clients.md](docs/clients.md)** — endpoints,
   streaming, attachments, session affinity, prompt caching.
 - **Deciding where requests go:** **[docs/routing.md](docs/routing.md)** —
@@ -138,8 +139,7 @@ streaming request at fakellm and at arbiter, to compare).
 
 Run everything through the devenv process manager (`devenv processes up/down`),
 which starts fakellm (port 5665) before arbiter (port 8080). Note: builds,
-tests, git commits, and anything touching secrets must run inside `devenv
-shell`; secrets access requires a reason (`SECRETSPEC_REASON="..."` or
+tests, git commits, and anything touching secrets must run inside `devenv shell`; secrets access requires a reason (`SECRETSPEC_REASON="..."` or
 `--reason`).
 
 Two flags control where arbiter listens: `--bind` (default `127.0.0.1`) and
@@ -153,8 +153,7 @@ The full endpoint surface, the streaming contract, attachments, session
 affinity and prompt caching are documented in
 **[docs/clients.md](docs/clients.md)**.
 
-The short version: `POST /v1/messages` (Anthropic) and `POST
-/chat/completions` (OpenAI), `GET /v1/models`, `GET /health`. Both chat
+The short version: `POST /v1/messages` (Anthropic) and `POST /chat/completions` (OpenAI), `GET /v1/models`, `GET /health`. Both chat
 endpoints stream in the wire format of the request.
 
 ## Project Structure

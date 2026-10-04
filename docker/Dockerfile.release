@@ -1,0 +1,37 @@
+FROM alpine:3.18.0
+WORKDIR /app
+
+ARG UID=1234
+ARG GID=1234
+ARG PORT=8080
+ARG CONFIGDIR=/config
+ARG DATADIR=/data
+ARG BINDHOST=0.0.0.0
+ARG TARGETARCH
+
+ENV DATADIR=${DATADIR}
+ENV PORT=${PORT}
+ENV CONFIGDIR=${CONFIGDIR}
+
+COPY docker/startup.sh .
+COPY docs/examples /app/examples
+COPY arbiter.example.yaml /app/examples/arbiter.example.yaml
+COPY dist/arbiter-linux-${TARGETARCH}/arbiter /app/arbiter
+COPY dist/arbiter-linux-${TARGETARCH}/catalog-convert /app/catalog-convert
+
+RUN mkdir -p /config ${DATADIR} && \
+    apk add --no-cache ca-certificates && \
+    update-ca-certificates && \
+    addgroup -g ${GID} -S arbiter && \
+    adduser -u ${UID} -S arbiter -G arbiter && \
+    chown -R arbiter:arbiter /config ${DATADIR} && \
+    chmod +x /app/startup.sh /app/arbiter /app/catalog-convert
+
+VOLUME ["/config", "${DATADIR}"]
+
+USER arbiter:arbiter
+
+EXPOSE ${PORT}
+ENTRYPOINT ["/app/startup.sh"]
+
+CMD [ "arbiter" ]

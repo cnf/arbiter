@@ -1,0 +1,12 @@
+**
+!docker/
+!docker/startup.sh
+!docs/
+!docs/examples/
+!docs/examples/**
+!arbiter.example.yaml
+!dist/
+!dist/arbiter-linux-amd64/
+!dist/arbiter-linux-amd64/**
+!dist/arbiter-linux-arm64/
+!dist/arbiter-linux-arm64/**

@@ -1,0 +1,27 @@
+services:
+  arbiter:
+    image: ghcr.io/cnf/arbiter:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      # Uncomment this after you copied or created the config file
+      #- ./arbiter.yaml:/config/arbiter.yaml:ro
+      - ./arbiter-data:/data
+    # Uncomment and edit these image settings only when overriding the defaults.
+    # environment:
+    #   PORT: "8080"
+    #   BINDHOST: "0.0.0.0"
+    #   CONFIGDIR: /config
+    #   CONFIG_FILE: /config/arbiter.yaml
+    #   DATADIR: /data
+    # Provider config values are opt-in; uncomment and set only those in use.
+    #   ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    #   OPENAI_API_KEY: "${OPENAI_API_KEY}"
+    #   OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}"
+    #   OPENROUTER_URL: ""
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:$${PORT}/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

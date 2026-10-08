@@ -114,6 +114,13 @@ reader does not discover them as surprises.
 - **Controlling what goes through:** **[docs/guardrails.md](docs/guardrails.md)** —
   system-prompt injection, rate limiting, prompt rewriting.
 
+## Screenshots
+
+![Overview]('docs/screenshots/Arbiter — overview.png')
+![Overview]('docs/screenshots/Arbiter — sessions.png')
+![Overview]('docs/screenshots/Arbiter — transscript.png')
+![Overview]('docs/screenshots/Arbiter — discovery-a.png')
+
 ---
 
 ## Building
